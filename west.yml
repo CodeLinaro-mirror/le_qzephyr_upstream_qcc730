@@ -1,12 +1,21 @@
 manifest:
   remotes:
     - name: zephyrproject-rtos
-      url-base: https://github.com/zephyrproject-rtos
+      url-base: https://github.qualcomm.com/CoreKernel/zephyr
+    - name: QCC730-ZE-1-0
+      url-base: https://github.qualcomm.com/QCC730-ZE-1-0
   projects:
     - name: zephyr
       remote: zephyrproject-rtos
-      revision: v4.0.0
-      import: true
+      revision: v4.1.0
+    - name: qcomhal
+      remote: QCC730-ZE-1-0
+      revision: main
+      path: modules/hal/qualcomm
+    - name: libwifiqcc730
+      remote: QCC730-ZE-1-0
+      revision: main
+      path: modules/hal/qualcomm/libwifiqcc730
   self:
     path: qcomze
     west-commands: zephyr/scripts/west-commands.yml
