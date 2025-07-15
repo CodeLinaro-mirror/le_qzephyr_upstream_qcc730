@@ -1,0 +1,99 @@
+/*
+ * QCC730
+ *
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <arm/armv7-m.dtsi>
+#include <mem.h>
+
+/ {
+
+  power-states {
+    s2ram: s2ram {
+      compatible = "zephyr,power-state";
+      power-state-name = "suspend-to-ram";
+ 			min-residency-us = <100000>;
+ 			exit-latency-us = <8000>;
+    };
+    softoff: softoff {
+      compatible = "zephyr,power-state";
+      power-state-name = "soft-off";
+ 			min-residency-us = <3000000>;
+ 			exit-latency-us = <500000>;
+    };
+  };
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-m4";
+			reg = <0>;
+			cpu-power-states = <&softoff>;
+		};
+	};
+
+	/* PBL_RAM (xrw) : ORIGIN = 0x00000000, LENGTH = 0x0000A000 */
+	/* PBL clear SBL stack end at 0x90000 with size 0x1000 */
+	/* 0x90000~0xA0000 are reserved as wifi hw packet */
+	sram0: memory@10000 {
+		compatible = "mmio-sram";
+		reg = <0x10000 0x80000>;
+	};
+
+	soc {
+		/* QCC730V2_QSPI_BASE_BASE = 0x01190000UL */
+		/* QCC730V2_RRAM_CTRL_BASE_BASE = 0x01192400UL */
+		flash: flash-controller@1190000 {
+			compatible = "qualcomm,rram_qcc730";
+			reg = <0x01190000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			
+			/* SBLA start at 0x20A400, size 0x8000 */
+			/* SBLB start at 0x212400, size 0x8000 */
+			/* APP_BIN start at 0x21A400 */
+			/* BDF ends at 0x37A000, size 0x6000 */
+			/* For APP_ELF, size is limited by SRAM but not RRAM */
+			flash0: flash@21A400 {
+				compatible = "RRAM";
+				reg = <0x21A400 0x140000>;
+				write-block-size = <2048>;
+				erase-block-size = <2048>;
+			};
+			/*
+			flash0: flash@10000 {
+				compatible = "soc-nv-flash";
+				reg = <0x10000 0x40000>;
+				write-block-size = <2048>;
+				erase-block-size = <2048>;
+			}; */
+		};
+
+		drv_dummy: dummy@90000 {
+			compatible = "qualcomm,drv_dummy_qcc730";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			reg = <0x90000 0x400>;
+			status = "disabled";
+		};
+
+		/* QCC730V2_UART_BASE_BASE = 0x01233800UL */
+		uart0: serial@1233800 {
+			compatible = "qualcomm,uart_qcc730";
+			reg = <0x01233800 0x100>;
+			/* clocks = <&rcc STM32_CLOCK(APB2, 14U)>; */
+			/* resets = <&rctl STM32_RESET(APB2, 14U)>; */
+			interrupts = <3 0>;
+			status = "disabled";
+		};
+	};
+};
+
+&nvic {
+	arm,num-irq-priority-bits = <2>;
+};

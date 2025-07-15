@@ -1,21 +1,40 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0;
 manifest:
   remotes:
     - name: zephyrproject-rtos
-      url-base: https://github.qualcomm.com/CoreKernel/zephyr
+      url-base: https://github.qualcomm.com/CoreKernel
     - name: QCC730-ZE-1-0
       url-base: https://github.qualcomm.com/QCC730-ZE-1-0
+  defaults:
+    remote: QCC730-ZE-1-0
+    revision: main
   projects:
     - name: zephyr
       remote: zephyrproject-rtos
       revision: v4.1.0
-    - name: qcomhal
-      remote: QCC730-ZE-1-0
-      revision: main
+      import:
+        # By using name-allowlist we can clone only the modules that are
+        # strictly needed by the application.
+        name-allowlist:
+          - cmsis      # required by the ARM port
+          - littlefs   # for qspi/norflash
+          - hostap     # for wifi
+          - segger     # for Jlink debug and cli
+          - zcbor      # for c++ programming
+          - mbedtls    # for ssl and WPA 4 way handshaking
+    - name: qapp
+      path: qapp
+    - name: qhal
       path: modules/hal/qualcomm
     - name: libwifiqcc730
-      remote: QCC730-ZE-1-0
-      revision: main
-      path: modules/hal/qualcomm/libwifiqcc730
+      path: prop/libwifiqcc730
+    - name: libpowerqcc730
+      path: prop/libpowerqcc730
+    - name: libsensorqcc730
+      path: prop/libsensorqcc730
+    - name: libcryptoqcc730
+      path: prop/libcryptoqcc730
   self:
-    path: qcomze
+    path: qcc730
     west-commands: zephyr/scripts/west-commands.yml

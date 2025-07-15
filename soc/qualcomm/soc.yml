@@ -1,0 +1,8 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0;
+family:
+  - name: qualcomm
+    series:
+      - name: qcc730
+        socs:
+          - name: qcc730

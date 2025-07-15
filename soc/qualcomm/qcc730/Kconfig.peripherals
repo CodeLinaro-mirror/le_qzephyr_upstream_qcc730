@@ -1,0 +1,91 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0;
+config SOC_QCC730_HAS_UART_V1
+	bool "SOC QCC730 HAS UART V1, only GPIO_11/12"
+	default n
+
+config SOC_QCC730_HAS_UART_V2
+	bool "SOC QCC730 HAS UART V2, has 4 options as BOARD_QCC730_UART_GPIO_OPTION"
+	default n
+
+config SOC_QCC730_HAS_XPA_AUTO_CTRL
+	bool "SOC QCC730 HAS XPA AUTO CTRL"
+	default n
+
+config SOC_QCC730_HAS_BT_COEX
+	bool "SOC QCC730 HAS BT COEX"
+	default n
+
+config SOC_QCC730_HAS_I2C
+	bool "SOC QCC730 HAS I2C"
+	default n
+
+config SOC_QCC730_HAS_QSPI_V1
+	bool "SOC QCC730 HAS QSPI V1, only support 2 BITS"
+	default n
+
+config SOC_QCC730_HAS_QSPI_V2
+	bool "SOC QCC730 HAS QSPI V2, support 2/4 BITS"
+	default n
+
+config SOC_QCC730_HAS_SPI_SLAVE
+	bool "SOC QCC730 HAS SPI SLAVE"
+	default n
+
+#################################################################
+#boards capable configuration
+
+config BOARD_QCC730_I2C_ENABLE
+	bool "BOARD QCC730 I2C ENABLE"
+	depends on SOC_QCC730_HAS_I2C
+	default n
+
+config BOARD_QCC730_BT_COEX_ENABLE
+	bool "BOARD QCC730 BT COEX ENABLE"
+	depends on SOC_QCC730_HAS_BT_COEX
+	default n
+
+config BOARD_QCC730_BT_COEX_MODE
+	int "BOARD QCC730 BT COEX MODE"
+	range 0 3
+	depends on BOARD_QCC730_BT_COEX_ENABLE
+	default 0
+
+config BOARD_QCC730_QSPI_ENABLE
+	bool "BOARD QCC730 QSPI ENABLE"
+	depends on SOC_QCC730_HAS_QSPI_V1 || SOC_QCC730_HAS_QSPI_V2
+	default n
+
+config BOARD_QCC730_QSPI_V1_OPTION
+	int "BOARD QCC730 QSPI V1 option. 0: GPIO_4/5/6/7; 1: GPIO_4/11/12/14"
+	depends on BOARD_QCC730_QSPI_ENABLE && SOC_QCC730_HAS_QSPI_V1
+	range 0 1
+	default 0
+
+config BOARD_QCC730_QSPI_V2_QUAD_MODE
+	int "BOARD QCC730 QSPI V2 QUAD mode. 0: only QSPI 2 bits on GPIO_4/5/6/7; 1: QSPI 4 bits on GPIO_4/5/6/7/11/12"
+	depends on BOARD_QCC730_QSPI_ENABLE && SOC_QCC730_HAS_QSPI_V2
+	range 0 1
+	default 1
+
+config BOARD_QCC730_UART_ENABLE
+	bool "BOARD QCC730 uart enable"
+	depends on SOC_QCC730_HAS_UART_V1 || SOC_QCC730_HAS_UART_V2
+	default n
+
+config BOARD_QCC730_UART_GPIO_OPTION
+	int "BOARD QCC730 UART GPIO options. 0: GPIO_11/12; 1: GPIO_13/14; 2: GPIO_9/10; 3: GPIO_1/3"
+	range 0 3
+	depends on BOARD_QCC730_UART_ENABLE && SOC_QCC730_HAS_UART_V2
+	default 0
+
+config BOARD_QCC730_SPI_SLAVE_ENABLE
+	bool "BOARD QCC730 SPI slave enable"
+	depends on SOC_QCC730_HAS_SPI_SLAVE
+	default n
+
+config BOARD_QCC730_SPI_SLAVE_OPTION
+	int "BOARD QCC730 SPI SLAVE options. 0: DWSPI; 1: QCSPI"
+	range 0 1
+	depends on BOARD_QCC730_SPI_SLAVE_ENABLE
+	default 0

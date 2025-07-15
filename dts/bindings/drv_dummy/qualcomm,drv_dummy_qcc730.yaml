@@ -1,0 +1,11 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0;
+description: qualcomm sample driver
+
+compatible: "qualcomm,drv_dummy_qcc730"
+
+include: [base.yaml]
+
+properties:
+    reg:
+      required: true

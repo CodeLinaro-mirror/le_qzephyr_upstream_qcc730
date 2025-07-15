@@ -1,0 +1,12 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0;
+config DRV_DUMMY_QCC730
+	bool "Qualcomm qcc730 dummy driver"
+	depends on DRV_DUMMY
+	depends on SOC_QCC730
+	help
+	  Enable the dummy driver implementation
+
+if DRV_DUMMY_QCC730
+
+endif # DRV_DUMMY_QCC730
