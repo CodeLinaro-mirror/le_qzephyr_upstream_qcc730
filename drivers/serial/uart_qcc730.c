@@ -28,6 +28,7 @@
 #include <zephyr/irq.h>
 
 #include <qlib_early_printk.h>
+#include <qlib_util.h>
 
 void nt_myputchar(uint32_t ch);
 void early_printk(const char *fmt, ...);
@@ -351,6 +352,15 @@ static int cmd_qcc730_test2(const struct shell *ctx, size_t argc, char **argv)
 	return 0;
 }
 
+#if 0
+#define NT_LOG_LVL_INFO          0
+/*! @warning condition priority. */
+#define NT_LOG_LVL_WARN          1
+/*! @error condition priority. */
+#define NT_LOG_LVL_ERR           2
+/*! @critical condition priority. */
+#define NT_LOG_LVL_CRIT          3
+#endif
 uint8_t min_loglvl = 1; //warn
 
 static int cmd_qcc730_set_logger_lvl(const struct shell *ctx, size_t argc, char **argv)
@@ -373,6 +383,8 @@ static int cmd_qcc730_info(const struct shell *ctx, size_t argc, char **argv)
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 	shell_print(ctx, "min_loglvl=%d for nt_logger", min_loglvl);
+	shell_print(ctx, "g32_dead_loop_1=%d for dead_loop_cond1(), generally used before sleep", g32_dead_loop_1);
+	shell_print(ctx, "g32_dead_loop_2=%d for dead_loop_cond2(), generally used after sleep", g32_dead_loop_2);
     return 0;
 }
 
@@ -382,6 +394,45 @@ static int cmd_qcc730_reboot(const struct shell *ctx, size_t argc, char **argv)
     ARG_UNUSED(argv);
     shell_print(ctx, "Reboot...");
     nt_system_sw_reset();
+    return 0;
+}
+
+static int cmd_qcc730_setdbg(const struct shell *ctx, size_t argc, char **argv)
+{
+    if (argc!=3) {
+        shell_error(ctx, "parameters count not right (cnt %d), should be 3", argc);
+        return -EINVAL;
+    }
+
+    int err = 0;
+    uint32_t dbg_type = shell_strtoul(argv[1], 10, &err);
+	if (err) {
+		shell_error(ctx, "Unable to parse input dbg_type (err %d)", err);
+		return err;
+	}
+
+    uint32_t dbg_value = shell_strtoul(argv[2], 10, &err);
+	if (err) {
+		shell_error(ctx, "Unable to parse input dbg_value (err %d)", err);
+		return err;
+	}
+
+    shell_print(ctx, "dbg_type=%d", dbg_type);
+    shell_print(ctx, "dbg_value=%d", dbg_value);
+
+    switch (dbg_type) {
+        case 1:
+            shell_print(ctx, "set g32_dead_loop_1 %d=>%d", g32_dead_loop_1, dbg_value);
+            g32_dead_loop_1 = dbg_value;
+            break;
+        case 2:
+            shell_print(ctx, "set g32_dead_loop_2 %d=>%d", g32_dead_loop_2, dbg_value);
+            g32_dead_loop_2 = dbg_value;
+            break;
+        default:
+            shell_warn(ctx, "dbg_type=%d not supported yet", dbg_type);
+    }
+
     return 0;
 }
 
@@ -406,6 +457,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_uart_cmds,
                           "reboot\n"
                           "Usage: qcc730 reboot\n",
                           cmd_qcc730_reboot, 1, 0),
+                    SHELL_CMD_ARG(setdbg, NULL,
+                          "setdbg\n"
+                          "Usage: qcc730 setdbg [dbg_type:uint32_t] [dbg_value: uint32_t]\n",
+                          cmd_qcc730_setdbg, 3, 0),
 			       SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(qcc730, &sub_uart_cmds, "qcc730 test commands", NULL);

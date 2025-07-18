@@ -26,6 +26,7 @@ config SOC_QCC730
 	select SOC_QCC730_HAS_I2C
 	select SOC_QCC730_HAS_QSPI_V2
 	select SOC_QCC730_HAS_SPI_SLAVE
+	select QPOWER
 
 config SOC
 	default "qcc730" if SOC_QCC730

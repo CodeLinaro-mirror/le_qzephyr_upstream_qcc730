@@ -12,6 +12,7 @@
 #include <zephyr/irq.h>
 #include <qlib_early_printk.h>
 #include <qlib_util.h>
+#include <qpower.h>
 
 #include <zephyr/linker/sections.h>
 #include <kernel_internal.h>
@@ -40,8 +41,6 @@ void soc_prep_hook(void)
 //Here for zephyr.bin, bss & data are initialzed
 static int qcc730_init_early(void)
 {
-    dead_loop_cond1();
-
     // Disable the system tick
     //g_SysTick->CTRL = 0;
     // Clear COUNTFLAG
@@ -58,7 +57,6 @@ static int qcc730_init_early(void)
 
 void soc_early_init_hook(void)
 {
-    dead_loop_cond2();
     early_printk("%s\r\n", __FUNCTION__);
 }
 
@@ -81,8 +79,7 @@ static int qcc730_init_pre_kernel_1(void)
 static int qcc730_init_pre_kernel_2(void)
 {
     LOG_ERR("%s", __FUNCTION__);
-    void pmu_init (void);
-    pmu_init();
+    qapi_pmu_init();
     return 0;
 }
 

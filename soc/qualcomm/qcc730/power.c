@@ -16,19 +16,19 @@ void pm_state_set(enum pm_state state, uint8_t substate_id)
     switch (state) {
     case PM_STATE_SOFT_OFF:
         LOG_INF("enter SOFT_OFF, will go deepsleep!");
-        deepsleep();
+        qapi_enter_softoff();
         break;
     case PM_STATE_SUSPEND_TO_RAM:
         LOG_INF("enter SUSPEND_TO_RAM, will go s2ram!");
-        mcusleep();
+        qapi_enter_suspend2ram();
         break;
     }
-
 }
 
 void pm_state_exit_post_ops(enum pm_state state, uint8_t substate_id)
 {
     if (state==PM_STATE_SUSPEND_TO_RAM) {
-        mcusleep_exit();
+        qapi_suspend2ram_exit_post_ops();
     }
 }
+
