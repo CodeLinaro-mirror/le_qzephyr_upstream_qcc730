@@ -11,10 +11,6 @@
 #include <soc.h>
 #include <zephyr/drivers/drv_dummy/drv_dummy.h>
 
-static int drv_dummy_qcc730_init(void)
-{
-	return 0;
-}
+static int drv_dummy_qcc730_init(void) { return 0; }
 
 SYS_INIT(drv_dummy_qcc730_init, PRE_KERNEL_1, 0);
-

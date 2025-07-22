@@ -23,14 +23,14 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 
 #include <qwifi_api.h>
 
-#define SCAN_MODE_BLOCKING                        1
-#define SCAN_MODE_UNBLOCKING                      2
-#define NT_DEV_STA_ID           1
+#define SCAN_MODE_BLOCKING 1
+#define SCAN_MODE_UNBLOCKING 2
+#define NT_DEV_STA_ID 1
 
 struct qwifi_bss_status_t {
     uint8_t bssid[NET_ETH_ADDR_LEN];
     char ssid[WIFI_SSID_MAX_LEN + 1];
-    uint8_t  ssid_length;
+    uint8_t ssid_length;
     char passphrase[WIFI_PSK_MAX_LEN + 1];
     uint32_t wpa_mode;
     uint32_t u_cipher;
@@ -44,8 +44,8 @@ struct qwifi_bss_status_t {
 
 struct qwifi_drv_dev_data_t {
     int8_t qwifi_dev_id;
-    uint8_t         wlan_enabled;
-    uint8_t          active_device;
+    uint8_t wlan_enabled;
+    uint8_t active_device;
     qapi_WLAN_Crypt_Type_e e_cipher;
     uint8_t mac_addr[NET_ETH_ADDR_LEN];
     struct wifi_scan_params cfg_scan;
@@ -58,70 +58,72 @@ struct qwifi_drv_dev_data_t {
 };
 
 struct qwifi_drv_dev_cfg_t {
-    int32_t         scan_mode;
+    int32_t scan_mode;
     int reserved;
 };
 
-#define PRINT_LOG_FUNC_LINE             LOG_DBG("%s %d", __FUNCTION__, __LINE__)
-#define PRINT_LOG_FUNC_LINE_ENTRY       LOG_DBG("%s %d entry", __FUNCTION__, __LINE__)
-#define PRINT_LOG_FUNC_LINE_EXIT        LOG_DBG("%s %d exit", __FUNCTION__, __LINE__)
+#define PRINT_LOG_FUNC_LINE LOG_DBG("%s %d", __FUNCTION__, __LINE__)
+#define PRINT_LOG_FUNC_LINE_ENTRY LOG_DBG("%s %d entry", __FUNCTION__, __LINE__)
+#define PRINT_LOG_FUNC_LINE_EXIT LOG_DBG("%s %d exit", __FUNCTION__, __LINE__)
 
 static struct qwifi_drv_dev_data_t g_wifi_dev_data;
 static struct qwifi_drv_dev_cfg_t g_wifi_dev_cfg = {
     .scan_mode = SCAN_MODE_UNBLOCKING,
 };
 
-static void qwifi_drv_event_handler(uint8_t deviceId, uint32_t cbId, void *pApplicationContext, void *payload, uint32_t payload_Length)
+static void qwifi_drv_event_handler(uint8_t deviceId, uint32_t cbId, void *pApplicationContext, void *payload,
+                                    uint32_t payload_Length)
 {
     const struct device *dev = pApplicationContext;
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     const struct qwifi_drv_dev_cfg_t *dev_cfg = dev->config;
 
     LOG_DBG("%s deviceId=%d cbId=%d payload_Length=%d", __FUNCTION__, deviceId, cbId, payload_Length);
-    switch(cbId) {
+    switch (cbId) {
     case QAPI_WLAN_SCAN_COMPLETE_CB_E: {
         if (!payload || !payload_Length) {
             LOG_WRN("QAPI_WLAN_SCAN_COMPLETE_CB_E event error\n");
             break;
         }
 
-        qapi_WLAN_Scan_Comp_Evt_t *p_scan_compl_evt = (qapi_WLAN_Scan_Comp_Evt_t*)payload;
+        qapi_WLAN_Scan_Comp_Evt_t *p_scan_compl_evt = (qapi_WLAN_Scan_Comp_Evt_t *)payload;
         uint16_t aps = p_scan_compl_evt->num_bss_cur;
         LOG_INF("Received Scan complete event, found bss count:%d", aps);
         LOG_DBG("scan_mode=%d", dev_cfg->scan_mode);
         {
-            struct wifi_scan_result res = { 0 };
+            struct wifi_scan_result res = {0};
             qapi_WLAN_BSS_Scan_Info_t *bss;
             LOG_DBG("unblocking mode\n");
             for (int k = 0; k < aps; k++) {
                 memset(&res, 0, sizeof(struct wifi_scan_result));
                 bss = &p_scan_compl_evt->scan_bss_info[k];
                 int ssid_len = strnlen(bss->ssid, WIFI_SSID_MAX_LEN);
-                
+
                 res.ssid_length = ssid_len;
                 strlcpy(res.ssid, bss->ssid, ssid_len);
                 res.rssi = bss->rssi;
                 res.channel = bss->channel;
-                
+
                 memcpy(res.mac, bss->bssid, WIFI_MAC_ADDR_LEN);
                 res.mac_length = WIFI_MAC_ADDR_LEN;
-                if(bss->security_Enabled){                  
-                    if ((bss->rsn_Cipher & __QAPI_WLAN_CIPHER_TYPE_WEP) || (bss->wpa_Cipher & __QAPI_WLAN_CIPHER_TYPE_WEP)) {
+                if (bss->security_Enabled) {
+                    if ((bss->rsn_Cipher & __QAPI_WLAN_CIPHER_TYPE_WEP) ||
+                        (bss->wpa_Cipher & __QAPI_WLAN_CIPHER_TYPE_WEP)) {
                         res.security = WIFI_SECURITY_TYPE_WEP;
-                    } else if(bss->rsn_Auth & __QAPI_WLAN_SECURITY_AUTH_PSK) {
+                    } else if (bss->rsn_Auth & __QAPI_WLAN_SECURITY_AUTH_PSK) {
                         res.security = WIFI_SECURITY_TYPE_PSK;
-                    } else if(bss->rsn_Auth & __QAPI_WLAN_SECURITY_AUTH_SAE) {
+                    } else if (bss->rsn_Auth & __QAPI_WLAN_SECURITY_AUTH_SAE) {
                         res.security = WIFI_SECURITY_TYPE_SAE;
-                    } else if(bss->wpa_Auth & __QAPI_WLAN_SECURITY_AUTH_PSK) {
+                    } else if (bss->wpa_Auth & __QAPI_WLAN_SECURITY_AUTH_PSK) {
                         res.security = WIFI_SECURITY_TYPE_WPA_PSK;
                     } else {
-                        //LOG_WARN("Not supported yet");
-                        res.security = WIFI_SECURITY_TYPE_UNKNOWN;                  
+                        // LOG_WARN("Not supported yet");
+                        res.security = WIFI_SECURITY_TYPE_UNKNOWN;
                     }
                 } else {
                     res.security = WIFI_SECURITY_TYPE_NONE;
                 }
-    
+
                 if (dev_data->scan_cb) {
 #if 0
                     if (ssid_len) {
@@ -144,36 +146,36 @@ static void qwifi_drv_event_handler(uint8_t deviceId, uint32_t cbId, void *pAppl
     }
     case QAPI_WLAN_CONNECT_CB_E: {
         int connect_status = WIFI_STATUS_CONN_SUCCESS;
-        qapi_WLAN_Join_Comp_Evt_t *cxnInfo  = (qapi_WLAN_Join_Comp_Evt_t *)(payload);
-        uint8_t * mac = cxnInfo->bssid;
+        qapi_WLAN_Join_Comp_Evt_t *cxnInfo = (qapi_WLAN_Join_Comp_Evt_t *)(payload);
+        uint8_t *mac = cxnInfo->bssid;
         struct qwifi_bss_status_t *bss = &dev_data->bss_status;
-        if(cxnInfo->ssid_Length) {
+        if (cxnInfo->ssid_Length) {
             strlcpy(bss->ssid, cxnInfo->ssid, WIFI_SSID_MAX_LEN);
             bss->ssid_length = cxnInfo->ssid_Length;
             memcpy(bss->bssid, cxnInfo->bssid, NET_ETH_ADDR_LEN);
         }
         bss->central_freq_MHz = cxnInfo->channel_frequency;
         bss->channel = cxnInfo->channel;
-        if(cxnInfo->evt_hdr.status == QAPI_OK) {
+        if (cxnInfo->evt_hdr.status == QAPI_OK) {
             enum wifi_security_type security = dev_data->cfg_connect.security;
-            if(cxnInfo->bss_Connection_Status) {
+            if (cxnInfo->bss_Connection_Status) {
                 bss->connected = true;
             }
-            LOG_INF("devid - %d %d CONNECTED MAC addr %02x:%02x:%02x:%02x:%02x:%02x",
-                dev_data->active_device, cxnInfo->bss_Connection_Status, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-            if ((security==WIFI_SECURITY_TYPE_PSK) || (security==WIFI_SECURITY_TYPE_WPA_PSK)) {
+            LOG_INF("devid - %d %d CONNECTED MAC addr %02x:%02x:%02x:%02x:%02x:%02x", dev_data->active_device,
+                    cxnInfo->bss_Connection_Status, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+            if ((security == WIFI_SECURITY_TYPE_PSK) || (security == WIFI_SECURITY_TYPE_WPA_PSK)) {
                 LOG_INF("4 way handshake success for device=%d", dev_data->active_device);
-            }   
+            }
         } else {
             connect_status = WIFI_STATUS_CONN_FAIL;
             LOG_INF("WiFi disconnect reason code is %d", cxnInfo->reason_code);
-            if(cxnInfo->bss_Connection_Status) {
+            if (cxnInfo->bss_Connection_Status) {
                 bss->connected = false;
-                LOG_INF("devId %d Disconnected MAC addr %02x:%02x:%02x:%02x:%02x:%02x",
-                    dev_data->active_device, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+                LOG_INF("devId %d Disconnected MAC addr %02x:%02x:%02x:%02x:%02x:%02x", dev_data->active_device, mac[0],
+                        mac[1], mac[2], mac[3], mac[4], mac[5]);
             } else {
-                LOG_INF("REF_STA Disconnected MAC addr %02x:%02x:%02x:%02x:%02x:%02x devId %d",
-                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], dev_data->active_device);
+                LOG_INF("REF_STA Disconnected MAC addr %02x:%02x:%02x:%02x:%02x:%02x devId %d", mac[0], mac[1], mac[2],
+                        mac[3], mac[4], mac[5], dev_data->active_device);
             }
         }
         LOG_INF("channel_frequency=%d", cxnInfo->channel_frequency);
@@ -186,7 +188,7 @@ static void qwifi_drv_event_handler(uint8_t deviceId, uint32_t cbId, void *pAppl
     case QAPI_WLAN_DISCONNECT_CB_E: {
         struct qwifi_bss_status_t *bss = &dev_data->bss_status;
         bss->connected = false;
-        if(dev_data->bss_status.ssid_length) {
+        if (dev_data->bss_status.ssid_length) {
             LOG_INF("devId %d disconnected from ssid = %s", dev_data->active_device, dev_data->bss_status.ssid);
         }
         wifi_mgmt_raise_disconnect_result_event(dev_data->iface, WIFI_REASON_DISCONN_SUCCESS);
@@ -201,19 +203,18 @@ static void qwifi_drv_event_handler(uint8_t deviceId, uint32_t cbId, void *pAppl
 static int qwifi_drv_disconnect(const struct device *dev)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
-    uint8_t          deviceId = dev_data->active_device;
+    uint8_t deviceId = dev_data->active_device;
 
     qapi_WLAN_Disconnect(deviceId);
 
     return 0;
 }
 
-static int qwifi_drv_connect(const struct device *dev,
-                struct wifi_connect_req_params *params)
+static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_params *params)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
 
-    uint8_t          deviceId = dev_data->active_device;
+    uint8_t deviceId = dev_data->active_device;
     qapi_WLAN_Auth_Mode_e e_wpa_ver = QAPI_WLAN_AUTH_NONE_E;
     const uint8_t *psk = NULL;
     uint8_t psk_length = 0;
@@ -239,27 +240,23 @@ static int qwifi_drv_connect(const struct device *dev,
         return -EIO;
     }
 
-
     if (params->ssid_length) {
-        qapi_WLAN_Set_Param (deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
-            __QAPI_WLAN_PARAM_GROUP_WIRELESS_SSID,
-            (void *)params->ssid, params->ssid_length, false);
+        qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_SSID,
+                            (void *)params->ssid, params->ssid_length, false);
         LOG_DBG("ssid=%s", params->ssid);
     }
 
     if (!params->bssid[0]) {
-        qapi_WLAN_Set_Param (0, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
-            __QAPI_WLAN_PARAM_GROUP_WIRELESS_BSSID,
-            (void *)params->bssid, __QAPI_WLAN_MAC_LEN, false);
+        qapi_WLAN_Set_Param(0, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_BSSID,
+                            (void *)params->bssid, __QAPI_WLAN_MAC_LEN, false);
     }
 
     if (params->channel != WIFI_CHANNEL_ANY) {
         uint32_t channel[2] = {0, 0};
         channel[0] = params->channel;
         channel[1] = params->band == WIFI_FREQ_BAND_6_GHZ;
-        qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
-            __QAPI_WLAN_PARAM_GROUP_WIRELESS_CHANNEL,
-            (void *) &channel, sizeof(channel), false);
+        qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_CHANNEL,
+                            (void *)&channel, sizeof(channel), false);
     }
 
     if (e_wpa_ver) {
@@ -270,15 +267,14 @@ static int qwifi_drv_connect(const struct device *dev,
             psk_length = params->sae_password_length;
         }
 
-        qapi_WLAN_Set_Param (deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
-            __QAPI_WLAN_PARAM_GROUP_SECURITY_AUTH_MODE,
-            (void *) &e_wpa_ver, sizeof(qapi_WLAN_Auth_Mode_e), false);
         qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
-            __QAPI_WLAN_PARAM_GROUP_SECURITY_ENCRYPTION_TYPE,
-            (void *) &dev_data->e_cipher, sizeof(qapi_WLAN_Crypt_Type_e), false);
-        qapi_WLAN_Set_Param (deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
-            __QAPI_WLAN_PARAM_GROUP_SECURITY_PASSPHRASE,
-            (void *)psk, psk_length, false);            
+                            __QAPI_WLAN_PARAM_GROUP_SECURITY_AUTH_MODE, (void *)&e_wpa_ver,
+                            sizeof(qapi_WLAN_Auth_Mode_e), false);
+        qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
+                            __QAPI_WLAN_PARAM_GROUP_SECURITY_ENCRYPTION_TYPE, (void *)&dev_data->e_cipher,
+                            sizeof(qapi_WLAN_Crypt_Type_e), false);
+        qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
+                            __QAPI_WLAN_PARAM_GROUP_SECURITY_PASSPHRASE, (void *)psk, psk_length, false);
     }
 
     qapi_WLAN_Commit(deviceId);
@@ -286,8 +282,7 @@ static int qwifi_drv_connect(const struct device *dev,
     return 0;
 }
 
-static int qwifi_drv_scan(const struct device *dev, struct wifi_scan_params *params,
-               scan_result_cb_t cb)
+static int qwifi_drv_scan(const struct device *dev, struct wifi_scan_params *params, scan_result_cb_t cb)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
 
@@ -295,16 +290,15 @@ static int qwifi_drv_scan(const struct device *dev, struct wifi_scan_params *par
     qapi_WLAN_DEV_Mode_e opmode;
     uint32_t length = sizeof(qapi_WLAN_DEV_Mode_e);
     qapi_Status_t ret = QAPI_OK;
-    uint8_t          deviceId = dev_data->active_device;
+    uint8_t deviceId = dev_data->active_device;
 
     LOG_DBG("%s", __FUNCTION__);
     dev_data->scan_cb = cb;
     memcpy(&dev_data->cfg_scan, params, sizeof(struct wifi_scan_params));
 
-    qapi_WLAN_Get_Param (deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
-        __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
-        &opmode, &length);
-    if(opmode != DEV_MODE_STATION_E) {
+    qapi_WLAN_Get_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
+                        &opmode, &length);
+    if (opmode != DEV_MODE_STATION_E) {
         LOG_WRN("%s current operation mode %d do not support scan, need to set station mode", __FUNCTION__, opmode);
         return -EINVAL;
     }
@@ -346,7 +340,7 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
 static int qwifi_drv_send(const struct device *dev, struct net_pkt *pkt)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
-    uint8_t          deviceId = dev_data->active_device;
+    uint8_t deviceId = dev_data->active_device;
     const int pkt_len = net_pkt_get_len(pkt);
 
     net_pkt_read(pkt, dev_data->frame_buf, pkt_len);
@@ -355,7 +349,7 @@ static int qwifi_drv_send(const struct device *dev, struct net_pkt *pkt)
     return 0;
 }
 
-qapi_Status_t qwifi_drv_eth_rx_cb (void *drv_intf_data, void *bufp, uint16_t len, void *hal_data)
+qapi_Status_t qwifi_drv_eth_rx_cb(void *drv_intf_data, void *bufp, uint16_t len, void *hal_data)
 {
     struct net_pkt *pkt;
     struct net_if *iface = (struct net_if *)drv_intf_data;
@@ -384,9 +378,8 @@ static void qwifi_drv_intf_init(struct net_if *iface)
     PRINT_LOG_FUNC_LINE_ENTRY;
     dev_data->wlan_enabled = qapi_WLAN_Enable(true);
     PRINT_LOG_FUNC_LINE;
-    qapi_WLAN_Set_Param(0, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
-        __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
-        &devMode, sizeof(devMode), false);
+    qapi_WLAN_Set_Param(0, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE, &devMode,
+                        sizeof(devMode), false);
     PRINT_LOG_FUNC_LINE;
     dev_data->active_device = NT_DEV_STA_ID;
 
@@ -394,9 +387,8 @@ static void qwifi_drv_intf_init(struct net_if *iface)
     dev_data->iface = iface;
 
     uint32_t mac_len = sizeof(dev_data->mac_addr);
-    qapi_WLAN_Get_Param(0, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
-        __QAPI_WLAN_PARAM_GROUP_WIRELESS_MAC_ADDRESS,
-        dev_data->mac_addr, &mac_len);
+    qapi_WLAN_Get_Param(0, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_MAC_ADDRESS,
+                        dev_data->mac_addr, &mac_len);
 
     qwifi_hal_reg_rxcb(iface, qwifi_drv_eth_rx_cb);
     PRINT_LOG_FUNC_LINE;
@@ -425,19 +417,18 @@ static int qwifi_drv_dev_init(const struct device *dev)
 }
 
 static const struct wifi_mgmt_ops qwifi_drv_mgmt = {
-    .scan          = qwifi_drv_scan,
-    .connect       = qwifi_drv_connect,
-    .disconnect    = qwifi_drv_disconnect,
-    .iface_status      = qwifi_drv_intf_status,
+    .scan = qwifi_drv_scan,
+    .connect = qwifi_drv_connect,
+    .disconnect = qwifi_drv_disconnect,
+    .iface_status = qwifi_drv_intf_status,
 };
 
 static const struct net_wifi_mgmt_offload qwifi_drv_api = {
-    .wifi_iface.iface_api.init    = qwifi_drv_intf_init,
+    .wifi_iface.iface_api.init = qwifi_drv_intf_init,
     .wifi_iface.send = qwifi_drv_send,
     .wifi_mgmt_api = &qwifi_drv_mgmt,
 };
 
-NET_DEVICE_INIT_INSTANCE(qwifi_sta, "qwifi_sta", 0, qwifi_drv_dev_init, NULL,
-        &g_wifi_dev_data, &g_wifi_dev_cfg, CONFIG_WIFI_INIT_PRIORITY, &qwifi_drv_api, ETHERNET_L2,
-        NET_L2_GET_CTX_TYPE(ETHERNET_L2), NET_ETH_MTU);
-
+NET_DEVICE_INIT_INSTANCE(qwifi_sta, "qwifi_sta", 0, qwifi_drv_dev_init, NULL, &g_wifi_dev_data, &g_wifi_dev_cfg,
+                         CONFIG_WIFI_INIT_PRIORITY, &qwifi_drv_api, ETHERNET_L2, NET_L2_GET_CTX_TYPE(ETHERNET_L2),
+                         NET_ETH_MTU);

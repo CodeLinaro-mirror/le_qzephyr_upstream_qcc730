@@ -31,34 +31,32 @@ void soc_reset_hook(void)
     bootup_info.bootup_slp_us = nt_socpm_get_slp_tmr_us();
 }
 
-//Here interrupt is not enabled yet
+// Here interrupt is not enabled yet
 void soc_prep_hook(void)
 {
-    //For zephyr.bin, no loader to initialize bss&data, then bss & data are not initialzed yet
-    //dead_loop();
+    // For zephyr.bin, no loader to initialize bss&data, then bss & data are not initialzed yet
+    // dead_loop();
 }
 
-//Here for zephyr.bin, bss & data are initialzed
+// Here for zephyr.bin, bss & data are initialzed
 static int qcc730_init_early(void)
 {
     // Disable the system tick
-    //g_SysTick->CTRL = 0;
+    // g_SysTick->CTRL = 0;
     // Clear COUNTFLAG
-    //g_SysTick->VAL = 0;
+    // g_SysTick->VAL = 0;
 
     early_printk_init();
     early_printk("%s - %s: %s Zephyr River try\r\n", __DATE__, __TIME__, __FUNCTION__);
-    early_printk("g_SysTick->CTRL=0x%x g_NVIC->ISER[0]=0x%x g_NVIC->ISER[1]=0x%x g_SCB->VTOR=0x%x\r\n", g_SysTick->CTRL, g_NVIC->ISER[0], g_NVIC->ISER[1], g_SCB->VTOR);
+    early_printk("g_SysTick->CTRL=0x%x g_NVIC->ISER[0]=0x%x g_NVIC->ISER[1]=0x%x g_SCB->VTOR=0x%x\r\n", g_SysTick->CTRL,
+                 g_NVIC->ISER[0], g_NVIC->ISER[1], g_SCB->VTOR);
     early_printk("bootup_slp_us=%llu us\r\n", bootup_info.bootup_slp_us);
-    //uart_echo(1);
-    //uart_echo(0);
+    // uart_echo(1);
+    // uart_echo(0);
     return 0;
 }
 
-void soc_early_init_hook(void)
-{
-    early_printk("%s\r\n", __FUNCTION__);
-}
+void soc_early_init_hook(void) { early_printk("%s\r\n", __FUNCTION__); }
 
 #include <zephyr/logging/log.h>
 
@@ -90,9 +88,8 @@ static int qcc730_init_post_kernel(void)
 }
 
 SYS_INIT(qcc730_init_early, EARLY, 0);
-//Here interrupt is enabled already
-//uart_console_init & __printk_hook_install are PRE_KERNEL_1
+// Here interrupt is enabled already
+// uart_console_init & __printk_hook_install are PRE_KERNEL_1
 SYS_INIT(qcc730_init_pre_kernel_1, PRE_KERNEL_1, 0);
 SYS_INIT(qcc730_init_pre_kernel_2, PRE_KERNEL_2, 0);
 SYS_INIT(qcc730_init_post_kernel, POST_KERNEL, 0);
-

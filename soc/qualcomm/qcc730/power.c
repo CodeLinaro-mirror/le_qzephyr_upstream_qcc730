@@ -27,8 +27,7 @@ void pm_state_set(enum pm_state state, uint8_t substate_id)
 
 void pm_state_exit_post_ops(enum pm_state state, uint8_t substate_id)
 {
-    if (state==PM_STATE_SUSPEND_TO_RAM) {
+    if (state == PM_STATE_SUSPEND_TO_RAM) {
         qapi_suspend2ram_exit_post_ops();
     }
 }
-
