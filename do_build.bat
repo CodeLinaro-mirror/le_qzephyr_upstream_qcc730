@@ -1,5 +1,5 @@
-# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
-# SPDX-License-Identifier: Apache-2.0;
+REM Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+REM SPDX-License-Identifier: Apache-2.0;
 @echo off
 
 set BUILD_MSG_LEVEL=-vvv
@@ -33,6 +33,7 @@ echo "install images"
 set zephyr_image_dir=%BUILD_DIR%\zephyr
 if not exist %zephyr_image_dir%\zephyr.elf (
 	echo "no elf generated"
+	pause
 	exit
 )
 set tools_path=..\modules\hal\qualcomm\tools
