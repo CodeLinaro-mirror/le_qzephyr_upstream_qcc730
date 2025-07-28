@@ -16,3 +16,7 @@ config WIFI_QCOM_AUTO_DHCPV4
 	depends on NET_DHCPV4
 	help
 	  WiFi driver will automatically initiate DHCPV4 negotiation when connected.
+
+config WIFI_SHELL_MAX_AP_STA
+	int "Maximum number of APs and STAs that can be managed in Wi-Fi shell"
+	default 4
