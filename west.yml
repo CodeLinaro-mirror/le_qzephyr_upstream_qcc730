@@ -2,39 +2,56 @@
 # SPDX-License-Identifier: Apache-2.0;
 manifest:
   remotes:
+    - name: upstream
+      url-base: ssh://review-android.quicinc.com:29418/qzephyr/upstream
+    - name: qoss
+      url-base: ssh://review-android.quicinc.com:29418/qzephyr/qoss
+    - name: prop
+      url-base: ssh://review-android.quicinc.com:29418/qzephyr/prop
     - name: zephyrproject-rtos
-      url-base: https://github.qualcomm.com/CoreKernel
-    - name: QCC730-ZE-1-0
-      url-base: https://github.qualcomm.com/QCC730-ZE-1-0
+      url-base: ssh://review-android.quicinc.com:29418/qzephyr/zephyrproject-rtos
   defaults:
-    remote: QCC730-ZE-1-0
+    remote: zephyrproject-rtos
     revision: main
   projects:
     - name: zephyr
       remote: zephyrproject-rtos
-      revision: v4.1.0
+      revision: kernel.qzephyr.1.0
       import:
         # By using name-allowlist we can clone only the modules that are
         # strictly needed by the application.
-        name-allowlist:
-          - cmsis      # required by the ARM port
-          - littlefs   # for qspi/norflash
-          - hostap     # for wifi
-          - segger     # for Jlink debug and cli
-          - zcbor      # for c++ programming
-          - mbedtls    # for ssl and WPA 4 way handshaking
+        name-blocklist:
+          - net-tools # Network tools for testing with Qemu
+    - name: cmsis
+      remote: zephyrproject-rtos
+      revision: cmsis.qzephyr.1.0
+      path: modules/hal/cmsis
+    - name: mbedtls
+      remote: zephyrproject-rtos
+      revision: mbedtls.qzephyr.1.0
+      path: modules/crypto/mbedtls
     - name: qapp
-      path: qapp
+      remote: qoss
+      revision: qapp.qzephyr.1.0
     - name: qhal
+      remote: upstream
+      revision: hal.qhal.1.0
       path: modules/hal/qualcomm
-    - name: libwifiqcc730
-      path: prop/libwifiqcc730
     - name: libpowerqcc730
+      remote: prop
+      revision: libpowerqcc730.qhal.1.0
       path: prop/libpowerqcc730
+    - name: libwifiqcc730
+      remote: prop
+      revision: libwifiqcc730.qhal.1.0
+      path: prop/libwifiqcc730
     - name: libsensorqcc730
+      remote: prop
+      revision: libsensorqcc730.qhal.1.0
       path: prop/libsensorqcc730
     - name: libcryptoqcc730
+      remote: prop
+      revision: libcryptoqcc730.qhal.1.0
       path: prop/libcryptoqcc730
   self:
-    path: qcc730
     west-commands: zephyr/scripts/west-commands.yml
