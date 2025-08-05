@@ -12,6 +12,7 @@
 #include <zephyr/irq.h>
 #include <qlib_early_printk.h>
 #include <qlib_util.h>
+#include <zephyr/irq.h>
 #include <qpower.h>
 
 #include <zephyr/linker/sections.h>
@@ -20,6 +21,10 @@
 typedef struct {
     uint64_t bootup_slp_us;
 } bootup_info_t;
+
+extern SCB_Type *g_SCB;
+extern NVIC_Type *g_NVIC;
+extern SysTick_Type *g_SysTick;
 
 static __noinit bootup_info_t bootup_info;
 
