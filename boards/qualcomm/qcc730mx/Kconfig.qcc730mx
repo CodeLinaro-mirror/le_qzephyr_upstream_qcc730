@@ -1,0 +1,4 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0;
+config BOARD_QCC730MX
+	select SOC_QCC730

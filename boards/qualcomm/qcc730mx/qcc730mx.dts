@@ -1,0 +1,33 @@
+/*
+ * qcc730mx
+ *
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+
+#include <qualcomm/qcc730.dtsi>
+
+/ {
+	model = "QCC730MX";
+	compatible = "qualcomm,qcc730mx";
+
+	chosen {
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+	};
+};
+
+&uart0 {
+	/* pinctrl-0 = <&usart1_tx_pa9 &usart1_rx_pa10>; */
+	/* pinctrl-names = "default"; */
+	current-speed = <115200>;
+	status = "okay";
+};
+
+&drv_dummy {
+	status = "okay";
+};
