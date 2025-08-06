@@ -19,6 +19,7 @@
 		zephyr,shell-uart = &uart0;
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash0;
+		zephyr,cortex-m-idle-timer = &aon_timer0;
 	};
 };
 
@@ -31,3 +32,8 @@
 	stop-bits = "1";
 	data-bits = <8>;
 };
+
+&aon_timer0 {
+	status = "okay";
+};
+

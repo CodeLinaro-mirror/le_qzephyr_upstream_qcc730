@@ -14,3 +14,7 @@ config COUNTER_QCC730_INIT_PRIORITY
 	default KERNEL_INIT_PRIORITY_DEVICE
 	help
 	  The priority of QCC730 counter driver initialization.
+
+config COUNTER_QCC730_AON
+	bool "QCC730 counter driver by aon timer"
+	default n
