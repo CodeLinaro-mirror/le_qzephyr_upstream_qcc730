@@ -5,7 +5,7 @@
  */
 
 #include <string.h>
-#define DT_DRV_COMPAT qualcomm_qwifi_drv
+#define DT_DRV_COMPAT qcom_qwifi_drv
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);

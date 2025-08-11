@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0;
 description: QCC730 UART
 
-compatible: "qualcomm,uart_qcc730"
+compatible: "qcom,uart_qcc730"
 
 include: [uart-controller.yaml]
 

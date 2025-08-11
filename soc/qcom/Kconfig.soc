@@ -1,9 +1,9 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: Apache-2.0;
-config SOC_FAMILY_QUALCOMM
-	bool "SOC Family for Qualcomm"
+config SOC_FAMILY_QCOM
+	bool "SOC Family for Qcom"
 	select BUILD_OUTPUT_HEX
     select HAS_PM
 
 config SOC_FAMILY
-	default "qualcomm" if SOC_FAMILY_QUALCOMM
+	default "qcom" if SOC_FAMILY_QCOM

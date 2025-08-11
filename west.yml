@@ -36,7 +36,7 @@ manifest:
     - name: qhal
       remote: upstream
       revision: hal.qhal.1.0
-      path: modules/hal/qualcomm
+      path: modules/hal/qcom
     - name: libpowerqcc730
       remote: prop
       revision: libpowerqcc730.qhal.1.0

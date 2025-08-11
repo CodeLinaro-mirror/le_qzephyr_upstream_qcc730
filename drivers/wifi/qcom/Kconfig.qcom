@@ -1,7 +1,7 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: Apache-2.0;
-config WIFI_QUALCOMM
-	bool "QUALCOMM wifi driver"
+config WIFI_QCOM
+	bool "Qcom wifi driver"
 	select QWIFI
 	select WIFI_USE_NATIVE_NETWORKING if NETWORKING
 	select NET_L2_WIFI_MGMT if NETWORKING
@@ -9,7 +9,7 @@ config WIFI_QUALCOMM
 	#default y
 	default n
 
-if CONFIG_WIFI_QUALCOMM
+if CONFIG_WIFI_QCOM
 
 
-endif # CONFIG_WIFI_QUALCOMM
+endif # CONFIG_WIFI_QCOM

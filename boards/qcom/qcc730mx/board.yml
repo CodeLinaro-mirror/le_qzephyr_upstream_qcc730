@@ -3,6 +3,6 @@
 board:
   name: qcc730mx
   full_name: qcc730mx
-  vendor: qualcomm
+  vendor: qcom
   socs:
   - name: qcc730

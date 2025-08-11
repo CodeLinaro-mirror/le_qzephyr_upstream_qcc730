@@ -1,6 +1,6 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: Apache-2.0;
-name: qualcomm porting
+name: qcom porting
 
 build:
   cmake: .

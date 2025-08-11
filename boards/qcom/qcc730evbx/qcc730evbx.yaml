@@ -12,4 +12,4 @@ flash: 1280
 supported:
   - dummy
   - uart
-vendor: qualcomm
+vendor: qcom

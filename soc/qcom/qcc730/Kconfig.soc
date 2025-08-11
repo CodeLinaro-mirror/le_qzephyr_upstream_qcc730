@@ -1,8 +1,8 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: Apache-2.0;
 config SOC_SERIES_QCC730
-	bool "SOC Series for Qualcomm QCC730"
-	select SOC_FAMILY_QUALCOMM
+	bool "SOC Series for Qcom QCC730"
+	select SOC_FAMILY_QCOM
 	select ARM
 	select CPU_CORTEX_M4
 	select CPU_HAS_FPU

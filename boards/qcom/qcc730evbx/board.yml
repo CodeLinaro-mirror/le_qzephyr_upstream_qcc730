@@ -1,3 +1,8 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: Apache-2.0;
-zephyr_library_sources_ifdef(CONFIG_WIFI_QUALCOMM qcom_wifi_drv.c)
+board:
+  name: qcc730evbx
+  full_name: qcc730evbx
+  vendor: qcom
+  socs:
+  - name: qcc730

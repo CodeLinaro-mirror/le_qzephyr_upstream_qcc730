@@ -10,7 +10,7 @@
 #ifndef _ASMLANGUAGE
 #include <zephyr/devicetree.h>
 #include <zephyr/toolchain.h>
-#include <qualcomm_soc.h>
+#include <qcom_soc.h>
 #endif /* !_ASMLANGUAGE */
 
 #endif /* _QCC730_SOC_H_ */

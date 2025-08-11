@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#define DT_DRV_COMPAT qualcomm_uart_qcc730
+#define DT_DRV_COMPAT qcom_uart_qcc730
 
 /**
  * @brief Driver for UART port on STM32 family processor.

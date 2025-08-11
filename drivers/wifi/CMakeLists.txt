@@ -3,4 +3,4 @@
 zephyr_library()
 zephyr_library_property(ALLOW_EMPTY TRUE)
 
-add_subdirectory_ifdef(CONFIG_WIFI_QUALCOMM       qualcomm)
+add_subdirectory_ifdef(CONFIG_WIFI_QCOM       qcom)

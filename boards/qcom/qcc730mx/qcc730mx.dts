@@ -7,11 +7,11 @@
 
 /dts-v1/;
 
-#include <qualcomm/qcc730.dtsi>
+#include <qcom/qcc730.dtsi>
 
 / {
 	model = "QCC730MX";
-	compatible = "qualcomm,qcc730mx";
+	compatible = "qcom,qcc730mx";
 
 	chosen {
 		zephyr,console = &uart0;
@@ -28,6 +28,3 @@
 	status = "okay";
 };
 
-&drv_dummy {
-	status = "okay";
-};

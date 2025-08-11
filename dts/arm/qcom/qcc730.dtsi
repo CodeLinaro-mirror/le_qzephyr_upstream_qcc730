@@ -49,7 +49,7 @@
 		/* QCC730V2_QSPI_BASE_BASE = 0x01190000UL */
 		/* QCC730V2_RRAM_CTRL_BASE_BASE = 0x01192400UL */
 		flash: flash-controller@1190000 {
-			compatible = "qualcomm,rram_qcc730";
+			compatible = "qcom,rram_qcc730";
 			reg = <0x01190000 0x1000>;
 			#address-cells = <1>;
 			#size-cells = <1>;
@@ -74,17 +74,9 @@
 			}; */
 		};
 
-		drv_dummy: dummy@90000 {
-			compatible = "qualcomm,drv_dummy_qcc730";
-			#address-cells = <1>;
-			#size-cells = <1>;
-			reg = <0x90000 0x400>;
-			status = "disabled";
-		};
-
 		/* QCC730V2_UART_BASE_BASE = 0x01233800UL */
 		uart0: serial@1233800 {
-			compatible = "qualcomm,uart_qcc730";
+			compatible = "qcom,uart_qcc730";
 			reg = <0x01233800 0x100>;
 			/* clocks = <&rcc STM32_CLOCK(APB2, 14U)>; */
 			/* resets = <&rctl STM32_RESET(APB2, 14U)>; */

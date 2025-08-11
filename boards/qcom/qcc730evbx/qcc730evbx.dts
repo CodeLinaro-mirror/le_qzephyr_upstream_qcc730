@@ -7,11 +7,11 @@
 
 /dts-v1/;
 
-#include <qualcomm/qcc730.dtsi>
+#include <qcom/qcc730.dtsi>
 
 / {
 	model = "QCC730EVBX";
-	compatible = "qualcomm,qcc730evbx";
+	compatible = "qcom,qcc730evbx";
 
 	chosen {
 		zephyr,console = &uart0;
@@ -25,9 +25,5 @@
 	/* pinctrl-0 = <&usart1_tx_pa9 &usart1_rx_pa10>; */
 	/* pinctrl-names = "default"; */
 	current-speed = <115200>;
-	status = "okay";
-};
-
-&drv_dummy {
 	status = "okay";
 };
