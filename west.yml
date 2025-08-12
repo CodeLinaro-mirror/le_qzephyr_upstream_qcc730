@@ -20,8 +20,8 @@ manifest:
       import:
         # By using name-allowlist we can clone only the modules that are
         # strictly needed by the application.
-        name-blocklist:
-          - net-tools # Network tools for testing with Qemu
+        name-allowlist:
+          - zcbor      # for c++ programming
     - name: cmsis
       remote: zephyrproject-rtos
       revision: cmsis.qzephyr.1.0
