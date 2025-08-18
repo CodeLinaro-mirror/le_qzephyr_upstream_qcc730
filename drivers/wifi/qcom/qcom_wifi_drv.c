@@ -4,20 +4,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <string.h>
 #define DT_DRV_COMPAT qcom_qwifi_drv
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 
+#include <string.h>
 #include <zephyr/net/ethernet.h>
 #include <zephyr/net/net_pkt.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/wifi_mgmt.h>
-#if defined(CONFIG_ESP32_WIFI_AP_STA_MODE)
-#include <zephyr/net/wifi_nm.h>
-#include <zephyr/net/conn_mgr/connectivity_wifi_mgmt.h>
-#endif
 #include <zephyr/device.h>
 #include <soc.h>
 
@@ -28,18 +24,16 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #define NT_DEV_STA_ID 1
 
 struct qwifi_bss_status_t {
-    uint8_t bssid[NET_ETH_ADDR_LEN];
-    char ssid[WIFI_SSID_MAX_LEN + 1];
-    uint8_t ssid_length;
-    char passphrase[WIFI_PSK_MAX_LEN + 1];
-    uint32_t wpa_mode;
-    uint32_t u_cipher;
-    uint32_t m_cipher;
     bool connected;
+    uint8_t bssid[NET_ETH_ADDR_LEN];
     uint8_t channel;
-    uint8_t channel_ext[3];
-    uint32_t central_freq_MHz;
+    uint8_t band;
     int rssi;
+    int security;
+    int link_mode;
+    int beacon_interval;
+    int ssid_length;
+    char ssid[WIFI_SSID_MAX_LEN + 1];
 };
 
 struct qwifi_drv_dev_data_t {
@@ -62,140 +56,136 @@ struct qwifi_drv_dev_cfg_t {
     int reserved;
 };
 
-#define PRINT_LOG_FUNC_LINE LOG_DBG("%s %d", __FUNCTION__, __LINE__)
-#define PRINT_LOG_FUNC_LINE_ENTRY LOG_DBG("%s %d entry", __FUNCTION__, __LINE__)
-#define PRINT_LOG_FUNC_LINE_EXIT LOG_DBG("%s %d exit", __FUNCTION__, __LINE__)
-
 static struct qwifi_drv_dev_data_t g_wifi_dev_data;
 static struct qwifi_drv_dev_cfg_t g_wifi_dev_cfg = {
     .scan_mode = SCAN_MODE_UNBLOCKING,
 };
 
-static void qwifi_drv_event_handler(uint8_t deviceId, uint32_t cbId, void *pApplicationContext, void *payload,
-                                    uint32_t payload_Length)
+static void qwifi_scan_complete_event(struct device *dev, qapi_WLAN_Scan_Comp_Evt_t *scan_result)
 {
-    const struct device *dev = pApplicationContext;
+    struct wifi_scan_result res;
+    int n_bss = scan_result->num_bss_cur;
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
-    const struct qwifi_drv_dev_cfg_t *dev_cfg = dev->config;
 
-    LOG_DBG("%s deviceId=%d cbId=%d payload_Length=%d", __FUNCTION__, deviceId, cbId, payload_Length);
-    switch (cbId) {
-    case QAPI_WLAN_SCAN_COMPLETE_CB_E: {
-        if (!payload || !payload_Length) {
-            LOG_WRN("QAPI_WLAN_SCAN_COMPLETE_CB_E event error\n");
-            break;
-        }
+    LOG_DBG("scan result report:");
+    LOG_DBG("bss num: %d", n_bss);
 
-        qapi_WLAN_Scan_Comp_Evt_t *p_scan_compl_evt = (qapi_WLAN_Scan_Comp_Evt_t *)payload;
-        uint16_t aps = p_scan_compl_evt->num_bss_cur;
-        LOG_INF("Received Scan complete event, found bss count:%d", aps);
-        LOG_DBG("scan_mode=%d", dev_cfg->scan_mode);
-        {
-            struct wifi_scan_result res = {0};
-            qapi_WLAN_BSS_Scan_Info_t *bss;
-            LOG_DBG("unblocking mode\n");
-            for (int k = 0; k < aps; k++) {
-                memset(&res, 0, sizeof(struct wifi_scan_result));
-                bss = &p_scan_compl_evt->scan_bss_info[k];
-                int ssid_len = strnlen(bss->ssid, WIFI_SSID_MAX_LEN);
+    for (int k = 0; k < n_bss; k++) {
+        memset(&res, 0, sizeof(struct wifi_scan_result));
+        qapi_WLAN_BSS_Scan_Info_t *bss = &scan_result->scan_bss_info[k];
 
-                res.ssid_length = ssid_len;
-                strlcpy(res.ssid, bss->ssid, ssid_len);
-                res.rssi = bss->rssi;
-                res.channel = bss->channel;
+        res.rssi = bss->rssi;
+        res.channel = bss->channel;
+        res.ssid_length = bss->ssid_Length;
+        strlcpy(res.ssid, bss->ssid, WIFI_SSID_MAX_LEN);
+        memcpy(res.mac, bss->bssid, WIFI_MAC_ADDR_LEN);
+        res.mac_length = WIFI_MAC_ADDR_LEN;
+        res.band = bss->band;
 
-                memcpy(res.mac, bss->bssid, WIFI_MAC_ADDR_LEN);
-                res.mac_length = WIFI_MAC_ADDR_LEN;
-                if (bss->security_Enabled) {
-                    if ((bss->rsn_Cipher & __QAPI_WLAN_CIPHER_TYPE_WEP) ||
-                        (bss->wpa_Cipher & __QAPI_WLAN_CIPHER_TYPE_WEP)) {
-                        res.security = WIFI_SECURITY_TYPE_WEP;
-                    } else if (bss->rsn_Auth & __QAPI_WLAN_SECURITY_AUTH_PSK) {
-                        res.security = WIFI_SECURITY_TYPE_PSK;
-                    } else if (bss->rsn_Auth & __QAPI_WLAN_SECURITY_AUTH_SAE) {
-                        res.security = WIFI_SECURITY_TYPE_SAE;
-                    } else if (bss->wpa_Auth & __QAPI_WLAN_SECURITY_AUTH_PSK) {
-                        res.security = WIFI_SECURITY_TYPE_WPA_PSK;
-                    } else {
-                        // LOG_WARN("Not supported yet");
-                        res.security = WIFI_SECURITY_TYPE_UNKNOWN;
-                    }
-                } else {
-                    res.security = WIFI_SECURITY_TYPE_NONE;
-                }
-
-                if (dev_data->scan_cb) {
-#if 0
-                    if (ssid_len) {
-                        LOG_DBG("report AP[%d] ssid=%s\n", k, res.ssid);
-                    }
-#endif
-                    dev_data->scan_cb(dev_data->iface, 0, &res);
-
-                    /* ensure notifications get delivered */
-                    k_yield();
-                }
-            }
-            if (dev_data->scan_cb) {
-                LOG_DBG("report AP done\n");
-                dev_data->scan_cb(dev_data->iface, 0, NULL);
-                dev_data->scan_cb = NULL;
-            }
-        }
-        break;
-    }
-    case QAPI_WLAN_CONNECT_CB_E: {
-        int connect_status = WIFI_STATUS_CONN_SUCCESS;
-        qapi_WLAN_Join_Comp_Evt_t *cxnInfo = (qapi_WLAN_Join_Comp_Evt_t *)(payload);
-        uint8_t *mac = cxnInfo->bssid;
-        struct qwifi_bss_status_t *bss = &dev_data->bss_status;
-        if (cxnInfo->ssid_Length) {
-            strlcpy(bss->ssid, cxnInfo->ssid, WIFI_SSID_MAX_LEN);
-            bss->ssid_length = cxnInfo->ssid_Length;
-            memcpy(bss->bssid, cxnInfo->bssid, NET_ETH_ADDR_LEN);
-        }
-        bss->central_freq_MHz = cxnInfo->channel_frequency;
-        bss->channel = cxnInfo->channel;
-        if (cxnInfo->evt_hdr.status == QAPI_OK) {
-            enum wifi_security_type security = dev_data->cfg_connect.security;
-            if (cxnInfo->bss_Connection_Status) {
-                bss->connected = true;
-            }
-            LOG_INF("devid - %d %d CONNECTED MAC addr %02x:%02x:%02x:%02x:%02x:%02x", dev_data->active_device,
-                    cxnInfo->bss_Connection_Status, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-            if ((security == WIFI_SECURITY_TYPE_PSK) || (security == WIFI_SECURITY_TYPE_WPA_PSK)) {
-                LOG_INF("4 way handshake success for device=%d", dev_data->active_device);
+        if (bss->security_Enabled) {
+            if ((bss->rsn_Cipher & __QAPI_WLAN_CIPHER_TYPE_WEP) || (bss->wpa_Cipher & __QAPI_WLAN_CIPHER_TYPE_WEP)) {
+                res.security = WIFI_SECURITY_TYPE_WEP;
+            } else if (bss->rsn_Auth & __QAPI_WLAN_SECURITY_AUTH_PSK) {
+                res.security = WIFI_SECURITY_TYPE_PSK;
+            } else if (bss->rsn_Auth & __QAPI_WLAN_SECURITY_AUTH_SAE) {
+                res.security = WIFI_SECURITY_TYPE_SAE;
+            } else if (bss->wpa_Auth & __QAPI_WLAN_SECURITY_AUTH_PSK) {
+                res.security = WIFI_SECURITY_TYPE_WPA_PSK;
+            } else {
+                res.security = WIFI_SECURITY_TYPE_UNKNOWN;
             }
         } else {
-            connect_status = WIFI_STATUS_CONN_FAIL;
-            LOG_INF("WiFi disconnect reason code is %d", cxnInfo->reason_code);
-            if (cxnInfo->bss_Connection_Status) {
-                bss->connected = false;
-                LOG_INF("devId %d Disconnected MAC addr %02x:%02x:%02x:%02x:%02x:%02x", dev_data->active_device, mac[0],
-                        mac[1], mac[2], mac[3], mac[4], mac[5]);
-            } else {
-                LOG_INF("REF_STA Disconnected MAC addr %02x:%02x:%02x:%02x:%02x:%02x devId %d", mac[0], mac[1], mac[2],
-                        mac[3], mac[4], mac[5], dev_data->active_device);
-            }
+            res.security = WIFI_SECURITY_TYPE_NONE;
         }
-        LOG_INF("channel_frequency=%d", cxnInfo->channel_frequency);
-        LOG_INF("ssid = %s", dev_data->cfg_connect.ssid);
-        LOG_INF("assoc_id=%d", cxnInfo->assoc_id);
-        LOG_INF("host_initiated=%d", cxnInfo->host_initiated);
-        wifi_mgmt_raise_connect_result_event(dev_data->iface, connect_status);
-        break;
-    }
-    case QAPI_WLAN_DISCONNECT_CB_E: {
-        struct qwifi_bss_status_t *bss = &dev_data->bss_status;
-        bss->connected = false;
-        if (dev_data->bss_status.ssid_length) {
-            LOG_INF("devId %d disconnected from ssid = %s", dev_data->active_device, dev_data->bss_status.ssid);
+
+        if (dev_data->scan_cb) {
+            dev_data->scan_cb(dev_data->iface, 0, &res);
+            k_yield();
         }
-        wifi_mgmt_raise_disconnect_result_event(dev_data->iface, WIFI_REASON_DISCONN_SUCCESS);
-        break;
     }
+
+    if (dev_data->scan_cb) {
+        dev_data->scan_cb(dev_data->iface, 0, NULL);
+        dev_data->scan_cb = NULL;
+    }
+}
+
+static void qwifi_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *cxnInfo)
+{
+    int connect_status = WIFI_STATUS_CONN_SUCCESS;
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    struct qwifi_bss_status_t *bss = &dev_data->bss_status;
+    uint8_t *mac = cxnInfo->bssid;
+
+    LOG_DBG("connect event report:");
+    LOG_DBG("ssid: %s", dev_data->cfg_connect.ssid);
+    LOG_DBG("mac addr: %02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    LOG_DBG("band: %d", cxnInfo->band);
+    LOG_DBG("channel: %d", cxnInfo->channel);
+    LOG_DBG("security: %d", dev_data->cfg_connect.security);
+    LOG_DBG("status: %d", cxnInfo->evt_hdr.status);
+    LOG_DBG("connection status: %d", cxnInfo->bss_Connection_Status);
+    LOG_DBG("reason code: %d", cxnInfo->reason_code);
+
+    if (cxnInfo->ssid_Length) {
+        strlcpy(bss->ssid, cxnInfo->ssid, WIFI_SSID_MAX_LEN);
+        bss->ssid_length = cxnInfo->ssid_Length;
+    }
+
+    memcpy(bss->bssid, cxnInfo->bssid, NET_ETH_ADDR_LEN);
+    bss->band = cxnInfo->band;
+    bss->channel = cxnInfo->channel;
+
+    if (cxnInfo->evt_hdr.status == QAPI_OK) {
+        if (cxnInfo->bss_Connection_Status) {
+            bss->connected = true;
+        }
+    } else {
+        connect_status = WIFI_STATUS_CONN_FAIL;
+        if (cxnInfo->bss_Connection_Status) {
+            bss->connected = false;
+        }
+    }
+
+    wifi_mgmt_raise_connect_result_event(dev_data->iface, connect_status);
+
+#if defined(CONFIG_WIFI_QCOM_AUTO_DHCPV4)
+    if (bss->connected) {
+        net_dhcpv4_start(dev_data->iface);
+    }
+#endif
+}
+
+static void qwifi_disconnect_event(struct device *dev, void *private)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    struct qwifi_bss_status_t *bss = &dev_data->bss_status;
+
+    LOG_DBG("disconnect event report:");
+    LOG_DBG("ssid = %s", dev_data->bss_status.ssid);
+
+    bss->connected = false;
+    wifi_mgmt_raise_disconnect_result_event(dev_data->iface, WIFI_REASON_DISCONN_SUCCESS);
+
+#if defined(CONFIG_WIFI_QCOM_AUTO_DHCPV4)
+    net_dhcpv4_stop(dev_data->iface);
+#endif
+}
+
+static void qwifi_drv_event_handler(uint8_t dev_id, uint32_t event, void *context, void *private, uint32_t length)
+{
+    switch (event) {
+    case QAPI_WLAN_SCAN_COMPLETE_CB_E:
+        qwifi_scan_complete_event(context, private);
+        break;
+    case QAPI_WLAN_CONNECT_CB_E:
+        qwifi_connect_event(context, private);
+        break;
+    case QAPI_WLAN_DISCONNECT_CB_E:
+        qwifi_disconnect_event(context, private);
+        break;
     default:
-        LOG_WRN("%s event=%d ignore", __FUNCTION__, cbId);
+        LOG_WRN("%s:%d event: %d, ignored.", __FUNCTION__, __LINE__, event);
         break;
     }
 }
@@ -327,12 +317,16 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
     struct qwifi_bss_status_t *bss_status = &dev_data->bss_status;
 
     status->state = bss_status->connected ? WIFI_STATE_COMPLETED : WIFI_STATE_DISCONNECTED;
+    status->band = bss_status->band;
+    status->channel = bss_status->channel;
     status->ssid_len = bss_status->ssid_length;
     memcpy(status->bssid, bss_status->bssid, sizeof(status->bssid));
     strlcpy(status->ssid, bss_status->ssid, sizeof(status->ssid));
     status->ssid[WIFI_SSID_MAX_LEN] = '\0';
-    status->channel = bss_status->channel;
     status->rssi = bss_status->rssi;
+    status->security = bss_status->security;
+    status->link_mode = bss_status->link_mode;
+    status->beacon_interval = bss_status->beacon_interval;
 
     return 0;
 }
@@ -375,12 +369,9 @@ static void qwifi_drv_intf_init(struct net_if *iface)
 
     qapi_WLAN_DEV_Mode_e devMode = DEV_MODE_STATION_E;
 
-    PRINT_LOG_FUNC_LINE_ENTRY;
     dev_data->wlan_enabled = qapi_WLAN_Enable(true);
-    PRINT_LOG_FUNC_LINE;
     qapi_WLAN_Set_Param(0, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE, &devMode,
                         sizeof(devMode), false);
-    PRINT_LOG_FUNC_LINE;
     dev_data->active_device = NT_DEV_STA_ID;
 
     eth_ctx->eth_if_type = L2_ETH_IF_TYPE_WIFI;
@@ -391,27 +382,21 @@ static void qwifi_drv_intf_init(struct net_if *iface)
                         dev_data->mac_addr, &mac_len);
 
     qwifi_hal_reg_rxcb(iface, qwifi_drv_eth_rx_cb);
-    PRINT_LOG_FUNC_LINE;
     net_if_set_link_addr(iface, dev_data->mac_addr, NET_ETH_ADDR_LEN, NET_LINK_ETHERNET);
     ethernet_init(iface);
     net_if_carrier_off(iface);
     net_eth_carrier_on(iface);
     LOG_DBG("%s", __FUNCTION__);
-    PRINT_LOG_FUNC_LINE_EXIT;
 }
 
 static int qwifi_drv_dev_init(const struct device *dev)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
 
-    PRINT_LOG_FUNC_LINE_ENTRY;
     dev_data->dev = dev;
     qwifi_init();
-    PRINT_LOG_FUNC_LINE;
-    qapi_WLAN_Set_Callback(qwifi_drv_event_handler, dev);
+    qapi_WLAN_Set_Callback(qwifi_drv_event_handler, (void *)dev);
     dev_data->e_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
-    LOG_DBG("%s", __FUNCTION__);
-    PRINT_LOG_FUNC_LINE_EXIT;
 
     return 0;
 }
