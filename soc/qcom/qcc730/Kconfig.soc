@@ -3,15 +3,8 @@
 config SOC_SERIES_QCC730
 	bool "SOC Series for Qcom QCC730"
 	select SOC_FAMILY_QCOM
-	select ARM
-	select CPU_CORTEX_M4
-	select CPU_HAS_FPU
-	select SOC_RESET_HOOK
-	select SOC_PREP_HOOK
-	select SOC_EARLY_INIT_HOOK
-	select SKIP_BSS_CLEAR if !XIP
 	help
-	  Enable support for QCC730
+	  Enable support for QCC730 Series
 
 config SOC_SERIES
 	default "qcc730" if SOC_SERIES_QCC730
@@ -20,12 +13,21 @@ config SOC_QCC730
 	bool
 	default n
 	select SOC_SERIES_QCC730
+	select ARM
+	select CPU_CORTEX_M4
+	select CPU_HAS_FPU
+	select HAS_PM
+	select XIP
 	select SOC_QCC730_HAS_UART_V2
 	select SOC_QCC730_HAS_XPA_AUTO_CTRL
 	select SOC_QCC730_HAS_BT_COEX
 	select SOC_QCC730_HAS_I2C
 	select SOC_QCC730_HAS_QSPI_V2
 	select SOC_QCC730_HAS_SPI_SLAVE
+	select SOC_RESET_HOOK
+	select SOC_PREP_HOOK
+	select SOC_EARLY_INIT_HOOK
+	select SKIP_BSS_CLEAR if !XIP
 	select QPOWER
 
 config SOC
