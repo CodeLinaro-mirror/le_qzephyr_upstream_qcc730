@@ -11,3 +11,5 @@ build:
     soc_root: .
     arch_root: .
     module_ext_root: .
+runners:
+  - file: ../modules/hal/qcom/tools/nvm_programmer/nvmprogrammer.py
