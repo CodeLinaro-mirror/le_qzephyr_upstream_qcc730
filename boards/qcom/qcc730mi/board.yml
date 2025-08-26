@@ -1,0 +1,8 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0;
+board:
+  name: qcc730mi
+  full_name: qcc730mi
+  vendor: qcom
+  socs:
+  - name: qcc730

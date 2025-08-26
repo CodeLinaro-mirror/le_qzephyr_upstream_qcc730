@@ -1,0 +1,15 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0;
+identifier: qcc730evbi
+name: qcc730evbi
+type: mcu
+arch: arm
+toolchain:
+  - zephyr
+  - gnuarmemb
+ram: 512
+flash: 1280
+supported:
+  - dummy
+  - uart
+vendor: qcom
