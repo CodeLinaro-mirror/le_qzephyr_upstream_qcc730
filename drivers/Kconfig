@@ -1,4 +1,13 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
-# SPDX-License-Identifier: Apache-2.0;
-rsource "*/Kconfig"
+# SPDX-License-Identifier: Apache-2.0
 
+menu "Drivers"
+rsource "counter/Kconfig.qcc730"
+rsource "gpio/Kconfig.qcc730"
+rsource "i2c/Kconfig.qcc730"
+rsource "pinctrl/Kconfig.qcc730"
+rsource "rtc/Kconfig.qcc730"
+rsource "serial/Kconfig.qcc730"
+rsource "watchdog/Kconfig.qcc730"
+rsource "wifi/Kconfig"
+endmenu

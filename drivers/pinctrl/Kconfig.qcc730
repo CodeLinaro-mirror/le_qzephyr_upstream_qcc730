@@ -1,0 +1,10 @@
+# Copyright (c) 2025 Qualcomm Technologies, Inc. and/or its subsidiaries
+# SPDX-License-Identifier: Apache-2.0
+
+config PINCTRL_QCC730
+	bool "Qualcomm QCC730 pin control driver"
+	default y
+	depends on PINCTRL
+	depends on DT_HAS_QCOM_QCC730_PINCTRL_ENABLED
+	help
+	  Qualcomm QCC730 pin control driver.

@@ -1,0 +1,5 @@
+# Copyright (c) 2025 Qualcomm Technologies, Inc. and/or its subsidiaries
+# SPDX-License-Identifier: Apache-2.0
+
+zephyr_library_amend()
+zephyr_library_sources_ifdef(CONFIG_PINCTRL_QCC730 pinctrl_qcc730.c)

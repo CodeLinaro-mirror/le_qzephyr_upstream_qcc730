@@ -1,0 +1,14 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0
+
+description: QCC730 Software RTC
+
+compatible: "qcom,qcc730-rtc"
+
+include: [base.yaml, rtc-device.yaml]
+
+properties:
+  qtimer-frame:
+    type: phandle
+    required: true
+    description: Node identifier of a Qtimer frame used for RTC

@@ -1,0 +1,20 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0
+
+description: QCC730 Qtimer frame node
+
+compatible: "qcom,qcc730-qtmr"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  id:
+    type: int
+    required: true
+    description: Qtimer frame ID

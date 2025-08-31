@@ -10,6 +10,11 @@ toolchain:
 ram: 512
 flash: 1280
 supported:
-  - dummy
-  - uart
+  - counter (qtimer)
+  - gpio
+  - i2c
+  - pinctrl
+  - rtc
+  - serial
+  - watchdog
 vendor: qcom

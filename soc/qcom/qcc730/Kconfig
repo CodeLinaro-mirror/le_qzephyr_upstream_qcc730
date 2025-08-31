@@ -3,4 +3,4 @@
 rsource "Kconfig.peripherals"
 rsource "Kconfig.soc"
 rsource "Kconfig.defconfig"
-
+rsource "Kconfig.bdf"

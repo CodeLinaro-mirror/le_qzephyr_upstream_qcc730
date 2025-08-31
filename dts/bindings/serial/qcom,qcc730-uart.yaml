@@ -1,0 +1,30 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0
+
+description: Qualcomm QCC730 UART Controller
+
+compatible: "qcom,qcc730-uart"
+
+include:
+  - name: uart-controller.yaml
+  - name: pinctrl-device.yaml
+
+properties:
+  reg:
+    type: array
+    required: true
+    description: |
+      Base address of UART peripheral
+
+  interrupts:
+    type: array
+    required: false
+    description: |
+      Interrupts for the UART controller.
+
+  rx-buffer-size:
+    type: int
+    required: true
+    description: |
+      Size of the RX buffer in bytes. If not provided, a default value of 8 bytes is used.
+    default: 8

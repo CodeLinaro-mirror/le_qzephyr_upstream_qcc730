@@ -1,5 +1,0 @@
-# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
-# SPDX-License-Identifier: Apache-2.0;
-if BOARD_QCC730EVBX
-
-endif # BOARD_QCC730EVBX

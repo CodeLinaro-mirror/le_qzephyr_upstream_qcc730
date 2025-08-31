@@ -7,33 +7,38 @@
 
 #include <arm/armv7-m.dtsi>
 #include <mem.h>
+#include <freq.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/i2c/i2c.h>
 
 / {
 
-  power-states {
-    s2ram: s2ram {
-      compatible = "zephyr,power-state";
-      power-state-name = "suspend-to-ram";
- 			min-residency-us = <100000>;
- 			exit-latency-us = <8000>;
-    };
-    softoff: softoff {
-      compatible = "zephyr,power-state";
-      power-state-name = "soft-off";
- 			min-residency-us = <3000000>;
- 			exit-latency-us = <500000>;
-    };
-  };
+	power-states {
+		s2ram: s2ram {
+			compatible = "zephyr,power-state";
+			power-state-name = "suspend-to-ram";
+			min-residency-us = <100000>;
+			exit-latency-us = <8000>;
+		};
+
+		softoff: softoff {
+			compatible = "zephyr,power-state";
+			power-state-name = "soft-off";
+			min-residency-us = <3000000>;
+			exit-latency-us = <500000>;
+		};
+	};
 
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		cpu@0 {
+		cpu0: cpu@0 {
 			device_type = "cpu";
 			compatible = "arm,cortex-m4";
 			reg = <0>;
 			cpu-power-states = <&softoff>;
+			clock-frequency = <DT_FREQ_M(60)>;
 		};
 	};
 
@@ -74,14 +79,100 @@
 			}; */
 		};
 
-		/* QCC730V2_UART_BASE_BASE = 0x01233800UL */
-		uart0: serial@1233800 {
-			compatible = "qcom,uart_qcc730";
-			reg = <0x01233800 0x100>;
-			/* clocks = <&rcc STM32_CLOCK(APB2, 14U)>; */
-			/* resets = <&rctl STM32_RESET(APB2, 14U)>; */
-			interrupts = <3 0>;
+		pmu: pmu@11aec00 {
+			reg = <0x011aec00 0xfbc>;
+		};
+
+		pinctrl: pinctrl {
+			compatible = "qcom,qcc730-pinctrl";
+			#pinctrl-cells = <1>;
+		};
+
+		gpioa: gpio@1233a00 {
+			compatible = "qcom,qcc730-gpio";
+			gpio-controller;
+			reg = <0x01233a00 0x0c>;
+			#gpio-cells = <2>;
+			interrupts = <0x30 0x2>;
 			status = "disabled";
+			ngpios = <15>;
+		};
+
+		i2c0: i2c@1233900 {
+			compatible = "qcom,qcc730-i2c";
+			reg = <0x01233900 0x100>;
+			clock-frequency = <I2C_BITRATE_STANDARD>;
+			periph-clock-frequency_khz = <DT_FREQ_K(60)>;
+			interrupts = <0x02 0x2>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
+		uart0: uart@1233800 {
+			compatible = "qcom,qcc730-uart";
+			reg = <0x01233800 0xac>;
+			interrupts = <0x03 0x2>;
+			rx-buffer-size = <8>;
+			status = "disabled";
+		};
+
+		watchdog0: watchdog {
+			compatible = "qcom,qcc730-wdt";
+			status = "disabled";
+		};
+
+		qtimer: qtimer@11a8000 {
+			compatible = "qcom,qcc730-qtimer";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			clock-frequency = <DT_FREQ_K(38400)>;
+			reg = <0x011a8000 0x5ef8>;
+
+			frame0: timer@11a9000 {
+				compatible = "qcom,qcc730-qtmr";
+				reg = <0x011a9000 0xfd4>;
+				interrupts = <0x04 0x2>;
+				id = <0>;
+				status = "disabled";
+			};
+
+			frame1: timer@11aa000 {
+				compatible = "qcom,qcc730-qtmr";
+				reg = <0x011aa000 0xfd4>;
+				interrupts = <0x05 0x2>;
+				id = <1>;
+				status = "disabled";
+			};
+
+			frame2: timer@11ab000 {
+				compatible = "qcom,qcc730-qtmr";
+				reg = <0x011ab000 0xfd4>;
+				interrupts = <0x06 0x2>;
+				id = <2>;
+				status = "disabled";
+			};
+
+			frame3: timer@11ac000 {
+				compatible = "qcom,qcc730-qtmr";
+				reg = <0x011ac000 0xfd4>;
+				interrupts = <0x07 0x2>;
+				id = <3>;
+				status = "disabled";
+			};
+
+			frame4: timer@11ad000 {
+				compatible = "qcom,qcc730-qtmr";
+				reg = <0x011ad000 0xfd4>;
+				interrupts = <0x08 0x2>;
+				id = <4>;
+				status = "disabled";
+			};
+		};
+
+		rtc: rtc {
+			compatible = "qcom,qcc730-rtc";
+			qtimer-frame = <&frame0>;
+			alarms-count = <1>;
 		};
 	};
 };

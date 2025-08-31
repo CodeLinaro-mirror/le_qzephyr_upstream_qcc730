@@ -1,0 +1,50 @@
+# Copyright (c) 2025 Qualcomm Technologies, Inc. and/or its subsidiaries
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Qualcomm QCC730 pin control
+  Qualcomm QCC730 pin controller pin configuration group. Each group contains
+  a list of pins sharing the same set of properties. Example:
+  uart0_option0: uart0_option0 {
+    group1 {
+      pinmux = <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_11, QCC730_UART_OPTION_0)>,
+                <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_12, QCC730_UART_OPTION_0)>;
+      bias-pull-up;
+      high-drive-strength;
+    };
+  };
+
+compatible: "qcom,qcc730-pinctrl"
+
+include: base.yaml
+
+properties:
+  "#pinctrl-cells":
+    type: int
+    const: 1
+
+child-binding:
+  description: |
+    Qualcomm QCC730 pin controller pin configuration nodes.
+  child-binding:
+    description: |
+      The grandchild nodes group pins that share the same pin configuration.
+
+    include:
+      - name: pincfg-node.yaml
+        property-allowlist:
+          - bias-pull-down
+          - bias-pull-up
+
+    properties:
+      pinmux:
+        required: true
+        type: array
+        description: |
+          An array of pins sharing the same group properties. The pins should be
+          defined using the QCC730_PINMUX utility macros that encode the pin
+          configuration including pin number, function, mode, and UART option.
+
+      high-drive-strength:
+        type: boolean
+        description: Enable high drive strength for the pin.

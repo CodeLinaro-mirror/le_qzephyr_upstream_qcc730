@@ -1,16 +1,20 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
-# SPDX-License-Identifier: Apache-2.0;
+# SPDX-License-Identifier: Apache-2.0
+# Qualcomm QCC730 UART configuration options
+
 config UART_QCC730
-	bool "QCC730 UART driver"
+	bool "Qualcomm QCC730 UART driver"
 	default y
-	#default n
+	# select SERIAL_SUPPORT_INTERRUPT
+	depends on PINCTRL
+	depends on DT_HAS_QCOM_QCC730_PINCTRL_ENABLED
+	depends on SERIAL
+	depends on DT_HAS_QCOM_QCC730_UART_ENABLED
+	select RING_BUFFER
 	depends on SOC_QCC730_HAS_UART_V2
 	select BOARD_QCC730_UART_ENABLE
 	select SERIAL_HAS_DRIVER
 	select UART_QCC730_LL
 	select UART_HAL
-	# select SERIAL_SUPPORT_INTERRUPT
-
-if UART_QCC730
-
-endif
+	help
+	  Enable support for the Qualcomm QCC730 UART controllers.
