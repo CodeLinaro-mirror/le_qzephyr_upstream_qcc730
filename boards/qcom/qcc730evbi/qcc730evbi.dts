@@ -23,7 +23,7 @@
 };
 
 &uart0 {
-	pinctrl-0 = <&uart0_option1>;
+	pinctrl-0 = <&uart0_option3>;
 	pinctrl-names = "default";
 	status = "okay";
 	current-speed = <115200>;
