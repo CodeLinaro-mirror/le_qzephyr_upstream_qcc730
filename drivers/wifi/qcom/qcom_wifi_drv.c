@@ -121,6 +121,7 @@ static void qwifi_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *c
     LOG_DBG("ssid: %s", dev_data->cfg_connect.ssid);
     LOG_DBG("mac addr: %02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     LOG_DBG("band: %d", cxnInfo->band);
+    LOG_DBG("rssi: %d", cxnInfo->rssi);
     LOG_DBG("channel: %d", cxnInfo->channel);
     LOG_DBG("security: %d", dev_data->cfg_connect.security);
     LOG_DBG("status: %d", cxnInfo->evt_hdr.status);
@@ -135,16 +136,13 @@ static void qwifi_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *c
     memcpy(bss->bssid, cxnInfo->bssid, NET_ETH_ADDR_LEN);
     bss->band = cxnInfo->band;
     bss->channel = cxnInfo->channel;
+    bss->rssi = cxnInfo->rssi;
 
     if (cxnInfo->evt_hdr.status == QAPI_OK) {
-        if (cxnInfo->bss_Connection_Status) {
-            bss->connected = true;
-        }
+        bss->connected = true;
     } else {
         connect_status = WIFI_STATUS_CONN_FAIL;
-        if (cxnInfo->bss_Connection_Status) {
-            bss->connected = false;
-        }
+        bss->connected = false;
     }
 
     wifi_mgmt_raise_connect_result_event(dev_data->iface, connect_status);
