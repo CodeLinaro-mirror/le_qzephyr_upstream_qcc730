@@ -125,6 +125,7 @@ static void qwifi_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *c
     LOG_DBG("channel: %d", cxnInfo->channel);
     LOG_DBG("security: %d", dev_data->cfg_connect.security);
     LOG_DBG("status: %d", cxnInfo->evt_hdr.status);
+    LOG_DBG("beacon interval: %d", cxnInfo->beacon_interval);
     LOG_DBG("connection status: %d", cxnInfo->bss_Connection_Status);
     LOG_DBG("reason code: %d", cxnInfo->reason_code);
 
@@ -137,6 +138,7 @@ static void qwifi_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *c
     bss->band = cxnInfo->band;
     bss->channel = cxnInfo->channel;
     bss->rssi = cxnInfo->rssi;
+    bss->beacon_interval = cxnInfo->beacon_interval;
 
     if (cxnInfo->evt_hdr.status == QAPI_OK) {
         bss->connected = true;
