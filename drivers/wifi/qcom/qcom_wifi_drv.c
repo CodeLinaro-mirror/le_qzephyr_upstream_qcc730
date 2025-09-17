@@ -21,6 +21,7 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #endif
 
 #include <qwifi_api.h>
+#include <libwifi/wlan_defs.h>
 
 #define SCAN_MODE_BLOCKING 1
 #define SCAN_MODE_UNBLOCKING 2
@@ -29,12 +30,6 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 struct qwifi_bss_status_t {
     bool connected;
     uint8_t bssid[NET_ETH_ADDR_LEN];
-    uint8_t channel;
-    uint8_t band;
-    int rssi;
-    int security;
-    int link_mode;
-    int beacon_interval;
     int ssid_length;
     char ssid[WIFI_SSID_MAX_LEN + 1];
 };
@@ -123,13 +118,9 @@ static void qwifi_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *c
     LOG_DBG("connect event report:");
     LOG_DBG("ssid: %s", dev_data->cfg_connect.ssid);
     LOG_DBG("mac addr: %02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    LOG_DBG("band: %d", cxnInfo->band);
-    LOG_DBG("rssi: %d", cxnInfo->rssi);
-    LOG_DBG("channel: %d", cxnInfo->channel);
     LOG_DBG("security: %d", dev_data->cfg_connect.security);
-    LOG_DBG("status: %d", cxnInfo->evt_hdr.status);
-    LOG_DBG("beacon interval: %d", cxnInfo->beacon_interval);
     LOG_DBG("connection status: %d", cxnInfo->bss_Connection_Status);
+    LOG_DBG("status: %d", cxnInfo->evt_hdr.status);
     LOG_DBG("reason code: %d", cxnInfo->reason_code);
 
     if (cxnInfo->ssid_Length) {
@@ -138,10 +129,6 @@ static void qwifi_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *c
     }
 
     memcpy(bss->bssid, cxnInfo->bssid, NET_ETH_ADDR_LEN);
-    bss->band = cxnInfo->band;
-    bss->channel = cxnInfo->channel;
-    bss->rssi = cxnInfo->rssi;
-    bss->beacon_interval = cxnInfo->beacon_interval;
 
     if (cxnInfo->evt_hdr.status == QAPI_OK) {
         bss->connected = true;
@@ -316,20 +303,65 @@ static int qwifi_drv_scan(const struct device *dev, struct wifi_scan_params *par
 
 static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_status *status)
 {
+    uint32_t length = 0;
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t dev_id = dev_data->active_device;
     struct qwifi_bss_status_t *bss_status = &dev_data->bss_status;
 
     status->state = bss_status->connected ? WIFI_STATE_COMPLETED : WIFI_STATE_DISCONNECTED;
-    status->band = bss_status->band;
-    status->channel = bss_status->channel;
     status->ssid_len = bss_status->ssid_length;
     memcpy(status->bssid, bss_status->bssid, sizeof(status->bssid));
     strlcpy(status->ssid, bss_status->ssid, sizeof(status->ssid));
     status->ssid[WIFI_SSID_MAX_LEN] = '\0';
-    status->rssi = bss_status->rssi;
-    status->security = bss_status->security;
-    status->link_mode = bss_status->link_mode;
-    status->beacon_interval = bss_status->beacon_interval;
+
+    qapi_WLAN_Status_t wifi_status = {0};
+    length = sizeof(wifi_status);
+    qapi_Status_t ret = qapi_WLAN_Get_Param(dev_id, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                                            __QAPI_WLAN_PARAM_GROUP_WIRELESS_WIFI_STATUS,
+                                            &wifi_status, &length);
+    if (ret != QAPI_OK) {
+        return ret;
+    }
+
+    /** link mode */
+    switch (wifi_status.link_mode) {
+    case MODE_11B:
+        status->link_mode = WIFI_1;
+        break;
+    case MODE_11A_ONLY:
+    case MODE_11A_HT20:
+        status->link_mode = WIFI_2;
+        break;
+    case MODE_11G:
+        status->link_mode = WIFI_3;
+        break;
+    case MODE_11NG_HT20:
+    case MODE_11ABGN_HT20:
+        status->link_mode = WIFI_4;
+        break;
+    default:
+        status->link_mode = WIFI_LINK_MODE_UNKNOWN;
+        break;
+    }
+
+    /* security */
+    switch (wifi_status.auth_mode) {
+    case QAPI_WLAN_AUTH_WPA2_PSK_E:
+        status->security = WIFI_SECURITY_TYPE_PSK;
+        break;
+    case QAPI_WLAN_AUTH_NONE_E:
+        status->security = WIFI_SECURITY_TYPE_NONE;
+        break;
+    default:
+        status->security = WIFI_SECURITY_TYPE_UNKNOWN;
+        break;
+    }
+
+    status->rssi = wifi_status.rssi;
+    status->dtim_period = wifi_status.dtim_period;
+    status->beacon_interval = wifi_status.beacon_interval;
+    status->band = wifi_status.band;
+    status->channel = wifi_status.channel;
 
     return 0;
 }
