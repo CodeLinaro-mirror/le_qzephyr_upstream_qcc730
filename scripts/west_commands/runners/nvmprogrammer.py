@@ -64,15 +64,17 @@ class NVMProgrammerRunner(ZephyrBinaryRunner):
             / "hal"
             / "qcom"
         )
-        nvmprogrammerpath = Path(module_path, "zephyr/blobs")
+        nvmprogrammerpath = Path(module_path, "tools/qprg")
         sechashpath = Path(module_path, "tools/qhash")
         blobs_path = Path(module_path, "zephyr/blobs")
         print(f"Module path: {module_path.as_posix()}")
         print(f"NVM Programmer path: {nvmprogrammerpath.as_posix()}")
         print(f"SecHash path: {sechashpath.as_posix()}")
-        nvm_programmer = Path(nvmprogrammerpath, "nvm_programmer.exe")
-        prg_elf_name = Path(blobs_path, "FERMION_NVM_PROGRAMMER.elf")
-        sbl_elf_name = Path(blobs_path, "FERMION_SBL_HASHED.elf")
+        nvm_programmer = Path(nvmprogrammerpath, "nvm_programmer.py")
+        prg_filename = self.build_conf.get("CONFIG_QCC730_PRG_FILE")
+        prg_path = Path(blobs_path, prg_filename)
+        sbl_filename = self.build_conf.get("CONFIG_QCC730_SBL_FILE")
+        sbl_path = Path(blobs_path, sbl_filename)
         fdt_bin_name = Path(blobs_path, "frn_curr_age_with_app_bin.bin")
         #build_root = os.getcwd()
         bin_name = Path(self.cfg.bin_file).as_posix()
@@ -85,7 +87,7 @@ class NVMProgrammerRunner(ZephyrBinaryRunner):
         board_name = os.path.basename(self.cfg.board_dir)
         bdf_filename = self.build_conf.get("CONFIG_QCC730_BDF_FILE")
         bdf_path = Path(blobs_path, bdf_filename)
-        cmd_pre = '%s -s %s -i %s --nvm-name rram '%(nvm_programmer, self.j, str(prg_elf_name))
+        cmd_pre = 'python %s -s %s -i %s --nvm-name rram '%(nvm_programmer, self.j, str(prg_path))
         if self.erase:
             self.logger.info('Erasing chip')
             os.system('%s -E'%cmd_pre)
@@ -93,8 +95,8 @@ class NVMProgrammerRunner(ZephyrBinaryRunner):
             if self.all:
                 self.logger.info(f'Flashing firmware description table: {fdt_bin_name}')
                 os.system('%s -b 0x208000 -f %s'%(cmd_pre, str(fdt_bin_name)))
-                self.logger.info(f'Flashing SBL: {sbl_elf_name}')
-                os.system('%s -b 0x20a400 -f %s'%(cmd_pre, str(sbl_elf_name)))
+                self.logger.info(f'Flashing SBL: {sbl_path}')
+                os.system('%s -b 0x20a400 -f %s'%(cmd_pre, str(sbl_path)))
                 self.logger.info(f'Flashing regdb: {regdb_path}')
                 os.system('%s -b 0x373000 -f %s'%(cmd_pre, str(regdb_path)))
             if self.bdf:
