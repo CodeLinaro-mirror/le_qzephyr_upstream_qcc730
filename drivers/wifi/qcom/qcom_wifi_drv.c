@@ -16,6 +16,9 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #include <zephyr/net/wifi_mgmt.h>
 #include <zephyr/device.h>
 #include <soc.h>
+#ifdef CONFIG_PM_DEVICE
+#include <zephyr/pm/device.h>
+#endif
 
 #include <qwifi_api.h>
 
@@ -386,6 +389,9 @@ static void qwifi_drv_intf_init(struct net_if *iface)
     ethernet_init(iface);
     net_if_carrier_off(iface);
     net_eth_carrier_on(iface);
+#ifdef CONFIG_PM_DEVICE
+    pm_device_busy_set(dev);
+#endif
     LOG_DBG("%s", __FUNCTION__);
 }
 
@@ -401,6 +407,33 @@ static int qwifi_drv_dev_init(const struct device *dev)
     return 0;
 }
 
+#ifdef CONFIG_PM_DEVICE
+
+static int device_wlan_pm_action(const struct device *dev, enum pm_device_action pm_action)
+{
+    //printk("%s\n", __func__);
+    int ret = 0;
+
+    switch (pm_action) {
+        case PM_DEVICE_ACTION_SUSPEND:
+            ret = qapi_WLAN_Suspend();
+            //printk("%s ret:%d\r\n",__func__, ret);
+            if(ret != QAPI_OK)
+                ret = -EFAULT;
+            break;
+        case PM_DEVICE_ACTION_RESUME:
+            qapi_WLAN_Resume();
+            break;
+        default:
+            break;
+    }
+
+    return ret;
+}
+
+PM_DEVICE_DT_INST_DEFINE(0, device_wlan_pm_action);
+#endif
+
 static const struct wifi_mgmt_ops qwifi_drv_mgmt = {
     .scan = qwifi_drv_scan,
     .connect = qwifi_drv_connect,
@@ -414,6 +447,6 @@ static const struct net_wifi_mgmt_offload qwifi_drv_api = {
     .wifi_mgmt_api = &qwifi_drv_mgmt,
 };
 
-NET_DEVICE_INIT_INSTANCE(qwifi_sta, "qwifi_sta", 0, qwifi_drv_dev_init, NULL, &g_wifi_dev_data, &g_wifi_dev_cfg,
+NET_DEVICE_INIT_INSTANCE(qwifi_sta, "qwifi_sta", 0, qwifi_drv_dev_init, PM_DEVICE_DT_INST_GET(0), &g_wifi_dev_data, &g_wifi_dev_cfg,
                          CONFIG_WIFI_INIT_PRIORITY, &qwifi_drv_api, ETHERNET_L2, NET_L2_GET_CTX_TYPE(ETHERNET_L2),
                          NET_ETH_MTU);
