@@ -5,9 +5,7 @@ description: Qualcomm QCC730 UART Controller
 
 compatible: "qcom,qcc730-uart"
 
-include:
-  - name: uart-controller.yaml
-  - name: pinctrl-device.yaml
+include: [uart-controller.yaml, pinctrl-device.yaml, reset-device.yaml]
 
 properties:
   reg:
@@ -28,3 +26,6 @@ properties:
     description: |
       Size of the RX buffer in bytes. If not provided, a default value of 8 bytes is used.
     default: 8
+
+  resets:
+    required: true

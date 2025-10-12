@@ -9,10 +9,16 @@
 #include <errno.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/reset.h>
+#include <zephyr/drivers/clock_control.h>
 #include <zephyr/dt-bindings/gpio/qcom-qcc730-gpio.h>
+#include <zephyr/devicetree.h>
 #include <soc.h>
 
 #include <zephyr/drivers/gpio/gpio_utils.h>
+
+#include <zephyr/logging/log.h>
+LOG_MODULE_REGISTER(gpio_qcc730, CONFIG_GPIO_LOG_LEVEL);
 
 #define GPIOA_DEV DEVICE_DT_GET(DT_NODELABEL(gpioa))
 
@@ -32,6 +38,9 @@ struct gpio_qcc730_cfg {
 	struct gpio_driver_config common;
 	GPIO_BASE_gpio_Type *regs;
 	PMU_BASE_pmu_Type *pmu;
+	struct reset_dt_spec reset;
+	const struct device *clock_dev;
+	clock_control_subsys_t clock_subsys;
 };
 
 static int gpio_qcc730_pin_configure(const struct device *dev, gpio_pin_t pin, gpio_flags_t flags)
@@ -42,12 +51,16 @@ static int gpio_qcc730_pin_configure(const struct device *dev, gpio_pin_t pin, g
 
 	if (((flags & GPIO_INPUT) && (flags & GPIO_OUTPUT)) || (flags == GPIO_DISCONNECTED)) {
 		/* Pin is always either input or output */
+		LOG_ERR("Pin %d: invalid configuration. Pin must be either input or output.", pin);
 		return -ENOTSUP;
 	}
 
 	if (flags & GPIO_OUTPUT) {
 		/* Output is incompatible with pull */
 		if ((flags & (GPIO_PULL_UP | GPIO_PULL_DOWN)) != 0) {
+			LOG_ERR("Pin %d: invalid configuration. Output pin can't enable pull "
+				"resistor.",
+				pin);
 			return -ENOTSUP;
 		}
 
@@ -60,6 +73,12 @@ static int gpio_qcc730_pin_configure(const struct device *dev, gpio_pin_t pin, g
 			regs->GPIO_GPIO_SWPORTA_DR.reg |= BIT(pin);
 		}
 
+		/* Set drive strength */
+		if (flags & QCC730_GPIO_DRIVE_HIGH_E) {
+			pmu->PMU_CFG_IOPAD_DS.reg |= BIT(pin);
+		} else {
+			pmu->PMU_CFG_IOPAD_DS.reg &= ~BIT(pin);
+		}
 	} else if (flags & GPIO_INPUT) {
 		/* Set input direction */
 		regs->GPIO_GPIO_SWPORTA_DDR.reg &= ~BIT(pin);
@@ -157,48 +176,43 @@ int gpio_qcc730_pin_interrupt_configure(const struct device *dev, gpio_pin_t pin
 		return -ENOTSUP;
 	}
 
-	/* Configure the porta pins */
+	/* system clock enable */
+	regs->GPIO_GPIO_LS_SYNC.reg = GPIO_BASE_gpio_GPIO_GPIO_LS_SYNC_VALUE_Msk;
 
-	if (GPIOA_DEV == dev) {
-		/* system clock enable */
-		regs->GPIO_GPIO_LS_SYNC.reg = GPIO_BASE_gpio_GPIO_GPIO_LS_SYNC_VALUE_Msk;
+	if (GPIO_INT_DISABLE == mode) {
+		/* disable the interrupt */
+		regs->GPIO_GPIO_INTEN.reg &= ~BIT(pin);
+		return 0;
+	}
 
-		if (GPIO_INT_DISABLE == mode) {
-			/* disable the interrupt */
-			regs->GPIO_GPIO_INTEN.reg &= ~BIT(pin);
-			return 0;
-		}
+	/* reading  interrupt type register */
+	value = regs->GPIO_GPIO_INTTYPE_LEVEL.reg;
 
-		/* reading  interrupt type register */
-		value = regs->GPIO_GPIO_INTTYPE_LEVEL.reg;
+	if (GPIO_INT_MODE_LEVEL == mode) {
+		value &= (~BIT(pin));
+	} else if (GPIO_INT_MODE_EDGE == mode) {
+		value |= BIT(pin);
+	}
 
-		if (GPIO_INT_MODE_LEVEL == mode) {
-			value &= (~BIT(pin));
-		} else if (GPIO_INT_MODE_EDGE == mode) {
-			value |= BIT(pin);
-		}
+	/* clear/set the interrupt type bit */
+	regs->GPIO_GPIO_INTTYPE_LEVEL.reg = value;
 
-		/* clear/set the interrupt type bit */
-		regs->GPIO_GPIO_INTTYPE_LEVEL.reg = value;
+	/* read the polarity register */
+	value = regs->GPIO_GPIO_INR_POLARITY.reg;
 
-		/* read the polarity register */
-		value = regs->GPIO_GPIO_INR_POLARITY.reg;
-
-		if (GPIO_INT_TRIG_HIGH == trig) {
-			value |= BIT(pin);
-		} else if (GPIO_INT_TRIG_LOW == trig) {
-			value &= (~BIT(pin));
-		} else {
-			return -ENOTSUP;
-		}
-
-		/* clear/set value the value of polarity bit */
-		regs->GPIO_GPIO_INR_POLARITY.reg = value;
-		/* enable the interrupt for GPIO */
-		regs->GPIO_GPIO_INTEN.reg |= BIT(pin);
+	if (GPIO_INT_TRIG_HIGH == trig) {
+		value |= BIT(pin);
+	} else if (GPIO_INT_TRIG_LOW == trig) {
+		value &= (~BIT(pin));
 	} else {
+		LOG_ERR("GPIO doesn't support both edge trigger");
 		return -ENOTSUP;
 	}
+
+	/* clear/set value the value of polarity bit */
+	regs->GPIO_GPIO_INR_POLARITY.reg = value;
+	/* enable the interrupt for GPIO */
+	regs->GPIO_GPIO_INTEN.reg |= BIT(pin);
 
 	return 0;
 }
@@ -230,15 +244,28 @@ static void gpio_qcc730_isr(const struct device *dev)
 
 static int gpio_qcc730_init(const struct device *dev)
 {
+	int ret = 0;
 	const struct gpio_qcc730_cfg *config = dev->config;
 	PMU_BASE_pmu_Type *pmu = config->pmu;
 
 	/* GPIO root clock enable */
-	pmu->PMU_ROOT_CLK_ENABLE.bit.GPIO_ROOT_CLK_ENABLE = 1;
+	if (config->clock_dev) {
+		if (!device_is_ready(config->clock_dev)) {
+			return -ENODEV;
+		}
+		ret = clock_control_on(config->clock_dev, config->clock_subsys);
+		if (ret < 0 && ret != -EALREADY) {
+			return ret;
+		}
+	}
 
 	/* reset the configuration of gpios */
-	pmu->PMU_SOFT_RESET.bit.GPIO_SOFT_RESET = 1;
-	pmu->PMU_SOFT_RESET.bit.GPIO_SOFT_RESET = 0;
+	ret = reset_line_toggle_dt(&config->reset);
+
+	if (ret < 0) {
+		LOG_ERR("GPIO reset line toggle failed: %d", ret);
+		return -EIO;
+	}
 
 #ifdef CONFIG_GPIO_QCC730_INTERRUPT
 	/* There is one IRQ line and it is supported only for GPIOA. */
@@ -274,6 +301,9 @@ static DEVICE_API(gpio, gpio_qcc730_api) = {
 			},                                                                         \
 		.regs = (GPIO_BASE_gpio_Type *)DT_INST_REG_ADDR(n),                                \
 		.pmu = (PMU_BASE_pmu_Type *)DT_REG_ADDR(DT_NODELABEL(pmu)),                        \
+		.reset = RESET_DT_SPEC_INST_GET(n),                                                \
+		.clock_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(n)),                                \
+		.clock_subsys = (clock_control_subsys_t)DT_INST_CLOCKS_CELL(n, id),                \
 	};                                                                                         \
                                                                                                    \
 	static struct gpio_qcc730_data gpio_qcc730_data_##n;                                       \

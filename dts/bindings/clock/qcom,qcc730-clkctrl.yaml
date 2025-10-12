@@ -1,0 +1,17 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+description: Qualcomm QCC730 Clock Control
+
+compatible: "qcom,qcc730-clkctrl"
+
+include: [clock-controller.yaml, base.yaml]
+
+properties:
+  reg:
+    required: true
+    description: PMU register base address
+
+clock-cells:
+  - id

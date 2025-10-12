@@ -35,6 +35,7 @@ child-binding:
         property-allowlist:
           - bias-pull-down
           - bias-pull-up
+          - bias-disable
 
     properties:
       pinmux:

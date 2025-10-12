@@ -7,14 +7,19 @@ arch: arm
 toolchain:
   - zephyr
   - gnuarmemb
-ram: 512
-flash: 1280
+flash: 1536
+ram: 640
 supported:
+  - clock control
   - counter (qtimer)
+  - dma (dxe)
+  - flash
   - gpio
   - i2c
   - pinctrl
+  - reset
   - rtc
   - serial
+  - spi
   - watchdog
 vendor: qcom

@@ -1,0 +1,35 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0
+# Qualcomm QCC730 FLASH configuration options
+
+config FLASH_QCC730
+	bool "Qualcomm QCC730 FLASH driver"
+	default y
+	select FLASH_HAS_DRIVER_ENABLED
+	select FLASH_HAS_EXPLICIT_ERASE
+	select FLASH_HAS_PAGE_LAYOUT
+	depends on DT_HAS_QCOM_QSPI_QCC730_NOR_ENABLED
+	help
+	  Enable support for the Qualcomm QCC730 FLASH controllers.
+
+if FLASH_QCC730
+
+config FLASH_QCC730_QSPI_WRITE_BLOCK_SIZE
+	int "QCC730 QSPI Flash driver size of write block"
+	default 1
+	help
+	  Determine size of a block written by QCC730 FLASH controller.
+
+config FLASH_QCC730_QSPI_QUAD_MODE
+	bool "QCC730 QSPI Quad mode"
+	default y
+	help
+	  Enable Quad mode which uses all 4 communication lines for data transmission.
+
+config FLASH_QCC730_XIP_MODE
+	bool "QCC730 QSPI XIP mode"
+	default n
+	help
+	  Enable XIP mode for flash
+
+endif # FLASH_QCC730

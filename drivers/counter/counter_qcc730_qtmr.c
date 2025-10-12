@@ -11,6 +11,7 @@
 #include <zephyr/drivers/counter.h>
 #include <zephyr/irq.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/drivers/clock_control.h>
 #include "soc.h"
 
 #define QCC730_QTMR_AC_CNTACR_Mask 0x3F
@@ -24,6 +25,8 @@ struct qtmr_qcc730_cfg {
 	QTMR_AC_BASE_qtmr_ac_Type *access_control_regs;
 	QTMR_V1_T0_BASE_qtmr_v1_t0_Type *qtmr_regs;
 	PMU_BASE_pmu_Type *pmu_regs;
+	const struct device *clock_dev;
+	clock_control_subsys_t clock_subsys;
 };
 
 struct qtmr_qcc730_data {
@@ -221,15 +224,31 @@ static void qtmr_qcc730_isr(const struct device *dev)
 	}
 }
 
-static inline void qtmr_qcc730_frame_init(const struct device *dev)
+static inline int qtmr_qcc730_frame_init(const struct device *dev)
 {
 	const struct qtmr_qcc730_cfg *cfg = dev->config;
+	enum clock_control_status clk_status = CLOCK_CONTROL_STATUS_OFF;
+	int ret = 0;
 
 	// Mask frame interrupt
 	cfg->qtmr_regs->QTMR_V1_CNTP_CTL.bit.IMSK = 1U;
 	// Enable clocks
-	cfg->pmu_regs->PMU_ROOT_CLK_ENABLE.bit.QTIMER_AHB_ROOT_CLK_ENABLE = 1U;
-	cfg->pmu_regs->PMU_ROOT_CLK_ENABLE.bit.QTIMER_XO_ROOT_CLK_ENABLE = 1U;
+	if (cfg->clock_dev) {
+		if (!device_is_ready(cfg->clock_dev)) {
+			LOG_ERR("Clock device not ready for Qtimer");
+			return -ENODEV;
+		}
+		clk_status = clock_control_get_status(cfg->clock_dev, cfg->clock_subsys);
+		if (clk_status != CLOCK_CONTROL_STATUS_ON) {
+			ret = clock_control_on(cfg->clock_dev, cfg->clock_subsys);
+			if (ret < 0) {
+				LOG_ERR("Qtimer frame %u Clock Control ERROR: %d", cfg->frame_id,
+					ret);
+				return ret;
+			}
+		}
+	}
+
 	cfg->pmu_regs->PMU_SON_GDSCR.bit.RETAIN_FF_ENABLE = 1U;
 
 	// Set counter frequency
@@ -239,6 +258,8 @@ static inline void qtmr_qcc730_frame_init(const struct device *dev)
 	cfg->access_control_regs->QTMR_AC_CNTACR[cfg->frame_id].reg |= QCC730_QTMR_AC_CNTACR_Mask;
 
 	LOG_DBG("Qtimer frame %u initialized", cfg->frame_id);
+
+	return ret;
 }
 
 #define QTMR_QCC730_INIT(inst)                                                                     \
@@ -255,6 +276,8 @@ static inline void qtmr_qcc730_frame_init(const struct device *dev)
 			(QTMR_AC_BASE_qtmr_ac_Type *)DT_REG_ADDR(DT_PARENT(DT_DRV_INST(inst))),    \
 		.qtmr_regs = (QTMR_V1_T0_BASE_qtmr_v1_t0_Type *)DT_REG_ADDR(DT_DRV_INST(inst)),    \
 		.pmu_regs = (PMU_BASE_pmu_Type *)DT_REG_ADDR(DT_NODELABEL(pmu)),                   \
+		.clock_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(inst)),                             \
+		.clock_subsys = (clock_control_subsys_t)DT_INST_CLOCKS_CELL(inst, id),             \
 	};                                                                                         \
                                                                                                    \
 	static struct qtmr_qcc730_data qtmr_qcc730_data##inst;                                     \

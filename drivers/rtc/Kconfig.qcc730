@@ -14,5 +14,5 @@ config RTC_QCC730_INIT_PRIORITY
 	default 60
 	depends on RTC_QCC730
 	help
-	The priority of QCC730 RTC driver initialization.
+	  The priority of QCC730 RTC driver initialization.
 	  Must be greater (later) than the qtimer/counter init priority.

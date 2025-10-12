@@ -10,6 +10,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
+#include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/watchdog.h>
 
 #include "soc.h"
@@ -22,6 +23,8 @@ LOG_MODULE_REGISTER(wdt_qcc730, CONFIG_WDT_LOG_LEVEL);
 
 struct wdt_qcc730_cfg {
 	PMU_BASE_pmu_Type *pmu;
+	const struct device *clock_dev;
+	clock_control_subsys_t clock_subsys;
 };
 
 static int wdt_qcc730_setup(const struct device *dev, uint8_t options)
@@ -142,18 +145,31 @@ static int wdt_qcc730_init(const struct device *dev)
 {
 	const struct wdt_qcc730_cfg *wdt_cfg = dev->config;
 	PMU_BASE_pmu_Type *pmu_regs = wdt_cfg->pmu;
+	int ret = 0;
 
-	// Enable the watchdog root clock
-	pmu_regs->PMU_ROOT_CLK_ENABLE.bit.WDOG_XO_ROOT_CLK_ENABLE = 1U;
-	// Enable the AON watchdog sleep root clock
-	pmu_regs->PMU_AON_TOP_CFG.bit.AON_WDOG_SLP_ROOT_CLK_ENABLE = 1U;
+	// Enable root clock of watchdog
+	if (wdt_cfg->clock_dev) {
+		if (!device_is_ready(wdt_cfg->clock_dev)) {
+			return -ENODEV;
+		}
+		ret = clock_control_on(wdt_cfg->clock_dev, wdt_cfg->clock_subsys);
+		// Skip -EALREADY error if clock is already enabled
+		if (ret < 0 && ret != -EALREADY) {
+			return ret;
+		}
+	}
 
-	return 0;
+	return ret;
 }
 
-struct wdt_qcc730_cfg wdt_qcc730_config = {
-	.pmu = (PMU_BASE_pmu_Type *)DT_REG_ADDR(DT_NODELABEL(pmu)),
-};
+#define WDT_QCC730_INIT(n)                                                                         \
+	static const struct wdt_qcc730_cfg wdt_qcc730_config_##n = {                               \
+		.pmu = (PMU_BASE_pmu_Type *)DT_REG_ADDR(DT_NODELABEL(pmu)),                        \
+		.clock_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(n)),                                \
+		.clock_subsys = (clock_control_subsys_t)DT_INST_CLOCKS_CELL(n, id),                \
+	};                                                                                         \
+                                                                                                   \
+	DEVICE_DT_INST_DEFINE(n, wdt_qcc730_init, NULL, NULL, &wdt_qcc730_config_##n,              \
+			      PRE_KERNEL_1, CONFIG_KERNEL_INIT_PRIORITY_DEVICE, &wdt_qcc730_api);
 
-DEVICE_DT_INST_DEFINE(0, wdt_qcc730_init, NULL, NULL, &wdt_qcc730_config, PRE_KERNEL_1,
-		      CONFIG_KERNEL_INIT_PRIORITY_DEVICE, &wdt_qcc730_api);
+DT_INST_FOREACH_STATUS_OKAY(WDT_QCC730_INIT)

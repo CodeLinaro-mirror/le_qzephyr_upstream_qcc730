@@ -49,6 +49,18 @@
 					high-drive-strength;
 				};
 			};
+
+			qcspi_default: qcspi_default {
+				group1 {
+					pinmux = <
+						QCOM_PINMUX_PIN_NUM(0)  // SCK
+						QCOM_PINMUX_PIN_NUM(3)  // MISO
+						QCOM_PINMUX_PIN_NUM(2)  // MOSI
+						>;
+					bias-disable;
+					high-drive-strength;
+				};
+			};
 		};
 	};
 };

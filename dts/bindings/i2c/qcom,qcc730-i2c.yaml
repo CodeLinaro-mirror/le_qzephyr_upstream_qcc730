@@ -5,9 +5,12 @@ description: QCC730 I2C support
 
 compatible: qcom,qcc730-i2c
 
-include: i2c-controller.yaml
+include: [i2c-controller.yaml, reset-device.yaml]
 
 properties:
   periph-clock-frequency_khz:
     type: int
     description: I2C peripheral clock frequency in kHz
+
+  resets:
+    required: true

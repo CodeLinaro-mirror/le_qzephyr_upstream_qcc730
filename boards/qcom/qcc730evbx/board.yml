@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0;
 board:
   name: qcc730evbx
-  full_name: qcc730evbx
+  full_name: QCC730EVBX dev kit
   vendor: qcom
   socs:
   - name: qcc730
