@@ -48,11 +48,14 @@ class NVMProgrammerRunner(ZephyrBinaryRunner):
             self.debug(**kwargs)
 
     def flash(self, **kwargs):
-        openocdcfgpath = Path(self.cfg.board_dir) / ".." / "common" / "qcc730_openocd_ch347.cfg"
-        if not openocdcfgpath.exists():
-            raise FileNotFoundError(f"OpenOCD config file not found: {openocdcfgpath}")
+        if self.j == "jlink":
+            cfgpath = Path(self.cfg.board_dir) / ".." / "common" / "qcc730.JLinkScript"
+        elif self.j == "ch347":
+            cfgpath = Path(self.cfg.board_dir) / ".." / "common" / "qcc730_openocd_ch347.cfg"
+        if not cfgpath.exists():
+            raise FileNotFoundError(f"config file not found: {cfgpath}")
         original_dir = os.getcwd()
-        os.chdir(openocdcfgpath.parent)
+        os.chdir(cfgpath.parent)
 
         module_path = (
             Path(getenv("ZEPHYR_BASE")).absolute()
