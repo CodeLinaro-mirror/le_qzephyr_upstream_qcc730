@@ -54,8 +54,6 @@ class NVMProgrammerRunner(ZephyrBinaryRunner):
             cfgpath = Path(self.cfg.board_dir) / ".." / "common" / "qcc730_openocd_ch347.cfg"
         if not cfgpath.exists():
             raise FileNotFoundError(f"config file not found: {cfgpath}")
-        original_dir = os.getcwd()
-        os.chdir(cfgpath.parent)
 
         module_path = (
             Path(getenv("ZEPHYR_BASE")).absolute()
@@ -87,7 +85,7 @@ class NVMProgrammerRunner(ZephyrBinaryRunner):
         board_name = os.path.basename(self.cfg.board_dir)
         bdf_filename = self.build_conf.get("CONFIG_QCC730_BDF_FILE")
         bdf_path = Path(blobs_path, bdf_filename)
-        cmd_pre = 'python %s -s %s -i %s --nvm-name rram '%(nvm_programmer, self.j, str(prg_path))
+        cmd_pre = 'python %s -s %s -i %s --nvm-name rram --server-script %s '%(nvm_programmer, self.j, str(prg_path), str(cfgpath))
         if self.erase:
             self.logger.info('Erasing chip')
             os.system('%s -E'%cmd_pre)
@@ -111,8 +109,6 @@ class NVMProgrammerRunner(ZephyrBinaryRunner):
             cmd += " --reset "
         print(cmd)
         os.system(cmd)
-
-        os.chdir(original_dir)
 
     def debug(self, **kwargs):
         if self.j == "jlink":
