@@ -248,7 +248,7 @@
 			             <31 2>,
 			             <32 2>;
 			dma-channels = <12>;
-			status = "okay";
+			status = "disabled";
 		};
 	};
 };

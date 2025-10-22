@@ -20,6 +20,15 @@
 				};
 			};
 
+			uart0_option0_sleep: uart0_option0_sleep {
+				group1 {
+					pinmux = <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_11, QCC730_UART_OPTION_0)>,
+						<QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_12, QCC730_UART_OPTION_0)>;
+					bias-disable;  /* Explicit: no pull-up, no pull-down */
+					/* No high-drive-strength = low drive (0) */
+				};
+			};
+
 			/* UART Option 1 (GPIO14 TX, GPIO13 RX) */
 			uart0_option1: uart0_option1 {
 				group1 {
@@ -27,6 +36,15 @@
 					         <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_13, QCC730_UART_OPTION_1)>;
 					bias-pull-up;
 					high-drive-strength;
+				};
+			};
+
+			uart0_option1_sleep: uart0_option1_sleep {
+				group1 {
+					pinmux = <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_14, QCC730_UART_OPTION_1)>,
+						<QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_13, QCC730_UART_OPTION_1)>;
+					bias-disable;  /* Explicit: no pull-up, no pull-down */
+					/* No high-drive-strength = low drive (0) */
 				};
 			};
 
@@ -40,6 +58,15 @@
 				};
 			};
 
+			uart0_option2_sleep: uart0_option2_sleep {
+				group1 {
+					pinmux = <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_9, QCC730_UART_OPTION_2)>,
+						<QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_10, QCC730_UART_OPTION_2)>;
+					bias-disable;  /* Explicit: no pull-up, no pull-down */
+					/* No high-drive-strength = low drive (0) */
+				};
+			};
+
 			/* UART Option 3 (GPIO3 TX, GPIO1 RX) */
 			uart0_option3: uart0_option3 {
 				group1 {
@@ -47,6 +74,15 @@
 					         <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_1, QCC730_UART_OPTION_3)>;
 					bias-pull-up;
 					high-drive-strength;
+				};
+			};
+
+			uart0_option3_sleep: uart0_option3_sleep {
+				group1 {
+					pinmux = <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_3, QCC730_UART_OPTION_3)>,
+						<QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_1, QCC730_UART_OPTION_3)>;
+					bias-disable;  /* Explicit: no pull-up, no pull-down */
+					/* No high-drive-strength = low drive (0) */
 				};
 			};
 

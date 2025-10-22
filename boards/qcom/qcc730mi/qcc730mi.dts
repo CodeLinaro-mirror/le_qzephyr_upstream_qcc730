@@ -24,7 +24,8 @@
 
 &uart0 {
 	pinctrl-0 = <&uart0_option1>;
-	pinctrl-names = "default";
+	pinctrl-1 = <&uart0_option1_sleep>;
+	pinctrl-names = "default", "sleep";
 	status = "okay";
 	current-speed = <115200>;
 	parity = "none";

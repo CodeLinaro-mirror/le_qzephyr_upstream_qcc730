@@ -7,6 +7,7 @@
 
 #include <zephyr/device.h>
 #include <soc.h>
+#include <zephyr/pm/device.h>
 
 #define LOG_LEVEL CONFIG_SPI_LOG_LEVEL
 #include <zephyr/logging/log.h>
@@ -186,6 +187,49 @@ static int spi_qcc730_spis_init(const struct device *dev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_DEVICE
+static int spi_qcc730_spis_deinit(const struct device *dev)
+{
+	const struct spi_qcc730_cfg *cfg = dev->config;
+	PMU_BASE_pmu_Type *pmu = cfg->pmu;
+
+	/* Disable root clock */
+	pmu->PMU_ROOT_CLK_ENABLE.bit.SPI_ROOT_CLK_ENABLE = 0U;
+
+	if (pmu->PMU_ROOT_CLK_ENABLE.bit.SPI_ROOT_CLK_ENABLE != 0U) {
+		return -EADDRNOTAVAIL;
+	}
+
+	/* Disable interrupt */
+	irq_disable(DT_INST_IRQN(0));
+
+	/* This register needs to be written first to unlock
+	 * write access to BOOT_STRAP_CONFIGURATION_STATUS */
+	pmu->PMU_BOOT_STRAP_CONFIG_SECURE.reg = QCC730_QCSPI_SLAVE_FR_BOOT_STRAP_VALUE;
+
+	/* Disable SPI slave */
+	pmu->PMU_BOOT_STRAP_CONFIGURATION_STATUS.bit.CFG_SPI_ENABLE = 0U;
+
+	return 0;
+}
+
+static int spi_qcc730_spis_pm_action(const struct device *dev, enum pm_device_action action)
+{
+	switch (action) {
+	case PM_DEVICE_ACTION_SUSPEND:
+		spi_qcc730_spis_deinit(dev);
+		break;
+	case PM_DEVICE_ACTION_RESUME:
+		spi_qcc730_spis_init(dev);
+		break;
+	default:
+		return -ENOTSUP;
+	}
+
+	return 0;
+}
+#endif /* CONFIG_PM_DEVICE */
+
 static DEVICE_API(spi, spi_qcc730_spis_driver_api) = {
 	.transceive = spi_qcc730_spis_transceive,
 	.release = spi_qcc730_spis_release,
@@ -202,8 +246,12 @@ static DEVICE_API(spi, spi_qcc730_spis_driver_api) = {
 		SPI_CONTEXT_INIT_LOCK(spi_qcc730_data_##n, ctx),                                   \
 		SPI_CONTEXT_CS_GPIOS_INITIALIZE(DT_DRV_INST(n), ctx)};                             \
                                                                                                    \
-	DEVICE_DT_INST_DEFINE(n, spi_qcc730_spis_init, NULL, &spi_qcc730_data_##n,                 \
-			      &spi_qcc730_cfg_##n, POST_KERNEL, CONFIG_SPI_INIT_PRIORITY,          \
+        PM_DEVICE_DT_INST_DEFINE(n, spi_qcc730_spis_pm_action);                                    \
+                                                                                                   \
+	DEVICE_DT_INST_DEFINE(n, spi_qcc730_spis_init, PM_DEVICE_DT_INST_GET(n),                   \
+			      &spi_qcc730_data_##n,                                                \
+			      &spi_qcc730_cfg_##n,                                                 \
+			      POST_KERNEL, CONFIG_SPI_INIT_PRIORITY,                               \
 			      &spi_qcc730_spis_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(SPI_QCC730_DEVICE)
