@@ -9,6 +9,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/flash.h>
+#include <zephyr/pm/device.h>
 #include "ferm_qspi.h"
 #include "ferm_flash.h"
 #include <string.h>
@@ -25,6 +26,9 @@ struct flash_qcc730_data {
 	flash_context_t flash_ctx_data;
 #if defined(CONFIG_MULTITHREADING)
 	struct k_sem sem;
+#endif
+#ifdef CONFIG_PM_DEVICE
+	bool qspi_initialized;
 #endif
 };
 
@@ -249,6 +253,63 @@ static int drv_flash_controller_init()
 	LOG_DBG("drv_flash_controller_init: drv_qspi_init failed");
 	return -ENODEV;
 }
+
+static int flash_qcc730_qspi_enable(const struct device *dev)
+{
+	int ret = 0;
+#ifdef CONFIG_PM_DEVICE
+	struct flash_qcc730_data *data = dev->data;
+#endif
+
+	ret = drv_flash_controller_init();
+
+
+	if (ret != 0) {
+		LOG_ERR("Enable QSPI failed err:%d", ret);
+		return ret;
+	}
+#ifdef CONFIG_PM_DEVICE
+	data->qspi_initialized = true;
+#endif
+
+	return ret;
+}
+
+#ifdef CONFIG_PM_DEVICE
+
+static int flash_qcc730_qspi_suspend(const struct device *dev)
+{
+	struct flash_qcc730_data *data = dev->data;
+
+	/* deinit function returns true as a success */
+	if (!drv_qspi_deinit()) {
+		LOG_ERR("Suspend QSPI failed");
+		return -EIO;
+	}
+
+	data->qspi_initialized = false;
+
+	return 0;
+}
+
+static int flash_qcc730_qspi_pm_action(const struct device *dev, enum pm_device_action action)
+{
+	int ret;
+
+	switch (action) {
+	case PM_DEVICE_ACTION_RESUME:
+		ret = flash_qcc730_qspi_enable(dev);
+		break;
+	case PM_DEVICE_ACTION_SUSPEND:
+		ret = flash_qcc730_qspi_suspend(dev);
+		break;
+	default:
+		return -ENOTSUP;
+	}
+	return ret;
+}
+
+#endif /* CONFIG_PM_DEVICE */
 
 /**
    @brief Read flash registers.
@@ -688,6 +749,13 @@ int flash_qcc730_qspi_nor_erase(const struct device *dev, off_t offset, size_t s
 		return -EINVAL;
 	}
 
+#ifdef CONFIG_PM_DEVICE
+	if (!data->qspi_initialized) {
+		LOG_ERR("Driver is suspended ");
+		return -EBUSY;
+	}
+#endif
+
 #if defined(CONFIG_MULTITHREADING)
 	k_sem_take(&data->sem, K_FOREVER);
 #endif
@@ -788,6 +856,13 @@ int flash_qcc730_qspi_nor_write(const struct device *dev, off_t offset, const vo
 		return -EINVAL;
 	}
 
+#ifdef CONFIG_PM_DEVICE
+	if (!data->qspi_initialized) {
+		LOG_ERR("Driver is suspended ");
+		return -EBUSY;
+	}
+#endif
+
 #if defined(CONFIG_MULTITHREADING)
 	k_sem_take(&data->sem, K_FOREVER);
 #endif
@@ -866,6 +941,13 @@ int flash_qcc730_qspi_nor_read(const struct device *dev, off_t offset, void *rea
 {
 	struct flash_qcc730_data *data = dev->data;
 	qspi_cmd_t qspi_read_cmd;
+
+#ifdef CONFIG_PM_DEVICE
+	if (!data->qspi_initialized) {
+		LOG_ERR("Driver is suspended ");
+		return -EBUSY;
+	}
+#endif
 
 	if (!len) {
 		return 0;
@@ -953,7 +1035,7 @@ static int flash_qcc730_qspi_nor_init(const struct device *dev)
 #endif
 
 	/* Initialize QSPI driver. */
-	ret = drv_flash_controller_init();
+	ret = flash_qcc730_qspi_enable(dev);
 	if (ret != 0) {
 		LOG_DBG("flash_qcc730_qspi_nor_init: flash controller init failed");
 		return -ENODEV;
@@ -1063,8 +1145,12 @@ static DEVICE_API(flash, flash_qcc730_qspi_nor_api) = {
 			},                                                                         \
 	};                                                                                         \
                                                                                                    \
-	DEVICE_DT_INST_DEFINE(n, flash_qcc730_qspi_nor_init, NULL, &flash_qspi_data_##n,           \
-			      &flash_qspi_config_##n, POST_KERNEL, CONFIG_FLASH_INIT_PRIORITY,     \
+	PM_DEVICE_DT_INST_DEFINE(n, flash_qcc730_qspi_pm_action);                                  \
+                                                                                                   \
+	DEVICE_DT_INST_DEFINE(n, flash_qcc730_qspi_nor_init, PM_DEVICE_DT_INST_GET(n),             \
+			      &flash_qspi_data_##n,                                                \
+			      &flash_qspi_config_##n,                                              \
+			      POST_KERNEL, CONFIG_FLASH_INIT_PRIORITY,                             \
 			      &flash_qcc730_qspi_nor_api);
 
 DT_INST_FOREACH_STATUS_OKAY(DEFINE_FLASH_QCC730)

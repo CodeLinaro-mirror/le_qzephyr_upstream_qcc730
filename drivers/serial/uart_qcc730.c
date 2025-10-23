@@ -15,6 +15,8 @@
 #include <zephyr/drivers/reset.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/sys/ring_buffer.h>
+#include <zephyr/sys/util.h>
+#include <zephyr/pm/device.h>
 #include "zephyr/dt-bindings/serial/uart_qcom_qcc730.h"
 #include "ferm_uart_hal.h"
 
@@ -23,10 +25,11 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(uart_qcc730, CONFIG_UART_LOG_LEVEL);
 
-#define UART_TRANS_TIME_OUT  1000
-#define DIVISOR_DLL(divisor) (divisor & 0xff)
-#define DIVISOR_DLH(divisor) ((divisor >> 8) & 0xff)
-#define BAUDRATE_NUM_MAX     9
+#define UART_TRANS_TIME_OUT   1000
+#define DIVISOR_DLL(divisor)  (divisor & 0xff)
+#define DIVISOR_DLH(divisor)  ((divisor >> 8) & 0xff)
+#define BAUDRATE_NUM_MAX      9
+#define UART_TX_EMPTY_WAIT_US 10000
 
 struct uart_qcc730_config {
 	UART_BASE_uart_Type *uart_hal_regs;
@@ -41,6 +44,7 @@ struct uart_qcc730_data {
 	struct uart_config *uart_cfg;
 	struct ring_buf *rx_ringbuf;
 	struct k_spinlock lock;
+	bool uart_initialized;
 };
 
 typedef struct {
@@ -205,6 +209,83 @@ static inline void uart_qcc730_nop_delay(uint32_t n)
 	}
 }
 
+#ifdef CONFIG_PM_DEVICE
+/* Platform enable/disable, used by init and PM funcitons. */
+static int uart_qcc730_platform(const struct device *dev, uint8_t enable)
+{
+	const struct uart_qcc730_config *cfg = dev->config;
+	struct uart_qcc730_data *data = dev->data;
+	int ret = 0;
+
+	if (enable) {
+
+		/* Apply default pinctrl state */
+		ret = pinctrl_apply_state(cfg->pin_cfg, PINCTRL_STATE_DEFAULT);
+		if (ret < 0) {
+			LOG_ERR("Failed to apply default pinctrl state (%d)", ret);
+			return ret;
+		}
+
+		if (cfg->clock_dev) {
+			if (!device_is_ready(cfg->clock_dev)) {
+				return -ENODEV;
+			}
+			ret = clock_control_on(cfg->clock_dev, cfg->clock_subsys);
+			if (ret < 0 && ret != -EALREADY) {
+				return ret;
+			}
+		}
+
+		irq_enable(DT_INST_IRQN(0));
+
+		data->uart_initialized = true;
+	} else {
+
+		irq_disable(DT_INST_IRQN(0));
+
+		if (cfg->clock_dev) {
+			ret = clock_control_off(cfg->clock_dev, cfg->clock_subsys);
+			if (ret < 0) {
+				LOG_ERR("Error turning UART clock off for sleep (%d)", ret);
+				return ret;
+			}
+		}
+
+		/* Apply sleep pinctrl state */
+		ret = pinctrl_apply_state(cfg->pin_cfg, PINCTRL_STATE_SLEEP);
+		if (ret < 0) {
+			LOG_ERR("Failed to apply sleep pinctrl state (%d)", ret);
+		}
+
+		data->uart_initialized = false;
+	}
+
+	return 0;
+}
+
+static int uart_qcc730_enable(const struct device *dev)
+{
+	return uart_qcc730_platform(dev, 1U);
+}
+
+static int uart_qcc730_suspend(const struct device *dev)
+{
+	return uart_qcc730_platform(dev, 0U);
+}
+
+static int uart_qcc730_pm_action(const struct device *dev, enum pm_device_action action)
+{
+	switch (action) {
+	case PM_DEVICE_ACTION_RESUME:
+		return uart_qcc730_enable(dev);
+	case PM_DEVICE_ACTION_SUSPEND:
+		return uart_qcc730_suspend(dev);
+	default:
+		return -ENOTSUP;
+	}
+}
+#endif // CONFIG_PM_DEVICE
+
 /**
  * @brief Sends the char out by writing it to QWLAN_UART_UART_RBR_REG register
  *
@@ -217,8 +298,15 @@ static int uart_qcc730_putchar(const struct device *dev, uint8_t ch)
 {
 	int ret;
 	const struct uart_qcc730_config *cfg = dev->config;
+	struct uart_qcc730_data *data = dev->data;
 	UART_BASE_uart_Type *uart_hal_regs = cfg->uart_hal_regs;
 	uint32_t timeout = UART_TRANS_TIME_OUT;
+
+	/* Error while suspended/uninitialized */
+	if (!data->uart_initialized) {
+		return -EBUSY;
+	}
+
 	// checks loops until TEMPT==1 or timeout hits
 	while (uart_hal_regs->UART_UART_LSR.bit.TEMPT == 0 && timeout--)
 		;
@@ -247,6 +335,11 @@ int uart_qcc730_poll_in(const struct device *dev, unsigned char *p_char)
 {
 	uint32_t ret;
 	struct uart_qcc730_data *data = dev->data;
+
+	/* Error while suspended/uninitialized */
+	if (!data->uart_initialized) {
+		return -EBUSY;
+	}
 
 	k_spinlock_key_t key = k_spin_lock(&data->lock);
 
@@ -282,85 +375,88 @@ int uart_qcc730_configure(const struct device *dev, const struct uart_config *ua
 	const struct uart_qcc730_config *cfg = dev->config;
 	struct uart_qcc730_data *data = dev->data;
 	UART_BASE_uart_Type *uart_hal_regs = cfg->uart_hal_regs;
-	int ret = 0;
-	uint32_t baud_divisor = 0U, parity_cfg = 0U, stopbit_cfg = 0U, databit_cfg = 0U;
+	int ret = 0, i = 0;
+	uint32_t baud_divisor = 0U;
+	uint32_t parity_cfg = 0U;
+	uint32_t stopbit_cfg = 0U;
+	uint32_t databit_cfg = 0U;
 
-	if (data->uart_cfg == NULL) {
-		LOG_ERR("Uart config is not initilized!\n");
+	if (uart_cfg == NULL) {
+		LOG_ERR("uart_cfg is NULL");
 		return -EINVAL;
 	}
 
-	/* If configuration is identical, skip call */
-	if (data->uart_cfg && data->uart_cfg->baudrate == uart_cfg->baudrate &&
-	    data->uart_cfg->parity == uart_cfg->parity &&
-	    data->uart_cfg->stop_bits == uart_cfg->stop_bits &&
-	    data->uart_cfg->data_bits == uart_cfg->data_bits &&
-	    data->uart_cfg->flow_ctrl == uart_cfg->flow_ctrl) {
-		return 0;
+	if (!data->uart_initialized) {
+		LOG_ERR("UART in sleep state or not initialized!");
+		return -EBUSY;
 	}
 
-	/* Validate parameters */
+	if (data->uart_cfg == NULL) {
+		LOG_ERR("Uart config is not initilized!");
+		return -EINVAL;
+	}
+
+	// Validate config
 	ret = uart_qcc730_get_divisor_by_baudrate(uart_cfg->baudrate, &baud_divisor);
-	if (ret) {
-		LOG_ERR("Invalid baudrate for QCC730 UART\n");
+	if (ret != 0) {
+		LOG_ERR("Invalid baudrate for QCC730 UART");
 		return ret;
 	}
-
 	ret = uart_qcc730_get_parity(uart_cfg->parity, &parity_cfg);
-	if (ret == -EINVAL) {
-		LOG_ERR("Invalid parity for QCC730 UART\n");
+	if (ret != 0) {
+		LOG_ERR("Invalid parity for QCC730 UART");
 		return ret;
 	}
-
 	ret = uart_qcc730_get_stop_bits(uart_cfg->stop_bits, &stopbit_cfg);
-	if (ret == -EINVAL) {
-		LOG_ERR("Invalid stopbits for QCC730 UART\n");
+	if (ret != 0) {
+		LOG_ERR("Invalid stopbits for QCC730 UART");
 		return ret;
 	}
-
 	ret = uart_qcc730_get_data_bits(uart_cfg->data_bits, &databit_cfg);
-	if (ret == -EINVAL) {
-		LOG_ERR("Invalid databits for QCC730 UART\n");
+	if (ret != 0) {
+		LOG_ERR("Invalid databits for QCC730 UART");
 		return ret;
 	}
 
 	k_spinlock_key_t key = k_spin_lock(&data->lock);
 
-	/* Configure baudrate only if changed */
-	if (data->uart_cfg->baudrate != uart_cfg->baudrate) {
-		uart_hal_divisor_access(uart_hal_regs, 1);
-		uart_hal_divisor_low_cfg(uart_hal_regs, DIVISOR_DLL(baud_divisor));
-		uart_hal_divisor_high_cfg(uart_hal_regs, DIVISOR_DLH(baud_divisor));
-		uart_hal_divisor_access(uart_hal_regs, 0);
-	}
-
-	/* Configure parity only if changed */
-	if (data->uart_cfg->parity != uart_cfg->parity) {
-		if (uart_cfg->parity == UART_CFG_PARITY_NONE) {
-			uart_hal_parity_enable(uart_hal_regs, 0);
-		} else {
-			uart_hal_parity_enable(uart_hal_regs, 1);
-			uart_hal_event_parity_select(uart_hal_regs, parity_cfg);
+	// Wait for TX path to be empty before reconfiguring
+	for (i = 0; i < UART_TX_EMPTY_WAIT_US; i++) {
+		if (uart_hal_regs->UART_UART_LSR.bit.TEMPT) {
+			break;
 		}
+		k_busy_wait(1);
 	}
 
-	/* Configure stop bits only if changed */
-	if (data->uart_cfg->stop_bits != uart_cfg->stop_bits) {
-		uart_hal_stop_bits_cfg(uart_hal_regs, stopbit_cfg);
-	}
+	// Halt TX for configuration update
+	uart_hal_regs->UART_UART_HTX.bit.HALT = 1U;
 
-	/* Configure data bits only if changed */
-	if (data->uart_cfg->data_bits != uart_cfg->data_bits) {
-		uart_hal_data_bits_cfg(uart_hal_regs, databit_cfg);
-	}
+	uart_hal_divisor_access(uart_hal_regs, 1);
+	uart_hal_divisor_low_cfg(uart_hal_regs, DIVISOR_DLL(baud_divisor));
+	uart_hal_divisor_high_cfg(uart_hal_regs, DIVISOR_DLH(baud_divisor));
+	uart_hal_divisor_access(uart_hal_regs, 0);
 
-	/* Update the cached configuration */
-	ret = uart_qcc730_update_config(dev, uart_cfg);
-	if (ret != 0) {
-		LOG_ERR("Update config error for QCC730\n");
+	if (uart_cfg->parity == UART_CFG_PARITY_NONE) {
+		uart_hal_parity_enable(uart_hal_regs, 0);
+	} else {
+		uart_hal_parity_enable(uart_hal_regs, 1);
+		uart_hal_event_parity_select(uart_hal_regs, parity_cfg);
 	}
+	uart_hal_stop_bits_cfg(uart_hal_regs, stopbit_cfg);
+	uart_hal_data_bits_cfg(uart_hal_regs, databit_cfg);
+
+	// Re-enable RX interrupt for poll-in workaround
+	uart_hal_enable_intr_rx(uart_hal_regs);
+
+	// Release TX halt
+	uart_hal_regs->UART_UART_HTX.bit.HALT = 0U;
 
 	k_spin_unlock(&data->lock, key);
+
+	ret = uart_qcc730_update_config(dev, uart_cfg);
+	if (ret != 0) {
+		LOG_ERR("Update config error for QCC730");
+	}
 
 	return ret;
 }
@@ -420,9 +516,22 @@ static int uart_qcc730_init(const struct device *dev)
 	struct uart_qcc730_data *data = dev->data;
 	const struct uart_qcc730_config *cfg = dev->config;
 	UART_BASE_uart_Type *uart_hal_regs = cfg->uart_hal_regs;
-
+	uint32_t divisor = 0, current_baudrate = 0;
+	uint32_t parity_cfg = 0U, stopbit_cfg = 0U, databit_cfg = 0U;
 	int ret = 0;
 
+	// Enable clock
+	if (cfg->clock_dev) {
+		if (!device_is_ready(cfg->clock_dev)) {
+			return -ENODEV;
+		}
+		ret = clock_control_on(cfg->clock_dev, cfg->clock_subsys);
+		if (ret < 0 && ret != -EALREADY) {
+			return ret;
+		}
+	}
+
+	// Reset peripheral
 	ret = reset_line_toggle_dt(&cfg->reset);
 	if (ret < 0) {
 		return -EIO;
@@ -430,47 +539,55 @@ static int uart_qcc730_init(const struct device *dev)
 
 	pinctrl_apply_state(cfg->pin_cfg, PINCTRL_STATE_DEFAULT);
 
-	// SYS_UART_IER and SYS_UART_DL are same registers
-	uart_hal_regs->UART_UART_DLH.reg = UART_ERDA_INTTERUPT_DISABLE;
+	// Disable all UART interrupts
+	uart_hal_regs->UART_UART_LCR.bit.DLAB = 0U;
+	uart_hal_regs->UART_UART_DLH.reg = 0x00U;
 
-	// Enable root clock of UART
-	if (cfg->clock_dev) {
-		if (!device_is_ready(cfg->clock_dev)) {
-			return -ENODEV;
-		}
-		ret = clock_control_on(cfg->clock_dev, cfg->clock_subsys);
-		// Reset value of CLK ENABLE register is 0x003BE011. Page 16 of HW Prog Guide
-		// UART_ROOT_CLK_ENABLE is bit 11 which enabld by default.
-		// Hence skip -EALREADY error
-		if (ret < 0 && ret != -EALREADY) {
-			return ret;
-		}
+	current_baudrate = data->uart_cfg->baudrate;
+	ret = uart_qcc730_get_divisor_by_baudrate(current_baudrate, &divisor);
+	if (ret != 0) {
+		// Fallback to 115200
+		current_baudrate = 115200U;
+		(void)uart_qcc730_get_divisor_by_baudrate(current_baudrate, &divisor);
 	}
+
+	(void)uart_qcc730_get_parity(data->uart_cfg->parity, &parity_cfg);
+	(void)uart_qcc730_get_stop_bits(data->uart_cfg->stop_bits, &stopbit_cfg);
+	(void)uart_qcc730_get_data_bits(data->uart_cfg->data_bits, &databit_cfg);
+
+	// Halt TX during initial setup
+	uart_hal_regs->UART_UART_HTX.bit.HALT = 1U;
+
+	// Set divisor, frame format, modem state, enable RX interrupt
+	uart_hal_divisor_access(uart_hal_regs, 1);
+	uart_hal_divisor_low_cfg(uart_hal_regs, DIVISOR_DLL(divisor));
+	uart_hal_divisor_high_cfg(uart_hal_regs, DIVISOR_DLH(divisor));
+	uart_hal_divisor_access(uart_hal_regs, 0);
+
+	if (data->uart_cfg->parity == UART_CFG_PARITY_NONE) {
+		uart_hal_parity_enable(uart_hal_regs, 0);
+	} else {
+		uart_hal_parity_enable(uart_hal_regs, 1);
+		uart_hal_event_parity_select(uart_hal_regs, parity_cfg);
+	}
+	uart_hal_stop_bits_cfg(uart_hal_regs, stopbit_cfg);
+	uart_hal_data_bits_cfg(uart_hal_regs, databit_cfg);
+
+	// Release TX halt
+	uart_hal_regs->UART_UART_HTX.bit.HALT = 0U;
+
+	uart_hal_regs->UART_UART_MCR.reg = QCC730_UART_MCR_DEFAULT;
 
 	IRQ_CONNECT(DT_INST_IRQN(0), DT_INST_IRQ(0, priority), uart_qcc730_isr,
 		    DEVICE_DT_INST_GET(0), 0);
 	irq_enable(DT_INST_IRQN(0));
 
-	// Force Set the MCR register to zero
-	uart_hal_regs->UART_UART_MCR.reg = QCC730_UART_MCR_DEFAULT;
+	// Enable RX interrupt to as workaround for poll-in
+	uart_hal_enable_intr_rx(uart_hal_regs);
 
-	// passing QCC730_UART_ENABLE=1 enables access to DLL,
-	// DLAB bits allow switching access to IER and DLH registers
-	uart_hal_divisor_access(uart_hal_regs, QCC730_UART_ENABLE);
-	uart_hal_regs->UART_UART_LCR.bit.DLS =
-		QCC730_UART_LCR_DLS_MASK; // using define because there are two bits
+	data->uart_initialized = true;
 
-	uint32_t divisor;
-	uint32_t current_baudrate = data->uart_cfg->baudrate;
-	ret = uart_qcc730_get_divisor_by_baudrate(current_baudrate, &divisor);
-	if (ret == 0) {
-		uart_hal_divisor_low_cfg(uart_hal_regs, DIVISOR_DLL(divisor));
-		uart_hal_divisor_high_cfg(uart_hal_regs, DIVISOR_DLH(divisor));
-		uart_hal_divisor_access(uart_hal_regs, QCC730_UART_DISABLE);
-		uart_qcc730_nop_delay(10);
-		uart_hal_enable_intr_rx(uart_hal_regs);
-	}
-	return ret;
+	return 0;
 }
 
 static DEVICE_API(uart, uart_qcc730_api) = {
@@ -513,8 +630,10 @@ static DEVICE_API(uart, uart_qcc730_api) = {
 		.rx_ringbuf = &uart_qcc730_rx_ringbuf_##n,                                         \
 	};                                                                                         \
                                                                                                    \
-	DEVICE_DT_INST_DEFINE(n, uart_qcc730_init, NULL, &uart_qcc730_data_##n,                    \
-			      &uart_qcc730_cfg_##n, PRE_KERNEL_1, CONFIG_SERIAL_INIT_PRIORITY,     \
-			      &uart_qcc730_api);
+	PM_DEVICE_DT_INST_DEFINE(n, uart_qcc730_pm_action);                                        \
+                                                                                                   \
+	DEVICE_DT_INST_DEFINE(n, uart_qcc730_init, PM_DEVICE_DT_INST_GET(n),                       \
+			      &uart_qcc730_data_##n, &uart_qcc730_cfg_##n, PRE_KERNEL_1,           \
+			      CONFIG_SERIAL_INIT_PRIORITY, &uart_qcc730_api);
 
 DT_INST_FOREACH_STATUS_OKAY(UART_QCC730_INIT_DEVICE)

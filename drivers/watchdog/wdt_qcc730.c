@@ -12,6 +12,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/watchdog.h>
+#include <zephyr/pm/device.h>
 
 #include "soc.h"
 
@@ -27,10 +28,21 @@ struct wdt_qcc730_cfg {
 	clock_control_subsys_t clock_subsys;
 };
 
+struct wdt_qcc730_data {
+	bool wdt_initialized;
+};
+
 static int wdt_qcc730_setup(const struct device *dev, uint8_t options)
 {
 	const struct wdt_qcc730_cfg *wdt_cfg = dev->config;
+	struct wdt_qcc730_data *data = dev->data;
 	PMU_BASE_pmu_Type *pmu_regs = wdt_cfg->pmu;
+
+	/* Error while suspended/uninitialized */
+	if (!data->wdt_initialized) {
+		LOG_ERR("Watchdog in sleep state or not initialized!");
+		return -EBUSY;
+	}
 
 	if (options & WDT_OPT_PAUSE_IN_SLEEP) {
 		LOG_ERR("Pause in sleep not supported");
@@ -61,7 +73,14 @@ static int wdt_qcc730_setup(const struct device *dev, uint8_t options)
 static int wdt_qcc730_disable(const struct device *dev)
 {
 	const struct wdt_qcc730_cfg *wdt_cfg = dev->config;
+	struct wdt_qcc730_data *data = dev->data;
 	PMU_BASE_pmu_Type *pmu_regs = wdt_cfg->pmu;
+
+	/* Error while suspended/uninitialized */
+	if (!data->wdt_initialized) {
+		LOG_ERR("Watchdog in sleep state or not initialized!");
+		return -EBUSY;
+	}
 
 	pmu_regs->PMU_WDOG_CTL.bit.WDOG_ENABLE = 0U;
 	pmu_regs->PMU_AON_WDOG_CTL.bit.WDOG_ENABLE = 0U;
@@ -72,7 +91,14 @@ static int wdt_qcc730_disable(const struct device *dev)
 static int wdt_qcc730_install_timeout(const struct device *dev, const struct wdt_timeout_cfg *cfg)
 {
 	const struct wdt_qcc730_cfg *wdt_cfg = dev->config;
+	struct wdt_qcc730_data *data = dev->data;
 	PMU_BASE_pmu_Type *pmu_regs = wdt_cfg->pmu;
+
+	/* Error while suspended/uninitialized */
+	if (!data->wdt_initialized) {
+		LOG_ERR("Watchdog in sleep state or not initialized!");
+		return -EBUSY;
+	}
 
 	if (cfg == NULL || cfg->window.min > 0) {
 		LOG_ERR("Wrong timeout configuration");
@@ -126,7 +152,13 @@ static int wdt_qcc730_feed(const struct device *dev, int channel_id)
 {
 	ARG_UNUSED(channel_id);
 	const struct wdt_qcc730_cfg *wdt_cfg = dev->config;
+	struct wdt_qcc730_data *data = dev->data;
 	PMU_BASE_pmu_Type *pmu_regs = wdt_cfg->pmu;
+
+	/* Error while suspended/uninitialized */
+	if (!data->wdt_initialized) {
+		return -EBUSY;
+	}
 
 	pmu_regs->PMU_AON_WDOG_CTL.bit.WDOG_RESET = 1U;
 	pmu_regs->PMU_AON_WDOG_CTL.bit.WDOG_RESET = 0U;
@@ -141,10 +173,68 @@ static DEVICE_API(wdt, wdt_qcc730_api) = {
 	.feed = wdt_qcc730_feed,
 };
 
+#ifdef CONFIG_PM_DEVICE
+/* Platform enable/disable, used by PM functions. */
+static int wdt_qcc730_platform(const struct device *dev, uint8_t enable)
+{
+	const struct wdt_qcc730_cfg *wdt_cfg = dev->config;
+	struct wdt_qcc730_data *data = dev->data;
+	int ret = 0;
+
+	if (wdt_cfg->clock_dev) {
+		if(enable) {
+			if (!device_is_ready(wdt_cfg->clock_dev)) {
+				return -ENODEV;
+			}
+			ret = clock_control_on(wdt_cfg->clock_dev, wdt_cfg->clock_subsys);
+			if (ret < 0 && ret != -EALREADY) {
+				LOG_ERR("Error turning watchdog clock on for sleep (%d)", ret);
+				return ret;
+			}
+			data->wdt_initialized = true;
+		} else {
+			ret = clock_control_off(wdt_cfg->clock_dev, wdt_cfg->clock_subsys);
+			if (ret < 0) {
+				LOG_ERR("Error turning watchdog clock off for sleep (%d)", ret);
+				return ret;
+			}
+			data->wdt_initialized = false;
+		}
+	} else {
+		LOG_ERR("No clock device defined for watchdog");
+		ret = -ENODEV;
+	}
+
+	return ret;
+}
+
+static int wdt_qcc730_enable(const struct device *dev)
+{
+	return wdt_qcc730_platform(dev, 1U);
+}
+
+static int wdt_qcc730_suspend(const struct device *dev)
+{
+	return wdt_qcc730_platform(dev, 0U);
+}
+
+static int wdt_qcc730_pm_action(const struct device *dev, enum pm_device_action action)
+{
+	switch (action) {
+	case PM_DEVICE_ACTION_RESUME:
+		return wdt_qcc730_enable(dev);
+	case PM_DEVICE_ACTION_SUSPEND:
+		return wdt_qcc730_suspend(dev);
+	default:
+		return -ENOTSUP;
+	}
+}
+#endif // CONFIG_PM_DEVICE
+
 static int wdt_qcc730_init(const struct device *dev)
 {
 	const struct wdt_qcc730_cfg *wdt_cfg = dev->config;
-	PMU_BASE_pmu_Type *pmu_regs = wdt_cfg->pmu;
+	struct wdt_qcc730_data *data = dev->data;
 	int ret = 0;
 
 	// Enable root clock of watchdog
@@ -159,6 +249,9 @@ static int wdt_qcc730_init(const struct device *dev)
 		}
 	}
 
+	/* Mark initialized */
+	data->wdt_initialized = true;
+
 	return ret;
 }
 
@@ -169,7 +262,14 @@ static int wdt_qcc730_init(const struct device *dev)
 		.clock_subsys = (clock_control_subsys_t)DT_INST_CLOCKS_CELL(n, id),                \
 	};                                                                                         \
                                                                                                    \
-	DEVICE_DT_INST_DEFINE(n, wdt_qcc730_init, NULL, NULL, &wdt_qcc730_config_##n,              \
+	static struct wdt_qcc730_data wdt_qcc730_data_##n = {                                      \
+		.wdt_initialized = false,                                                          \
+	};                                                                                         \
+                                                                                                   \
+	PM_DEVICE_DT_INST_DEFINE(n, wdt_qcc730_pm_action);                                         \
+                                                                                                   \
+	DEVICE_DT_INST_DEFINE(n, wdt_qcc730_init, PM_DEVICE_DT_INST_GET(n),                        \
+			      &wdt_qcc730_data_##n, &wdt_qcc730_config_##n,                        \
 			      PRE_KERNEL_1, CONFIG_KERNEL_INIT_PRIORITY_DEVICE, &wdt_qcc730_api);
 
 DT_INST_FOREACH_STATUS_OKAY(WDT_QCC730_INIT)

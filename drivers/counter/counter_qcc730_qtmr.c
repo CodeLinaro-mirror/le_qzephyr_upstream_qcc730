@@ -12,6 +12,7 @@
 #include <zephyr/irq.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/clock_control.h>
+#include <zephyr/pm/device.h>
 #include "soc.h"
 
 #define QCC730_QTMR_AC_CNTACR_Mask 0x3F
@@ -27,17 +28,29 @@ struct qtmr_qcc730_cfg {
 	PMU_BASE_pmu_Type *pmu_regs;
 	const struct device *clock_dev;
 	clock_control_subsys_t clock_subsys;
+	const int irqn;
 };
 
 struct qtmr_qcc730_data {
 	counter_alarm_callback_t callback;
 	void *user_data;
 	uint64_t ticks;
+#ifdef CONFIG_PM_DEVICE
+	bool qtmr_initialized;
+#endif
 };
 
 static int qtmr_qcc730_start(const struct device *dev)
 {
 	const struct qtmr_qcc730_cfg *const cfg = dev->config;
+#ifdef CONFIG_PM_DEVICE
+	struct qtmr_qcc730_data *const data = dev->data;
+
+	if (!data->qtmr_initialized) {
+		LOG_ERR("Qtimer is suspended/not initialized");
+		return -EBUSY;
+	}
+#endif
 
 	// Enable the timer
 	cfg->qtmr_regs->QTMR_V1_CNTP_CTL.bit.EN = 1U;
@@ -50,7 +63,14 @@ static int qtmr_qcc730_start(const struct device *dev)
 static int qtmr_qcc730_stop(const struct device *dev)
 {
 	const struct qtmr_qcc730_cfg *const cfg = dev->config;
+#ifdef CONFIG_PM_DEVICE
+	struct qtmr_qcc730_data *const data = dev->data;
 
+	if (!data->qtmr_initialized) {
+		LOG_ERR("Qtimer is suspended/not initialized");
+		return -EBUSY;
+	}
+#endif
 	// Disable the timer
 	cfg->qtmr_regs->QTMR_V1_CNTP_CTL.bit.EN = 0U;
 	cfg->qtmr_regs->QTMR_V1_CNTP_CTL.bit.IMSK = 1U;
@@ -71,7 +91,14 @@ static int qtmr_qcc730_get_value_64(const struct device *dev, uint64_t *ticks)
 	const struct qtmr_qcc730_cfg *const cfg = dev->config;
 	uint32_t count_lo = 0;
 	uint32_t count_hi = 0;
+#ifdef CONFIG_PM_DEVICE
+	struct qtmr_qcc730_data *const data = dev->data;
 
+	if (!data->qtmr_initialized) {
+		LOG_ERR("Qtimer is suspended/not initialized");
+		return -EBUSY;
+	}
+#endif
 	count_lo = cfg->qtmr_regs->QTMR_V1_CNTPCT_LO.reg;
 	count_hi = cfg->qtmr_regs->QTMR_V1_CNTPCT_HI.reg;
 
@@ -95,6 +122,13 @@ static int qtmr_qcc730_set_alarm(const struct device *dev, uint8_t chan_id,
 	struct qtmr_qcc730_data *const data = dev->data;
 	uint64_t now = 0UL;
 	uint64_t alarm_value = 0UL;
+
+#ifdef CONFIG_PM_DEVICE
+	if (!data->qtmr_initialized) {
+		LOG_ERR("Qtimer is suspended/not initialized");
+		return -EBUSY;
+	}
+#endif
 
 	if (cfg->qtmr_regs->QTMR_V1_CNTP_CTL.bit.IMSK == 0U) {
 		LOG_ERR("Alarm already set for timer frame %u", cfg->frame_id);
@@ -132,6 +166,15 @@ static int qtmr_qcc730_set_alarm(const struct device *dev, uint8_t chan_id,
 static int qtmr_qcc730_cancel_alarm(const struct device *dev, uint8_t chan_id)
 {
 	const struct qtmr_qcc730_cfg *const cfg = dev->config;
+#ifdef CONFIG_PM_DEVICE
+	struct qtmr_qcc730_data *const data = dev->data;
+
+	if (!data->qtmr_initialized) {
+		LOG_ERR("Qtimer is suspended/not initialized");
+		return -EBUSY;
+	}
+#endif
+
 	// Disable the interrupt for the timer
 	cfg->qtmr_regs->QTMR_V1_CNTP_CTL.bit.IMSK = 1U;
 	return 0;
@@ -157,6 +200,13 @@ int qtmr_qcc730_set_alarm_absolute(const struct device *dev, uint8_t chan_id,
 	const struct qtmr_qcc730_cfg *const cfg = dev->config;
 	struct qtmr_qcc730_data *const data = dev->data;
 	uint64_t now = 0UL;
+
+#ifdef CONFIG_PM_DEVICE
+	if (!data->qtmr_initialized) {
+		LOG_ERR("Qtimer is suspended/not initialized");
+		return -EBUSY;
+	}
+#endif
 
 	if (cfg->qtmr_regs->QTMR_V1_CNTP_CTL.bit.IMSK == 0U) {
 		LOG_ERR("Alarm already set for timer frame %u", cfg->frame_id);
@@ -192,17 +242,6 @@ int qtmr_qcc730_set_alarm_absolute(const struct device *dev, uint8_t chan_id,
 
 	return 0;
 }
-
-static DEVICE_API(counter, qtmr_qcc730_api) = {
-	.start = qtmr_qcc730_start,
-	.stop = qtmr_qcc730_stop,
-	.get_value = qtmr_qcc730_get_value,
-	.get_value_64 = qtmr_qcc730_get_value_64,
-	.set_alarm = qtmr_qcc730_set_alarm,
-	.cancel_alarm = qtmr_qcc730_cancel_alarm,
-	.get_pending_int = qtmr_qcc730_get_pending_int,
-	.get_freq = qtmr_qcc730_get_freq,
-};
 
 static void qtmr_qcc730_isr(const struct device *dev)
 {
@@ -262,8 +301,121 @@ static inline int qtmr_qcc730_frame_init(const struct device *dev)
 	return ret;
 }
 
+#ifdef CONFIG_PM_DEVICE
+static inline int qtmr_qcc730_frame_deinit(const struct device *dev)
+{
+	const struct qtmr_qcc730_cfg *cfg = dev->config;
+	enum clock_control_status clk_status = CLOCK_CONTROL_STATUS_ON;
+	int ret = 0;
+
+	// Mask frame interrupt
+	cfg->qtmr_regs->QTMR_V1_CNTP_CTL.bit.IMSK = 1U;
+	// Disable clocks
+	if (cfg->clock_dev) {
+		if (!device_is_ready(cfg->clock_dev)) {
+			LOG_ERR("Clock device not ready for Qtimer");
+			return -ENODEV;
+		}
+		clk_status = clock_control_get_status(cfg->clock_dev, cfg->clock_subsys);
+		if (clk_status != CLOCK_CONTROL_STATUS_OFF) {
+			ret = clock_control_off(cfg->clock_dev, cfg->clock_subsys);
+			if (ret < 0) {
+				LOG_ERR("Qtimer frame %u Clock Control ERROR: %d", cfg->frame_id,
+					ret);
+				return ret;
+			}
+		}
+	}
+
+	cfg->pmu_regs->PMU_SON_GDSCR.bit.RETAIN_FF_ENABLE = 0U;
+
+	return ret;
+}
+#endif /* CONFIG_PM_DEVICE */
+
+static int qtmr_qcc730_init(const struct device *dev)
+{
+	int ret = 0;
+	const struct qtmr_qcc730_cfg *cfg = dev->config;
+#ifdef CONFIG_PM_DEVICE
+	struct qtmr_qcc730_data *data = dev->data;
+#endif
+	ret = qtmr_qcc730_frame_init(dev);
+	if (ret < 0) {
+		LOG_ERR("Qtimer init failed err:%d", ret);
+		return ret;
+	}
+
+	/* Enable interrupt */
+	irq_enable(cfg->irqn);
+
+#ifdef CONFIG_PM_DEVICE
+	data->qtmr_initialized = true;
+#endif
+
+	return 0;
+}
+
+#ifdef CONFIG_PM_DEVICE
+
+static int qtmr_qcc730_deinit(const struct device *dev)
+{
+	int ret = 0;
+	const struct qtmr_qcc730_cfg *cfg = dev->config;
+	struct qtmr_qcc730_data *data = dev->data;
+
+	ret = qtmr_qcc730_frame_deinit(dev);
+	if (ret < 0) {
+		LOG_ERR("Qtimer deinit failed err:%d", ret);
+		return ret;
+	}
+
+	/* Disable interrupt */
+	irq_disable(cfg->irqn);
+
+	data->qtmr_initialized = false;
+
+	return 0;
+}
+
+static int qtmr_qcc730_pm_action(const struct device *dev, enum pm_device_action action)
+{
+	switch (action) {
+	case PM_DEVICE_ACTION_SUSPEND:
+		qtmr_qcc730_deinit(dev);
+		break;
+	case PM_DEVICE_ACTION_RESUME:
+		qtmr_qcc730_init(dev);
+		break;
+	default:
+		return -ENOTSUP;
+	}
+
+	return 0;
+}
+
+#endif /* CONFIG_PM_DEVICE */
+
+static DEVICE_API(counter, qtmr_qcc730_api) = {
+	.start = qtmr_qcc730_start,
+	.stop = qtmr_qcc730_stop,
+	.get_value = qtmr_qcc730_get_value,
+	.get_value_64 = qtmr_qcc730_get_value_64,
+	.set_alarm = qtmr_qcc730_set_alarm,
+	.cancel_alarm = qtmr_qcc730_cancel_alarm,
+	.get_pending_int = qtmr_qcc730_get_pending_int,
+	.get_freq = qtmr_qcc730_get_freq,
+};
+
 #define QTMR_QCC730_INIT(inst)                                                                     \
+	static int qtmr_qcc730_init_##inst(const struct device *dev)                               \
+	{                                                                                          \
+		IRQ_CONNECT(DT_INST_IRQN(inst), DT_INST_IRQ(inst, priority),                       \
+			    qtmr_qcc730_isr, DEVICE_DT_INST_GET(inst), 0);                         \
+		return qtmr_qcc730_init(dev);                                                      \
+	}                                                                                          \
 	static const struct qtmr_qcc730_cfg qtmr_qcc730_cfg##inst = {                              \
+		.irqn = DT_INST_IRQN(inst),                                                        \
 		.info =                                                                            \
 			{                                                                          \
 				.max_top_value = UINT32_MAX,                                       \
@@ -281,21 +433,12 @@ static inline int qtmr_qcc730_frame_init(const struct device *dev)
 	};                                                                                         \
                                                                                                    \
 	static struct qtmr_qcc730_data qtmr_qcc730_data##inst;                                     \
+	PM_DEVICE_DT_INST_DEFINE(inst, qtmr_qcc730_pm_action);                                     \
                                                                                                    \
-	static int qtmr_qcc730_init##inst(const struct device *dev)                                \
-	{                                                                                          \
-		qtmr_qcc730_frame_init(dev);                                                       \
-                                                                                                   \
-		/* Connect and enable interrupt */                                                 \
-		IRQ_CONNECT(DT_INST_IRQN(inst), DT_INST_IRQ(inst, priority), qtmr_qcc730_isr,      \
-			    DEVICE_DT_INST_GET(inst), 0);                                          \
-		irq_enable(DT_INST_IRQN(inst));                                                    \
-                                                                                                   \
-		return 0;                                                                          \
-	}                                                                                          \
-                                                                                                   \
-	DEVICE_DT_INST_DEFINE(inst, qtmr_qcc730_init##inst, NULL, &qtmr_qcc730_data##inst,         \
-			      &qtmr_qcc730_cfg##inst, POST_KERNEL,                                 \
+	DEVICE_DT_INST_DEFINE(inst, qtmr_qcc730_init_##inst, PM_DEVICE_DT_INST_GET(inst),          \
+			      &qtmr_qcc730_data##inst,                                             \
+			      &qtmr_qcc730_cfg##inst,                                              \
+			      POST_KERNEL,                                                         \
 			      CONFIG_COUNTER_QCC730_INIT_PRIORITY, &qtmr_qcc730_api);
 
 DT_INST_FOREACH_STATUS_OKAY(QTMR_QCC730_INIT)

@@ -82,7 +82,7 @@ static int pinctrl_qcc730_pin_configure(pinctrl_soc_pin_t pin_cfg)
 	/* READ-MODIFY-WRITE */
 	uint32_t ds_reg = pmu->PMU_CFG_IOPAD_DS.reg;
 	WRITE_BIT(ds_reg, pin_num, drive_strength);
-	pmu->PMU_CFG_IOPAD_PD.reg = ds_reg;
+	pmu->PMU_CFG_IOPAD_DS.reg = ds_reg;
 
 	return 0;
 }

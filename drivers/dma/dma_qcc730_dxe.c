@@ -13,7 +13,9 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/spinlock.h>
 #include <zephyr/sys/util.h>
+#include <zephyr/pm/device.h>
 #include <string.h>
+#include <stdbool.h>
 
 #include "soc.h"
 
@@ -80,12 +82,22 @@ struct qcc730_dxe_config {
 	void (*irq_configure)(void);
 };
 
+/* Per-channel data */
 struct qcc730_dxe_data {
 	dma_callback_t callback;
 	void *user_data;
 	struct qcc730_dxe_desc_short desc[QCC730_DXE_MAX_BLOCKS];
 	struct k_spinlock lock;
 };
+
+#ifdef CONFIG_PM_DEVICE
+static inline bool qcc730_dxe_is_active(const struct device *dev)
+{
+	enum pm_device_state st;
+	/* If PM API fails, be permissive to avoid false negatives */
+	return (pm_device_state_get(dev, &st) != 0) ? true : (st == PM_DEVICE_STATE_ACTIVE);
+}
+#endif
 
 static void qcc730_dxe_isr(const struct device *dev)
 {
@@ -120,6 +132,13 @@ static int qcc730_dxe_configure(const struct device *dev, uint32_t channel,
 		LOG_ERR("Unsupported DXE channel %d - must be < %d", channel, cfg->num_channels);
 		return -EINVAL;
 	}
+
+#ifdef CONFIG_PM_DEVICE
+	if (!qcc730_dxe_is_active(dev)) {
+		LOG_ERR("DXE is suspended/not active");
+		return -EBUSY;
+	}
+#endif
 
 	if (!config || config->block_count == 0 || config->block_count > QCC730_DXE_MAX_BLOCKS ||
 	    !config->head_block) {
@@ -207,6 +226,13 @@ static int qcc730_dxe_start(const struct device *dev, uint32_t channel)
 		return -EINVAL;
 	}
 
+#ifdef CONFIG_PM_DEVICE
+	if (!qcc730_dxe_is_active(dev)) {
+		LOG_ERR("DXE is suspended/not active");
+		return -EBUSY;
+	}
+#endif
+
 	if (DXE_CH_REG(cfg->dxe, channel, STATUS)->bit.BUSY) {
 		LOG_ERR("DXE channel %u busy", channel);
 		return -EBUSY;
@@ -240,6 +266,13 @@ static int qcc730_dxe_stop(const struct device *dev, uint32_t channel)
 		return -EINVAL;
 	}
 
+#ifdef CONFIG_PM_DEVICE
+	if (!qcc730_dxe_is_active(dev)) {
+		LOG_ERR("DXE is suspended/not active");
+		return -EBUSY;
+	}
+#endif
+
 	/* Abort transaction */
 	DXE_CH_REG(cfg->dxe, channel, CTRL)->bit.ABORT = 1U;
 	/* Disable the channel */
@@ -258,6 +291,13 @@ static int qcc730_dxe_get_status(const struct device *dev, uint32_t channel,
 	if (channel >= cfg->num_channels || stat == NULL) {
 		return -EINVAL;
 	}
+
+#ifdef CONFIG_PM_DEVICE
+	if (!qcc730_dxe_is_active(dev)) {
+		LOG_ERR("DXE is suspended/not active");
+		return -EBUSY;
+	}
+#endif
 
 	stat->busy = (DXE_CH_REG(cfg->dxe, channel, STATUS)->bit.BUSY == 1U);
 	stat->pending_length = DXE_CH_REG(cfg->dxe, channel, SZ)->bit.REM_SZ;
@@ -300,6 +340,54 @@ static int qcc730_dxe_init(const struct device *dev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_DEVICE
+int qcc730_dxe_suspend(const struct device *dev)
+{
+	const struct qcc730_dxe_config *config = dev->config;
+
+	/* Abort and disable all channels */
+	for (uint32_t ch = 0U; ch < config->num_channels; ch++) {
+		DXE_CH_REG(config->dxe, ch, CTRL)->bit.ABORT = 1U;
+		DXE_CH_REG(config->dxe, ch, CTRL)->bit.EN = 0U;
+		config->dxe->DXE_0_DMA_ENCH.reg &= ~BIT(ch);
+	}
+
+	/* Disable DXE global enable and gate the clock */
+	config->dxe->DXE_0_DMA_CSR.bit.EN = 0U;
+	config->ccu->CCU_R_CCU_ENABLE_CLK.bit.DXE_ENABLE_CLK = 0U;
+
+	return 0;
+}
+
+int qcc730_dxe_resume(const struct device *dev)
+{
+	const struct qcc730_dxe_config *config = dev->config;
+
+	/* Ungate the DXE clock and re-enable the engine with essential settings */
+	config->ccu->CCU_R_CCU_ENABLE_CLK.bit.DXE_ENABLE_CLK = 1U;
+	config->dxe->DXE_0_DMA_CSR.reg = 0U;
+	config->dxe->DXE_0_DMA_CSR.bit.EN = 1U;
+	config->dxe->DXE_0_DMA_CSR.bit.ECTR_EN = 1U;
+	config->dxe->DXE_0_DMA_CSR.bit.H2H_SYNC_EN = 1U;
+	config->dxe->DXE_0_DMA_CSR.bit.TSTMP_EN = 1U;
+	config->dxe->DXE_0_DMA_CSR.bit.RRAM_WRITE_DLY = QCC730_DEFAULT_RRAM_WRITE_DLY;
+
+	return 0;
+}
+
+static int qcc730_dxe_pm_action(const struct device *dev, enum pm_device_action action)
+{
+	switch (action) {
+	case PM_DEVICE_ACTION_SUSPEND:
+		return qcc730_dxe_suspend(dev);
+	case PM_DEVICE_ACTION_RESUME:
+		return qcc730_dxe_resume(dev);
+	default:
+		return 0;
+	}
+}
+#endif /* CONFIG_PM_DEVICE */
+
 #define QCC730_DXE_IRQ_CONNECT(n, inst)                                                            \
 	IRQ_CONNECT(DT_INST_IRQ_BY_IDX(inst, n, irq), DT_INST_IRQ_BY_IDX(inst, n, priority),       \
 		    qcc730_dxe_isr, DEVICE_DT_INST_GET(inst), 0);                                  \
@@ -319,8 +407,9 @@ static int qcc730_dxe_init(const struct device *dev)
 		.num_channels = DT_INST_PROP(inst, dma_channels),                                  \
 		.irq_configure = qcc730_dxe##inst##_irq_configure,                                 \
 	};                                                                                         \
-	DEVICE_DT_INST_DEFINE(inst, qcc730_dxe_init, NULL, &qcc730_dxe_##inst##_data,              \
-			      &qcc730_dxe_cfg_##inst, PRE_KERNEL_1, CONFIG_DMA_INIT_PRIORITY,      \
-			      &qcc730_dma_api);
+	PM_DEVICE_DT_INST_DEFINE(inst, qcc730_dxe_pm_action);                                      \
+	DEVICE_DT_INST_DEFINE(inst, qcc730_dxe_init, PM_DEVICE_DT_INST_GET(inst),                  \
+			      qcc730_dxe_##inst##_data, &qcc730_dxe_cfg_##inst, PRE_KERNEL_1,      \
+			      CONFIG_DMA_INIT_PRIORITY, &qcc730_dma_api);
 
 DT_INST_FOREACH_STATUS_OKAY(QCC730_INST_INIT)

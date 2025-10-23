@@ -39,6 +39,7 @@ struct rtc_qcc730_data {
 #ifdef CONFIG_RTC_ALARM
 	struct rtc_time alarm_time;
 	rtc_alarm_callback alarm_callback;
+	void *alarm_user_data;
 	bool alarm_is_pending;
 	uint16_t alarm_mask;
 #endif /* CONFIG_RTC_ALARM */
@@ -72,7 +73,7 @@ static void rtc_qcc730_counter_alarm_callback(const struct device *dev, uint8_t 
 		return;
 	}
 
-	data->alarm_callback(dev, chan_id, NULL);
+	data->alarm_callback(dev, chan_id, data->alarm_user_data);
 	k_spin_unlock(&data->lock, key);
 }
 
@@ -402,6 +403,7 @@ static int rtc_qcc730_alarm_set_callback(const struct device *dev, uint16_t id,
 
 	// Callback can be set to NULL if needed
 	data->alarm_callback = callback;
+	data->alarm_user_data = user_data;
 
 	k_spin_unlock(&data->lock, key);
 
