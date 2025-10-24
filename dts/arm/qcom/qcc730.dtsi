@@ -235,19 +235,10 @@
 			reg = <0x119f000 0x700>,
 				  <0x119a000 0x20d0>;
 			reg-names = "dxe", "ccu";
-			interrupts = <21 2>,
-			             <22 2>,
-			             <23 2>,
-			             <24 2>,
-			             <25 2>,
-			             <26 2>,
-			             <27 2>,
-			             <28 2>,
-			             <29 2>,
-			             <30 2>,
+			interrupts = <30 2>,
 			             <31 2>,
 			             <32 2>;
-			dma-channels = <12>;
+			dma-channels = <3>;
 			status = "disabled";
 		};
 	};
