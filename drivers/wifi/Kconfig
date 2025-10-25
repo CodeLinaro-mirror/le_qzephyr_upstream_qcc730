@@ -1,3 +1,9 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: Apache-2.0;
 rsource "qcom/Kconfig.qcom"
+
+config NET_L2_ETHERNET_RESERVE_HEADER
+	default y
+
+config NET_BUF_DATA_SIZE
+	default 512
