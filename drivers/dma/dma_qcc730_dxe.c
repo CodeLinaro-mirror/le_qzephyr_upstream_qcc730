@@ -48,6 +48,8 @@ LOG_MODULE_REGISTER(dxe_qcc730, CONFIG_DMA_LOG_LEVEL);
 
 #define QCC730_DEFAULT_RRAM_WRITE_DLY 2U
 
+#define QCC730_USER_CHANNELS_OFFSET 9U
+
 /* Offset between two groups of DXE channel registers */
 #define DXE_CH_REGS_OFFSET                                                                         \
 	(offsetof(DXE_0_BASE_dxe_0_Type, DXE_0_CH1_CTRL) -                                         \
@@ -56,7 +58,10 @@ LOG_MODULE_REGISTER(dxe_qcc730, CONFIG_DMA_LOG_LEVEL);
 /* Helper macro to access DXE channel registers */
 #define DXE_CH_REG(base, ch, reg)                                                                  \
 	((__typeof__(&(base)->DXE_0_CH0_##reg))((uint8_t *)&(base)->DXE_0_CH0_##reg +              \
-						(size_t)(ch) * DXE_CH_REGS_OFFSET))
+						(size_t)((ch) + QCC730_USER_CHANNELS_OFFSET) * DXE_CH_REGS_OFFSET))
+
+#define DXE_0_REG_BIT(ch) BIT(ch + QCC730_USER_CHANNELS_OFFSET)
+#define DXE_0_REG_IS_BIT_SET(reg, ch) IS_BIT_SET((reg), (ch) + QCC730_USER_CHANNELS_OFFSET)
 
 /* Converts 4-bit Zephyr priority to 3-bit QCC730 channel priority */
 #define TO_3BIT_PRIO(x) ((x) >> 1U)
@@ -107,11 +112,11 @@ static void qcc730_dxe_isr(const struct device *dev)
 		int status = -EIO;
 		struct qcc730_dxe_data *ch_data = &((struct qcc730_dxe_data *)dev->data)[ch];
 
-		if (IS_BIT_SET(cfg->dxe->DXE_0_INT_SRC_RAW.reg, ch)) {
-			if (IS_BIT_SET(cfg->dxe->DXE_0_INT_DONE_SRC.reg, ch)) {
+		if (DXE_0_REG_IS_BIT_SET(cfg->dxe->DXE_0_INT_SRC_RAW.reg, ch)) {
+			if (DXE_0_REG_IS_BIT_SET(cfg->dxe->DXE_0_INT_DONE_SRC.reg, ch)) {
 				status = 0;
 			}
-			cfg->dxe->DXE_0_INT_CLR.reg = BIT(ch);
+			cfg->dxe->DXE_0_INT_CLR.reg = DXE_0_REG_BIT(ch);
 
 			if (ch_data->callback) {
 				ch_data->callback(dev, ch_data->user_data, ch, status);
@@ -243,7 +248,7 @@ static int qcc730_dxe_start(const struct device *dev, uint32_t channel)
 	k_spinlock_key_t key = k_spin_lock(&data->lock);
 
 	/* Clear any pending interrupts on this channel before enabling */
-	cfg->dxe->DXE_0_INT_CLR.reg = BIT(channel);
+	cfg->dxe->DXE_0_INT_CLR.reg = DXE_0_REG_BIT(channel);
 
 	/* Setup the descriptor list address to first item in descriptors' array */
 	DXE_CH_REG(cfg->dxe, channel, DESCH)->reg = 0U;
@@ -251,7 +256,7 @@ static int qcc730_dxe_start(const struct device *dev, uint32_t channel)
 
 	/* Enable the channel */
 	DXE_CH_REG(cfg->dxe, channel, CTRL)->bit.EN = 1U;
-	cfg->dxe->DXE_0_DMA_ENCH.reg |= BIT(channel);
+	cfg->dxe->DXE_0_DMA_ENCH.reg |= DXE_0_REG_BIT(channel);
 
 	k_spin_unlock(&data->lock, key);
 
@@ -277,7 +282,7 @@ static int qcc730_dxe_stop(const struct device *dev, uint32_t channel)
 	DXE_CH_REG(cfg->dxe, channel, CTRL)->bit.ABORT = 1U;
 	/* Disable the channel */
 	DXE_CH_REG(cfg->dxe, channel, CTRL)->bit.EN = 0U;
-	cfg->dxe->DXE_0_DMA_ENCH.reg &= ~BIT(channel);
+	cfg->dxe->DXE_0_DMA_ENCH.reg &= ~DXE_0_REG_BIT(channel);
 
 	LOG_DBG("Stopped DXE channel %d", channel);
 	return 0;
@@ -349,7 +354,7 @@ int qcc730_dxe_suspend(const struct device *dev)
 	for (uint32_t ch = 0U; ch < config->num_channels; ch++) {
 		DXE_CH_REG(config->dxe, ch, CTRL)->bit.ABORT = 1U;
 		DXE_CH_REG(config->dxe, ch, CTRL)->bit.EN = 0U;
-		config->dxe->DXE_0_DMA_ENCH.reg &= ~BIT(ch);
+		config->dxe->DXE_0_DMA_ENCH.reg &= ~DXE_0_REG_BIT(ch);;
 	}
 
 	/* Disable DXE global enable and gate the clock */
