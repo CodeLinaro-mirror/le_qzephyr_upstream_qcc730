@@ -8,4 +8,3 @@ config BOARD_QCC730EVBI
 	select SERIAL
 	select SERIAL_HAS_DRIVER
 	select CONSOLE
-	select UART_CONSOLE

@@ -30,6 +30,18 @@ manifest:
       remote: zephyrproject-rtos
       revision: mbedtls.qzephyr.1.0
       path: modules/crypto/mbedtls
+    - name: hostap
+      remote: zephyrproject-rtos
+      revision: hostap.qzephyr.1.0
+      path: modules/lib/hostap
+    - name: littlefs
+      remote: zephyrproject-rtos
+      revision: littlefs.qzephyr.1.0
+      path: modules/fs/littlefs
+    - name: segger
+      remote: zephyrproject-rtos
+      revision: segger.qzephyr.1.0
+      path: modules/debug/segger
     - name: qapp
       remote: qoss
       revision: qapp.qzephyr.1.0
