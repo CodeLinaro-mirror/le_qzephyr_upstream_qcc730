@@ -21,6 +21,7 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #endif
 
 #include <qwifi_api.h>
+#include <libwifi.h>
 #include <libwifi/wlan_defs.h>
 
 #define SCAN_MODE_BLOCKING 1
@@ -46,7 +47,6 @@ struct qwifi_drv_dev_data_t {
     struct qwifi_bss_status_t bss_status;
     struct net_if *iface;
     const struct device *dev;
-    uint8_t frame_buf[NET_ETH_MAX_FRAME_SIZE];
 };
 
 struct qwifi_drv_dev_cfg_t {
@@ -368,12 +368,28 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
 
 static int qwifi_drv_send(const struct device *dev, struct net_pkt *pkt)
 {
+    qapi_Status_t ret;
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     uint8_t deviceId = dev_data->active_device;
-    const int pkt_len = net_pkt_get_len(pkt);
+    const size_t pkt_len = net_pkt_get_len(pkt);
 
-    net_pkt_read(pkt, dev_data->frame_buf, pkt_len);
-    qwifi_hal_tx(deviceId, dev_data->frame_buf, pkt_len);
+    void *pkt_buf = nt_dpm_allocate_buffer_ext(pkt_len);
+    if (!pkt_buf) {
+        return -ENOMEM;
+    }
+
+    size_t n = net_buf_linearize(pkt_buf, pkt_len, pkt->buffer, 0, pkt_len);
+    if (n != pkt_len) {
+        nt_dpm_free_buffer_ext(pkt_buf);
+        LOG_ERR("%s:%d copy fail.", __func__, __LINE__);
+        return -EFAULT;
+    }
+
+    ret = qwifi_hal_tx(deviceId, pkt_buf, pkt_len);
+    if (ret != NT_OK) {
+        nt_dpm_free_buffer_ext(pkt_buf);
+        return -EAGAIN;
+    }
 
     return 0;
 }
@@ -439,6 +455,22 @@ static int qwifi_drv_dev_init(const struct device *dev)
     return 0;
 }
 
+static int get_config(const struct device *dev, enum ethernet_config_type type,
+                      struct ethernet_config *config)
+{
+    int ret = 0;
+
+    switch (type) {
+    case ETHERNET_CONFIG_TYPE_EXTRA_TX_PKT_HEADROOM:
+        config->extra_tx_pkt_headroom = 0;
+        break;
+    default:
+        return -EINVAL;
+    }
+
+    return ret;
+}
+
 #ifdef CONFIG_PM_DEVICE
 
 static int device_wlan_pm_action(const struct device *dev, enum pm_device_action pm_action)
@@ -476,6 +508,7 @@ static const struct wifi_mgmt_ops qwifi_drv_mgmt = {
 static const struct net_wifi_mgmt_offload qwifi_drv_api = {
     .wifi_iface.iface_api.init = qwifi_drv_intf_init,
     .wifi_iface.send = qwifi_drv_send,
+    .wifi_iface.get_config = get_config,
     .wifi_mgmt_api = &qwifi_drv_mgmt,
 };
 
