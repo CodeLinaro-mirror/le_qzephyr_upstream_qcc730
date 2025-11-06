@@ -48,7 +48,7 @@ LOG_MODULE_REGISTER(dxe_qcc730, CONFIG_DMA_LOG_LEVEL);
 
 #define QCC730_DEFAULT_RRAM_WRITE_DLY 2U
 
-#define QCC730_USER_CHANNELS_OFFSET 9U
+#define QCC730_USER_CHANNELS_OFFSET 7U
 
 /* Offset between two groups of DXE channel registers */
 #define DXE_CH_REGS_OFFSET                                                                         \
