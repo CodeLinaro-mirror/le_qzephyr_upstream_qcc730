@@ -8,4 +8,3 @@ config BOARD_QCC730MX
 	select SERIAL
 	select SERIAL_HAS_DRIVER
 	select CONSOLE
-	select UART_CONSOLE

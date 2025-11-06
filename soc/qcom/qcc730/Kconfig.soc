@@ -29,6 +29,7 @@ config SOC_QCC730
 	select SOC_EARLY_INIT_HOOK
 	select SKIP_BSS_CLEAR if !XIP
 	select QPOWER
+	select HAS_SEGGER_RTT if ZEPHYR_SEGGER_MODULE
 
 config SOC
 	default "qcc730" if SOC_QCC730
