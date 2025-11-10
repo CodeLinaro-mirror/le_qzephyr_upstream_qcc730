@@ -8,6 +8,10 @@ from pathlib import Path
 import sys
 import os
 
+if sys.platform.startswith("win"):
+    import winreg
+else:
+    winreg = None
 
 class NVMProgrammerRunner(ZephyrBinaryRunner):
     """NVM Programmer runner for flashing QCC730 with nvm_programmer.py."""
@@ -112,7 +116,63 @@ class NVMProgrammerRunner(ZephyrBinaryRunner):
 
     def debug(self, **kwargs):
         if self.j == "jlink":
-            self.logger.error('JLink is not yet supported for debugging.')
+            script_path = Path(self.cfg.board_dir) / ".." / "common" / "qcc730.JLinkScript"
+            if not script_path.exists():
+                raise FileNotFoundError(f"JLinkScript config file not found: {script_path}")
+            jlinkgdbserver_name = "JLinkGDBServer.exe" if os.name == "nt" else "JLinkGDBServer"
+
+            jlink_dir = Path()
+            jlink_root = os.getenv("JLINK_PATH")
+            if jlink_root:
+                jlink_dir = Path(jlink_root).expanduser().resolve()
+            else:
+                if os.name == "nt":
+                    #jlink_dir = Path(r"C:\Program Files\SEGGER\JLink_V794f").resolve()
+                    reg_paths = [
+                        (winreg.HKEY_LOCAL_MACHINE,
+                         r"SOFTWARE\WOW6432Node\SEGGER\J-Link"),
+                        (winreg.HKEY_LOCAL_MACHINE,
+                         r"SOFTWARE\SEGGER\J-Link"),
+                    ]
+
+                    for root, subkey in reg_paths:
+                        try:
+                            with winreg.OpenKey(root, subkey) as key:
+                                install_path, _ = winreg.QueryValueEx(key, "InstallPath")
+                                candidate = Path(install_path) / jlinkgdbserver_name
+                                if candidate.is_file():
+                                    print(candidate)
+                                    jlink_dir = candidate.parent
+                                    break
+                        except FileNotFoundError:
+                            continue
+
+            jlinkgdbserver = jlink_dir / jlinkgdbserver_name
+
+            if not jlinkgdbserver.is_file():
+                raise FileNotFoundError(
+                    f"JLink executable not found at {jlinkgdbserver!s}. "
+                    "Set the JLINK_ROOT environment variable to the correct directory."
+                )
+
+            server_cmd = str(jlinkgdbserver)
+            script_path  = str(Path(script_path).resolve())
+
+            server_cmd = [
+                server_cmd,
+                "-select", "USB",
+                "-device", "Cortex-M4",
+                "-endian", "little",
+                "-if", "JTAG",
+                "-speed", "1000",
+                "-JTAGconf", "0,0",
+                "-noir",
+                "-port", "3333",
+                "-singlerun",
+                "-silent",
+                "-jlinkscriptfile", script_path,
+            ]
+
         elif self.j == "ch347":
             openocdcfgpath = Path(self.cfg.board_dir) / ".." / "common" / "qcc730_openocd_ch347.cfg"
             if not openocdcfgpath.exists():
