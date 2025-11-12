@@ -3,7 +3,7 @@
 if SOC_QCC730
 
 config NUM_IRQS
-	default 64
+	default 128
 
 config SYS_CLOCK_HW_CYCLES_PER_SEC
 	default 60000000
