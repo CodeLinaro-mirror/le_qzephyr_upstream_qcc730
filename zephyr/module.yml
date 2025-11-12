@@ -11,4 +11,4 @@ build:
     dts_root: .
     soc_root: .
 runners:
-  - file: scripts/west_commands/runners/nvmprogrammer.py
+  - file: scripts/west_commands/runners/qccsdk.py
