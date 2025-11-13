@@ -182,6 +182,7 @@ static int rtc_qcc730_set_time(const struct device *dev, const struct rtc_time *
 	data->set_sec = timeutil_timegm64((const struct tm *)timeptr);
 	data->set_ns = timeptr->tm_nsec;
 
+#ifdef CONFIG_RTC_ALARM
 	// If there is alarm set - we need to update it
 	if (data->alarm_mask != 0) {
 		counter_cancel_channel_alarm(cfg->qtimer_frame, 0);
@@ -196,6 +197,7 @@ static int rtc_qcc730_set_time(const struct device *dev, const struct rtc_time *
 			return ret;
 		}
 	}
+#endif
 
 	data->time_set = true;
 
@@ -457,6 +459,7 @@ static DEVICE_API(rtc, rtc_qcc730_api) = {
 #endif /* CONFIG_RTC_ALARM */
 };
 
+#ifdef CONFIG_RTC_ALARM
 #define QCC730_RTC_INIT(inst)                                                                      \
 	static const struct rtc_qcc730_config rtc_qcc730_config_##inst = {                         \
 		.qtimer_frame = DEVICE_DT_GET(DT_INST_PHANDLE(inst, qtimer_frame)),                \
@@ -466,5 +469,14 @@ static DEVICE_API(rtc, rtc_qcc730_api) = {
 	DEVICE_DT_INST_DEFINE(inst, rtc_qcc730_init, NULL, &rtc_qcc730_data_##inst,                \
 			      &rtc_qcc730_config_##inst, POST_KERNEL,                              \
 			      CONFIG_RTC_QCC730_INIT_PRIORITY, &rtc_qcc730_api);
-
+#else
+#define QCC730_RTC_INIT(inst)                                                                      \
+	static const struct rtc_qcc730_config rtc_qcc730_config_##inst = {                         \
+		.qtimer_frame = DEVICE_DT_GET(DT_INST_PHANDLE(inst, qtimer_frame))                \
+	};                                                                                         \
+	static struct rtc_qcc730_data rtc_qcc730_data_##inst;                                      \
+	DEVICE_DT_INST_DEFINE(inst, rtc_qcc730_init, NULL, &rtc_qcc730_data_##inst,                \
+			      &rtc_qcc730_config_##inst, POST_KERNEL,                              \
+			      CONFIG_RTC_QCC730_INIT_PRIORITY, &rtc_qcc730_api);
+#endif
 DT_INST_FOREACH_STATUS_OKAY(QCC730_RTC_INIT)
