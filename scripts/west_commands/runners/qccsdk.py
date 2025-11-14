@@ -66,7 +66,7 @@ class NVMProgrammerRunner(ZephyrBinaryRunner):
             / "hal"
             / "qcom"
         )
-        nvmprogrammerpath = Path(module_path, "tools/qprg")
+        nvmprogrammerpath = Path(module_path, "tools/qprgc")
         sechashpath = Path(module_path, "tools/qhash")
         blobs_path = Path(module_path, "zephyr/blobs")
         print(f"Module path: {module_path.as_posix()}")
