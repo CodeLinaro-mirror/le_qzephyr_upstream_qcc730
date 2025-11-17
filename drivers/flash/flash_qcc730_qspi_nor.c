@@ -818,7 +818,7 @@ int flash_qcc730_qspi_nor_erase(const struct device *dev, off_t offset, size_t s
 			break;
 		}
 
-		address += size;
+		address += size_of_chunk;
 		op_cnt--;
 	}
 
