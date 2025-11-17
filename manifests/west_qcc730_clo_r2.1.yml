@@ -27,6 +27,15 @@ manifest:
     - name: mbedtls
       remote: zephyrproject-rtos
       path: modules/crypto/mbedtls
+    - name: hostap
+      remote: zephyrproject-rtos
+      path: modules/lib/hostap
+    - name: littlefs
+      remote: zephyrproject-rtos
+      path: modules/fs/littlefs
+    - name: segger
+      remote: zephyrproject-rtos
+      path: modules/debug/segger
     - name: qapp
       remote: qoss
     - name: qhal
