@@ -95,7 +95,7 @@ Programming and Debugging
 
 .. zephyr:board-supported-runners::
 
-The nvmprogrammer runner requires the following environment variables to be set:
+The qccsdk runner requires the following environment variables to be set:
 - ZEPHYR_SDK_INSTALL_DIR: Path to the zephyr SDK installation directory
 - OPENOCD_PATH: Path to the installation directory with OpenOCD binary that supports CH347, download from https://github.com/WCHSoftGroup/ch347/releases/tag/CH347_OpenOCD_Release
 - (Alteratively) JLINK_PATH: Path to the J-Link GDB server installation directory, download from https://www.segger.com/downloads/jlink/
