@@ -96,11 +96,10 @@ Programming and Debugging
 .. zephyr:board-supported-runners::
 
 The nvmprogrammer runner requires the following environment variables to be set:
-- QCCSDK_PATH: Path to the original QCC SDK installation directory
 - ZEPHYR_SDK_INSTALL_DIR: Path to the zephyr SDK installation directory
 - OPENOCD_PATH: Path to the installation directory with OpenOCD binary that supports CH347, download from https://github.com/WCHSoftGroup/ch347/releases/tag/CH347_OpenOCD_Release
-- (alteratively) JLINK_PATH: Path to the J-Link GDB server installation directory, download from https://www.segger.com/downloads/jlink/
-- download python 3.10.9 windows embeddable package from https://www.python.org/downloads/windows/?Windows%20embeddable%20package, add it to Path
+- (Alteratively) JLINK_PATH: Path to the J-Link GDB server installation directory, download from https://www.segger.com/downloads/jlink/
+- Download python 3.10.9 windows embeddable package from https://www.python.org/downloads/windows/?Windows%20embeddable%20package, add it to Path
 
 Flashing
 ========
