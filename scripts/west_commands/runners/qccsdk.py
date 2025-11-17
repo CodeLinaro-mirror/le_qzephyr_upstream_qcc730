@@ -13,8 +13,8 @@ if sys.platform.startswith("win"):
 else:
     winreg = None
 
-class NVMProgrammerRunner(ZephyrBinaryRunner):
-    """NVM Programmer runner for flashing QCC730 with nvm_programmer.py."""
+class qccsdkRunner(ZephyrBinaryRunner):
+    """qccsdk runner for flashing QCC730 with nvm_programmer.py."""
     def __init__(self, cfg, memory_type, jtag, chip_erase=False, all=False, reset=False, bdf=False):
         super().__init__(cfg)
         self.m = memory_type
@@ -26,7 +26,7 @@ class NVMProgrammerRunner(ZephyrBinaryRunner):
 
     @classmethod
     def name(cls):
-        return "nvmprogrammer"
+        return "qccsdk"
 
     @classmethod
     def capabilities(cls):
@@ -43,7 +43,7 @@ class NVMProgrammerRunner(ZephyrBinaryRunner):
 
     @classmethod
     def do_create(cls, cfg, args: argparse.Namespace):
-        return NVMProgrammerRunner(cfg, memory_type=args.memory_type, jtag=args.jtag, chip_erase=args.chip_erase, all=args.all, reset=args.reset, bdf=args.bdf)
+        return qccsdkRunner(cfg, memory_type=args.memory_type, jtag=args.jtag, chip_erase=args.chip_erase, all=args.all, reset=args.reset, bdf=args.bdf)
     
     def do_run(self, command: str, **kwargs):
         if command == "flash" or command == "debug":
