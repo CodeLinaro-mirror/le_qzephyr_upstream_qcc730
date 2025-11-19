@@ -51,6 +51,8 @@ static int drv_flash_wait_operation_done(const struct device *dev, uint32_t time
 					 uint32_t status_polling_usec, uint8_t operation,
 					 uint8_t bmask, uint8_t status_value);
 
+#define FLASH_SEM_TIMEOUT (k_is_in_isr() ? K_NO_WAIT : K_FOREVER)
+
 #if CONFIG_FLASH_QCC730_QSPI_QUAD_MODE
 /**
    @brief Quad enable mode 1, 4, 5.
@@ -424,19 +426,43 @@ static int drv_flash_wait_operation_done(const struct device *dev, uint32_t time
 		return -EINVAL;
 	}
 
-	while (timeout) {
-		(void)drv_flash_read_reg_internal(READ_STATUS_CMD, 1, &result);
+	if (IS_ENABLED(CONFIG_DEBUG_COREDUMP) &&
+        IS_ENABLED(CONFIG_DEBUG_COREDUMP_BACKEND_FLASH_PARTITION) &&
+        k_is_in_isr()) {
+        uint32_t remaining = timeout;
+        while (remaining) {
+            (void)drv_flash_read_reg_internal(READ_STATUS_CMD, 1, &result);
 
-		if ((result & bmask) == status_value) {
-			ret = drv_flash_check_error(dev, operation);
-			break;
+            if ((result & bmask) == status_value) {
+                ret = drv_flash_check_error(dev, operation);
+                return ret;
+            }
+
+            k_busy_wait(status_polling_usec);
+
+            if (remaining >= status_polling_usec) {
+                remaining -= status_polling_usec;
+            } else {
+                remaining = 0;
+            }
+        }
+        return -ETIMEDOUT;
+	} else {
+		while (timeout) {
+			(void)drv_flash_read_reg_internal(READ_STATUS_CMD, 1, &result);
+
+			if ((result & bmask) == status_value) {
+				ret = drv_flash_check_error(dev, operation);
+				break;
+			}
+
+			k_usleep(status_polling_usec);
+
+			timeout -= status_polling_usec;
 		}
-
-		k_usleep(status_polling_usec);
-
-		timeout -= status_polling_usec;
+		return ret;
 	}
-	return ret;
+
 }
 
 /**
@@ -757,7 +783,7 @@ int flash_qcc730_qspi_nor_erase(const struct device *dev, off_t offset, size_t s
 #endif
 
 #if defined(CONFIG_MULTITHREADING)
-	k_sem_take(&data->sem, K_FOREVER);
+	k_sem_take(&data->sem, FLASH_SEM_TIMEOUT);
 #endif
 
 #if CONFIG_FLASH_QCC730_XIP_MODE
@@ -765,7 +791,6 @@ int flash_qcc730_qspi_nor_erase(const struct device *dev, off_t offset, size_t s
 		drv_qspi_disable_xip_mode();
 	}
 #endif
-
 	if (size == flash_size) {
 		/* Whole chip erase*/
 		opcode = data->flash_ctx_data.config->chip_erase_opcode;
@@ -864,7 +889,7 @@ int flash_qcc730_qspi_nor_write(const struct device *dev, off_t offset, const vo
 #endif
 
 #if defined(CONFIG_MULTITHREADING)
-	k_sem_take(&data->sem, K_FOREVER);
+	k_sem_take(&data->sem, FLASH_SEM_TIMEOUT);
 #endif
 
 #if CONFIG_FLASH_QCC730_XIP_MODE
@@ -965,7 +990,7 @@ int flash_qcc730_qspi_nor_read(const struct device *dev, off_t offset, void *rea
 	}
 
 #if defined(CONFIG_MULTITHREADING)
-	k_sem_take(&data->sem, K_FOREVER);
+	k_sem_take(&data->sem, FLASH_SEM_TIMEOUT);
 #endif
 
 #if CONFIG_FLASH_QCC730_XIP_MODE

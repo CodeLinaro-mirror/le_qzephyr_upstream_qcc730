@@ -12,3 +12,12 @@ properties:
   device-id:
     type: int
     description: ID of the flash device that is expected to be obtained in initialization phase
+
+  write-block-size:
+    type: int
+    required: false
+    description: Write block size in bytes
+  erase-block-size:
+    type: int
+    required: false
+    description: Erase block size in bytes
