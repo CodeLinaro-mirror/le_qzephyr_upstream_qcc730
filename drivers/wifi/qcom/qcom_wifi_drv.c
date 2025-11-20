@@ -472,21 +472,30 @@ static int get_config(const struct device *dev, enum ethernet_config_type type,
 }
 
 #ifdef CONFIG_PM_DEVICE
-
+extern uint64_t bmps_duration;
+extern struct k_timer bmps_timer;
 static int device_wlan_pm_action(const struct device *dev, enum pm_device_action pm_action)
 {
-    //printk("%s\n", __func__);
+    LOG_INF("%s", __FUNCTION__);
     int ret = 0;
 
     switch (pm_action) {
         case PM_DEVICE_ACTION_SUSPEND:
             ret = qapi_WLAN_Suspend();
-            //printk("%s ret:%d\r\n",__func__, ret);
             if(ret != QAPI_OK)
+            {
+                LOG_ERR("%s: qapi_WLAN_Suspend return:%d", __FUNCTION__, ret);
                 ret = -EFAULT;
+            }
             break;
         case PM_DEVICE_ACTION_RESUME:
             qapi_WLAN_Resume();
+            if(bmps_duration== 0)
+            {
+                k_timer_stop(&bmps_timer);
+                pm_device_busy_set(dev);
+                LOG_INF("%s: bmps_duration is 0, exit bmps.", __FUNCTION__);
+            }
             break;
         default:
             break;
