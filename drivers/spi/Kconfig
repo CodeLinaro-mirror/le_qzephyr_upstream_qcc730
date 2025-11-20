@@ -1,0 +1,10 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0
+
+config SPI_QCC730
+	bool "Qualcomm QCC730 SPI slave driver"
+	default y
+	depends on SPI
+	depends on DT_HAS_QCOM_QCC730_SPI_ENABLED
+	help
+	  Enable support for the Qualcomm QCC730 SPI slave controller.

@@ -1,0 +1,21 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0
+
+description: QCC730 GPIO node
+
+compatible: "qcom,qcc730-gpio"
+
+include: [gpio-controller.yaml, reset-device.yaml, base.yaml]
+
+properties:
+  reg:
+    required: true
+  "#gpio-cells":
+    const: 2
+
+  resets:
+    required: true
+
+gpio-cells:
+  - pin
+  - flags

@@ -1,0 +1,17 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0
+
+description: QCC730 Qtimer node
+
+compatible: "qcom,qcc730-qtimer"
+
+include: [reset-device.yaml, base.yaml]
+
+properties:
+  clock-frequency:
+    type: int
+    required: true
+    description: Frequency of the Qtimer clock in Hz
+
+  resets:
+    required: true

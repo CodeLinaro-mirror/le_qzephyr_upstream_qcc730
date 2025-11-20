@@ -1,0 +1,20 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0
+# Qualcomm QCC730 qtimer configuration options
+
+config COUNTER_QCC730
+	bool "Qualcomm QCC730 counter/qtimer driver"
+	default y if DT_HAS_QCOM_QCC730_QTMR_ENABLED
+	depends on COUNTER
+	help
+	  Enable support for the Qualcomm QCC730 qtimer.
+
+config COUNTER_QCC730_INIT_PRIORITY
+	int "COUNTER QCC730 init priority"
+	default KERNEL_INIT_PRIORITY_DEVICE
+	help
+	  The priority of QCC730 counter driver initialization.
+
+config COUNTER_QCC730_AON
+	bool "QCC730 counter driver by aon timer"
+	default n

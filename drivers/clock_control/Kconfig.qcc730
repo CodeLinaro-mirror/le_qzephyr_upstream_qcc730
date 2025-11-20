@@ -1,0 +1,13 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+config CLOCK_CONTROL_QCC730
+	bool "QCC730 Clock Control Driver"
+	default y
+	depends on CLOCK_CONTROL
+	depends on DT_HAS_QCOM_QCC730_CLKCTRL_ENABLED
+	help
+	  Enable support for the QCC730 clock control driver.
+	  This driver provides clock control for UART, I2C, SPI,
+	  QTIMER, Watchdog, and GPIO peripherals.

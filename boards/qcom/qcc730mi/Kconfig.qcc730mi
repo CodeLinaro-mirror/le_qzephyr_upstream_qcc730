@@ -1,4 +1,10 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
-# SPDX-License-Identifier: Apache-2.0;
+# SPDX-License-Identifier: Apache-2.0
+
 config BOARD_QCC730MI
 	select SOC_QCC730
+	select CLOCK_CONTROL
+	select PINCTRL
+	select SERIAL
+	select SERIAL_HAS_DRIVER
+	select CONSOLE

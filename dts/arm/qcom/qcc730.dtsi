@@ -7,33 +7,40 @@
 
 #include <arm/armv7-m.dtsi>
 #include <mem.h>
+#include <freq.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/i2c/i2c.h>
+#include <zephyr/dt-bindings/reset/qcom_qcc730_reset.h>
+#include <zephyr/dt-bindings/clock/qcom-qcc730-clock.h>
 
 / {
 
-  power-states {
-    s2ram: s2ram {
-      compatible = "zephyr,power-state";
-      power-state-name = "suspend-to-ram";
- 			min-residency-us = <100000>;
- 			exit-latency-us = <8000>;
-    };
-    softoff: softoff {
-      compatible = "zephyr,power-state";
-      power-state-name = "soft-off";
- 			min-residency-us = <3000000>;
- 			exit-latency-us = <500000>;
-    };
-  };
+	power-states {
+		s2ram: s2ram {
+			compatible = "zephyr,power-state";
+			power-state-name = "suspend-to-ram";
+			min-residency-us = <30000>;
+			exit-latency-us  = <0>;
+		};
+
+		softoff: softoff {
+			compatible = "zephyr,power-state";
+			power-state-name = "soft-off";
+			min-residency-us = <3000000>;
+			exit-latency-us = <500000>;
+		};
+	};
 
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		cpu@0 {
+		cpu0: cpu@0 {
 			device_type = "cpu";
 			compatible = "arm,cortex-m4";
 			reg = <0>;
-			cpu-power-states = <&softoff>;
+			cpu-power-states = <&softoff &s2ram>;
+			clock-frequency = <DT_FREQ_M(60)>;
 		};
 	};
 
@@ -46,41 +53,190 @@
 	};
 
 	soc {
-		/* QCC730V2_QSPI_BASE_BASE = 0x01190000UL */
-		/* QCC730V2_RRAM_CTRL_BASE_BASE = 0x01192400UL */
-		flash: flash-controller@1190000 {
-			compatible = "qcom,rram_qcc730";
-			reg = <0x01190000 0x1000>;
-			#address-cells = <1>;
-			#size-cells = <1>;
-			
-			/* SBLA start at 0x20A400, size 0x8000 */
-			/* SBLB start at 0x212400, size 0x8000 */
-			/* APP_BIN start at 0x21A400 */
-			/* BDF ends at 0x37A000, size 0x6000 */
-			/* For APP_ELF, size is limited by SRAM but not RRAM */
-			flash0: flash@21A400 {
-				compatible = "RRAM";
-				reg = <0x21A400 0x140000>;
-				write-block-size = <2048>;
-				erase-block-size = <2048>;
-			};
-			/*
-			flash0: flash@10000 {
-				compatible = "soc-nv-flash";
-				reg = <0x10000 0x40000>;
-				write-block-size = <2048>;
-				erase-block-size = <2048>;
-			}; */
+		rram: rram@21a400 {
+			compatible = "zephyr,memory-region";
+			reg = <0x0021A400 0x00165C00>;
+			zephyr,memory-region = "RRAM";
+			label = "RRAM";
 		};
 
-		/* QCC730V2_UART_BASE_BASE = 0x01233800UL */
-		uart0: serial@1233800 {
-			compatible = "qcom,uart_qcc730";
-			reg = <0x01233800 0x100>;
-			/* clocks = <&rcc STM32_CLOCK(APB2, 14U)>; */
-			/* resets = <&rctl STM32_RESET(APB2, 14U)>; */
-			interrupts = <3 0>;
+		pmu: pmu@11aec00 {
+			reg = <0x011aec00 0xfbc>;
+		};
+
+		pinctrl: pinctrl {
+			compatible = "qcom,qcc730-pinctrl";
+			#pinctrl-cells = <1>;
+		};
+
+		gpioa: gpio@1233a00 {
+			compatible = "qcom,qcc730-gpio";
+			gpio-controller;
+			reg = <0x01233a00 0x0c>;
+			#gpio-cells = <2>;
+			interrupts = <0x30 0x2>;
+			resets = <&reset QCC730_RESET(PMU_SOFT_RESET, 20U)>;
+			clocks = <&clock_controller QCC730_CLOCK_GPIO>;
+			status = "disabled";
+			ngpios = <15>;
+		};
+
+		i2c0: i2c@1233900 {
+			compatible = "qcom,qcc730-i2c";
+			reg = <0x01233900 0x100>;
+			clock-frequency = <I2C_BITRATE_STANDARD>;
+			periph-clock-frequency_khz = <DT_FREQ_K(60)>;
+			interrupts = <0x02 0x2>;
+			resets = <&reset QCC730_RESET(PMU_SOFT_RESET, 12U)>;
+			clocks = <&clock_controller QCC730_CLOCK_I2C>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
+		uart0: uart@1233800 {
+			compatible = "qcom,qcc730-uart";
+			reg = <0x01233800 0xac>;
+			interrupts = <0x03 0x2>;
+			rx-buffer-size = <8>;
+			resets = <&reset QCC730_RESET(PMU_SOFT_RESET, 11U)>;
+			clocks = <&clock_controller QCC730_CLOCK_UART>;
+			status = "disabled";
+		};
+
+		watchdog0: watchdog {
+			compatible = "qcom,qcc730-wdt";
+			clocks = <&clock_controller QCC730_CLOCK_WDOG>;
+			status = "disabled";
+		};
+
+		qcspi: qcspi@01264000 {
+			compatible = "qcom,qcc730-spi";
+			cs-gpios = <&gpioa 1 GPIO_ACTIVE_LOW>;
+			pinctrl-0 = <&qcspi_default>;
+			pinctrl-names = "default";
+			interrupts = <0x48 0x2>;
+			reg = <0x01264000 0x64>;
+			clock-frequency = <1000000>;
+			pin-num = <5>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
+		qtimer: qtimer@11a8000 {
+			compatible = "qcom,qcc730-qtimer";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			clock-frequency = <DT_FREQ_K(38400)>;
+			reg = <0x011a8000 0x5ef8>;
+			resets = <&reset QCC730_RESET(PMU_SOFT_RESET, 6U)>;
+
+			frame0: timer@11a9000 {
+				compatible = "qcom,qcc730-qtmr";
+				reg = <0x011a9000 0xfd4>;
+				interrupts = <0x04 0x2>;
+				clocks = <&clock_controller QCC730_CLOCK_QTIMER>;
+				id = <0>;
+				status = "disabled";
+			};
+
+			frame1: timer@11aa000 {
+				compatible = "qcom,qcc730-qtmr";
+				reg = <0x011aa000 0xfd4>;
+				interrupts = <0x05 0x2>;
+				clocks = <&clock_controller QCC730_CLOCK_QTIMER>;
+				id = <1>;
+				status = "disabled";
+			};
+
+			frame2: timer@11ab000 {
+				compatible = "qcom,qcc730-qtmr";
+				reg = <0x011ab000 0xfd4>;
+				interrupts = <0x06 0x2>;
+				clocks = <&clock_controller QCC730_CLOCK_QTIMER>;
+				id = <2>;
+				status = "disabled";
+			};
+
+			frame3: timer@11ac000 {
+				compatible = "qcom,qcc730-qtmr";
+				reg = <0x011ac000 0xfd4>;
+				interrupts = <0x07 0x2>;
+				clocks = <&clock_controller QCC730_CLOCK_QTIMER>;
+				id = <3>;
+				status = "disabled";
+			};
+
+			frame4: timer@11ad000 {
+				compatible = "qcom,qcc730-qtmr";
+				reg = <0x011ad000 0xfd4>;
+				interrupts = <0x08 0x2>;
+				clocks = <&clock_controller QCC730_CLOCK_QTIMER>;
+				id = <4>;
+				status = "disabled";
+			};
+		};
+
+		rtc: rtc {
+			compatible = "qcom,qcc730-rtc";
+			qtimer-frame = <&frame0>;
+			alarms-count = <1>;
+			status = "disabled";
+		};
+
+		aon_timer0: aon_timer {
+			compatible = "qcom,qcc730-aon-timer";
+			interrupts = <0x37 0x0>;
+			status = "disabled";
+		};
+
+		// There are 3 FLASH chip options available
+		// if not sure which one is on your chip
+		// all can be enabled. Initialization won't
+		// finish for the absent ones.
+		qspi_nor_flash1: mx25r6435f@0 {
+			compatible = "qcom,qspi-qcc730-nor";
+			device-id = <0x001728C2>;
+			reg = <0 0x800000>;
+			status = "disabled";
+		};
+
+		qspi_nor_flash2: gd25wq32e@0 {
+			compatible = "qcom,qspi-qcc730-nor";
+			device-id = <0x001665c8>;
+			reg = <0 0x400000>;
+			status = "disabled";
+		};
+
+		qspi_nor_flash3: gt25q32au@0 {
+			compatible = "qcom,qspi-qcc730-nor";
+			device-id = <0x001660c4>;
+			reg = <0 0x400000>;
+			status = "disabled";
+		};
+
+		reset: reset-controller@11aec00 {
+			compatible = "qcom,qcc730-reset";
+			reg = <0x11aec00 0x4>,
+				  <0x2080c00 0x4>;
+			reg-names = "pmu_soft_reset", "mcu_soft_reset";
+			#reset-cells = <1>;
+		};
+
+		clock_controller: clock-controller@11aec00 {
+			compatible = "qcom,qcc730-clkctrl";
+			reg = <0x011aec00 0xfbc>;
+			#clock-cells = <1>;
+			status = "okay";
+		};
+
+		dxe0: dma@119f000 {
+			compatible = "qcom,qcc730-dxe";
+			#dma-cells = <1>;
+			reg = <0x119f000 0x700>,
+				  <0x119a000 0x20d0>;
+			reg-names = "dxe", "ccu";
+			interrupts = <28 2>;
+			dma-channels = <1>;
 			status = "disabled";
 		};
 	};

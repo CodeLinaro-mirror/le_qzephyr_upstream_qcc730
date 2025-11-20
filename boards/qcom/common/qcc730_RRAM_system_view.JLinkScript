@@ -1,0 +1,373 @@
+/*
+*/
+
+
+void m4tap_exec(U8 m4tap_instr)
+{
+   U32 ir_val;
+
+  // Per section B3.3.1 Required IR instructions in the ARM
+  // Debug Interface Arch Spec ADIv5.0 to ADIv5.2 (IHI0031D), the
+  // Coresight JTAG-DP IR instructions are:
+  // 0x8 - Select ABORT register
+  // 0xA - Select DPACC register
+  // 0xB - Select APACC register
+  // 0xE - Select IDCODE register
+  // 0xF - Select BYPASS register
+  // Unused IR values select the BYPASS register.
+
+  ir_val = m4tap_instr & 0xF;
+  JLINK_SYS_Report1("m4tap_exec: ir_val", ir_val);
+  JLINK_JTAG_StoreIR(ir_val);
+}
+
+void dap_reg_wr(U32 reg_addr, U32 reg_val)
+{
+   U32 acc_ctrl;
+
+   // The DPACC and APACC registers are 35 bits wide:
+   // Data[31:0] || Register Address[3:2] || RnW
+
+   acc_ctrl = ((reg_addr & 0x0C) >> 1) | // Reg Addr[3:2]
+              (0 << 0);                  // RnW[0] = 0 for write
+
+   JLINK_JTAG_StartDR();
+   JLINK_SYS_Report1("dap_reg_wr: acc_ctrl", acc_ctrl);
+   JLINK_JTAG_WriteDRCont(acc_ctrl, 3);
+   JLINK_SYS_Report1("dap_reg_wr: reg_val", reg_val);
+   JLINK_JTAG_WriteDREnd(reg_val, 32);
+}
+
+void dp_reg_wr(U32 reg_addr, U32 reg_val)
+{
+   m4tap_exec(0xA); // Select DPACC
+   dap_reg_wr(reg_addr, reg_val);
+}
+
+void ap_reg_wr(U32 reg_addr, U32 reg_val)
+{
+   m4tap_exec(0xB); // Select APACC
+   dap_reg_wr(reg_addr, reg_val);
+}
+
+void mem_dword_wr(U32 mem_addr, U32 val)
+{
+   // Configure the AP bank
+   JLINK_SYS_Report("mem_dword_wr: dp_reg_wr(0x08...)");
+   dp_reg_wr(0x08,       // SELECT - AP Select Register
+             (0 << 24) | // [31:24] APSEL = 0x00, Neutrino only supports AP[0]
+             (0 <<  8) | // [23:8] Reserved, 0x0000
+             (0 <<  4) | // [7:4] APBANKSEL = 0x00, addr bits [7:4] of AP's TAR and DRW regs
+             (0 <<  0)); // [3:0] DPBANKSEL = 0x00, CTRL/STAT for DP reg addr 0x00
+
+   // Set CSW
+   JLINK_SYS_Report("mem_dword_wr: ap_reg_wr(0x00...)");
+   ap_reg_wr(0x00,       // AHB-AP CSW - Control and Status Word
+             (0 << 30) | // [31:30] Reserved, 0b00
+             (1 << 29) | // [29] MasterType = 1 for debug
+             (0 << 26) | // [28:26] Reserved, 0b000
+             (1 << 25) | // [25] HPROT1 = 1 privilege
+             (1 << 24) | // [24] Reserved, 0b1
+             (0 << 12) | // [23:12] Reserved, 0x000
+             (0 <<  8) | // [11:8] Mode = 0x0 normal download and upload
+             (0 <<  7) | // [7] Transfer in progress, read only
+             (0 <<  6) | // [6] DbgStatus = DAPEN, read only
+             (0 <<  4) | // [5:4] AddrInc = 0b00 auto increment off
+             (0 <<  3) | // [3] Reserved, 0xb0
+             (2 <<  0)); // [2:0] Size = 0b010, 32-bit access
+
+   // Set TAR with the memory address to write to.
+   JLINK_SYS_Report("mem_dword_wr: ap_reg_wr(0x04...)");
+   ap_reg_wr(0x04, mem_addr);
+
+   // Write value to the memory address using the DRW.
+   JLINK_SYS_Report("mem_dword_wr: ap_reg_wr(0x0C...)");
+   ap_reg_wr(0x0C, val);
+}
+
+void local_reset_halt()
+{
+   int orig_speed;
+
+   orig_speed = JTAG_Speed;
+   JTAG_Speed = 100;
+
+   // Bring the JTAG FSM to the Run-Test/Idle state.
+   //JLINK_SYS_Report("local_reset_halt: JTAG_Store(0x1F...)");
+   //JTAG_Store(0x1F, 0, 8);
+
+   // Make sure the debug logic is powered up.
+   JLINK_SYS_Report("local_reset_halt: dp_reg_wr(CTRL/STAT)");
+   dp_reg_wr(0x00,       // CTRL/STAT - Control/Status Register
+             (0 << 31) | // [31] CSYSPWRUPACK, read only
+             (1 << 30) | // [30] CSYSPWRUPREQ = 1, system power up request
+             (0 << 29) | // [29] CDBGPWRUPACK, read only
+             (1 << 28) | // [28] CDBGPWRUPREQ = 1, debug power up request
+             (0 << 27) | // [27] CDBGRSTACK, read only
+             (0 << 26) | // [26] CDBGRSTREQ = 0, do not request debugger reset
+             (0 << 24) | // [25:24] Reserved
+             (0 << 12) | // [23:12] TRNCNT, transaction counter
+             (0 <<  8) | // [11:8] MASKLANE = 0x0, do not mask any byte lanes
+             (0 <<  7) | // [7] WDATAERR, reserved for JTAG-DP
+             (0 <<  6) | // [6] READOK, reserved for JTAG-DP
+             (1 <<  5) | // [5] STICKYERR = 1, clear this error status bit
+             (0 <<  4) | // [4] STICKYCMP = 0, do not clear compare match status bit
+             (0 <<  2) | // [3:2] TRNMODE = 0, normal operation
+             (0 <<  1) | // [1] STICKYORUN = 0, do not clear overrun status bit
+             (0 <<  0)); // [0] ORUNDETECT = 0, disable overrun detection
+
+   // Enable halting debug.
+   JLINK_SYS_Report("local_reset_halt: mem_dword_wr(DHCSR)");
+   mem_dword_wr(0xE000EDF0,      // DHCSR - Debug Halting Control and Status Register
+                (0xA05F << 16) | // [31:16] DBGKEY = 0xA05F to enable write
+                     (0 <<  6) | // [15:6] Reserved
+                     (0 <<  5) | // [5] C_SNAPSTALL = 0, no action
+                     (0 <<  4) | // [4] Reserved
+                     (0 <<  3) | // [3] C_MASKINTS = 0, do not mask interrupts
+                     (0 <<  2) | // [2] C_STEP = 0, no effect
+                     (1 <<  1) | // [1] C_HALT = 1, halt the processor
+                     (1 <<  0)); // [0] C_DEBUGEN = 1, halting debug enabled
+
+   // Enable halting debug trap on local reset.
+   JLINK_SYS_Report("local_reset_halt: mem_dword_wr(DEMCR)");
+   mem_dword_wr(0xE000EDFC, // DEMCR - Debug Exception and Monitor Control Register
+                (0 << 25) | // [31:25] Reserved
+                (1 << 24) | // [24] TRACENA = 1, Enable DWT and ITM
+                (0 << 20) | // [23:20] Reserved
+                (0 << 19) | // [19] MON_REQ = 0, DebugMonitor semaphore
+                (0 << 18) | // [18] MON_STEP = 0, do not step processor
+                (0 << 17) | // [17] MON_PEND = 0, Clear status of DebugMonitor exception
+                (0 << 16) | // [16] MON_EN = 0, disable DebugMonitor exception
+                (0 << 11) | // [15:11] Reserved
+                (1 << 10) | // [10] VC_HARDERR = 1, enable halting debug trap on HardFault
+                (1 <<  9) | // [9] VC_INTERR = 1, enable halting debug trap on fault during interrupt
+                (1 <<  8) | // [8] VC_BUSERR = 1, enable halting debug trap on BusFault
+                (1 <<  7) | // [7] VC_STATERR = 1, enable halting debug trap on state info error
+                (1 <<  6) | // [6] VC_CHKERR = 1, enable halting debug trap on UsageFault due to checking err
+                (1 <<  5) | // [5] VC_NOCPERR = 1, enable halting debug trap on UsageFault due to a coproc
+                (1 <<  4) | // [4] VC_MMPERR = 1, enable halting debug trap on a MemManage exception
+                (0 <<  1) | // [3:1] Reserved
+                (1 <<  0)); // [0] VC_CORERESET = 1, enable halting debug trap on local reset
+
+   // Trigger a local reset.
+   JLINK_SYS_Report("local_reset_halt: mem_dword_wr(AIRCR)");
+   mem_dword_wr(0xE000ED0C,      // AIRCR - Application Interrupt and Reset Control Register
+                (0x05FA << 16) | // [31:16] VECTKEY = 0x05FA to enable write
+                     (0 << 15) | // [15] ENDIANNESS = 0, little endian
+                     (0 << 11) | // [14:11] Reserved
+                     (0 <<  8) | // [10:8] PRIGROUP = 0,
+                     (0 <<  3) | // [7:3] Reserved
+                     (1 <<  2) | // [2] SYSRESETREQ = 1, request reset
+                     (0 <<  1) | // [1] VECTCLRACTIVE = 0, don't clear active state exception info
+                     (1 <<  0)); // [0] VECTRESET = 1, triggers local reset
+
+  JTAG_Speed = orig_speed;
+}
+
+void qtap_exec(U8 qtap_instr)
+{
+   int orig_speed;
+   U32 tdi_val;
+
+   orig_speed = JTAG_Speed;
+
+   JLINK_TIF_SetSpeed(100);
+
+   // Issue TAP reset to ensure we can reach the QTAP's IR
+   // Manually toggle TCK so that JTAG QTAP samples TRSTn state.
+
+   JTAG_TRSTPin = 0;
+   JLINK_TIF_SetClrTCK(0);
+   JLINK_TIF_SetClrTCK(1);
+   JLINK_TIF_SetClrTCK(0);
+   JLINK_TIF_SetClrTCK(1);
+   JTAG_TRSTPin = 1;
+   JLINK_TIF_SetClrTCK(0);
+   JLINK_TIF_SetClrTCK(1);
+   JLINK_TIF_SetClrTCK(0);
+   JLINK_TIF_SetClrTCK(1);
+
+   // TMS=1 for 5 TCK clocks will force the JTAG FSM into
+   // the Test-Logic-Reset state.
+   // TMS=0 for at least 1 TCK clock will force the JTAG FSM into
+   // the Run-Test/Idle state.
+   JLINK_SYS_Report("qtap_exec: JTAG_Store(0x1F...)");
+   //JLINK_JTAG_Store(0x1F, 0, 8);
+   JLINK_JTAG_Store(0x1F, 0, 16);
+
+   // TMS=1 for 2 TCK clocks will move the JTAG QTAP FSM into
+   // the Select-IR-Scan state.
+   // TMS=0 for 2 TCK clocks will move the JTAG QTAP FSM into
+   // the Shift-IR state.
+   // Shift the 7-bit QTAP instruction (e.g. 7b'0001011 == 0x0B)
+   // into the Instruction Register.
+   // Set TMS=1 for the last bit to move the JTAG QTAP FSM to
+   // the Exit1-IR state.
+   // Set TMS=1 for 1 TCK  to move the JTAG QTAP FSM to
+   // the Update-IR state.
+   // Set TMS=0 for 1 TCK to move the JTAG QTAP FSM to
+   // the Run-Test/Idle state.
+   // TMS = 0 1100 0000 0011 = 0x0C03
+   // TDI = 0 0000 1011 0000 = 0x00B0
+
+   tdi_val = qtap_instr << 4;
+   JLINK_SYS_Report1("qtap_exec: JTAG_Store(0x0C03...)", tdi_val);
+   JLINK_JTAG_Store(0x0C03, tdi_val, 13);
+
+   // If connected to another TAP, then bring the newly connected
+   // JTAG FSM to the Run-Test/Idle state.
+   if ((qtap_instr == 0x0B) || // M4 TAP
+       (qtap_instr == 0x10) || // LVTAP
+       (qtap_instr == 0x11))   // RRAM TAP
+   {
+      JLINK_SYS_Report("qtap_exec: JTAG_Store(0x1F...)");
+      JLINK_JTAG_Store(0x1F, 0, 16);
+   }
+
+   JTAG_TMSPin = 0;
+   JTAG_TDIPin = 0;
+
+   JLINK_TIF_SetSpeed(orig_speed);
+}
+
+U32 bit_reverse(U32 data, U32 bits)
+{
+   U32 rev_data;
+   U32 i;
+
+   i = 0;
+   rev_data = 0;
+   while (i < bits)
+   {
+      rev_data |= (data & 0x1) << (bits - 1 - i);
+      data >>= 1;
+      i += 1;
+   }
+
+   return (rev_data);
+}
+
+const U8 tms_buf[9] = {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C};
+const U8 tdi_buf[9] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
+U32 jtag2ahb_tdr(U8 rd_n_wr, U32 addr, U32 data)
+{
+   U32 ahb_op;
+   U32 status_lo;
+   U32 status_hi;
+   U32 rd_data;
+   U32 rv_data;
+   // Assume start from Run-Test/Idle state.
+   // TMS=1 for 1 TCK moves JTAG QTAP FSM to DR-Scan state.
+   // TMS=0 for 2 TCKs moves the JTAG QTAP FSM to Shift-DR state.
+   // TMS=0 for 63 TCKs shifts 63 bits from TDR to TDO.
+   // TMS=1 for 1 TCK shifts bit 64 from TDR to TDO and moves to Exit1-DR state.
+   // TMS=1 for 1 TCK moves the JTAG QTAP FSM to Update-DR state.
+   // TMS=0 for 1 TCK returns the JTAG QTAP FSM to Run-Test/Idle state.
+   // TMS = 0000 1100 0000 0000 0000 0000 0000 0000 0000
+   //       0000 0000 0000 0000 0000 0000 0000 0000 0001 = 0x0C0000000000000001
+
+//   const U8 tms_buf[9] = {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C};
+//   const U8 tdi_buf[9] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+   U8 tdo_buf[9];
+
+  // The JTAG2AHB Test Data Register (TDR) fields are:
+  // bits 01:00 - Command opcode 0x1 = read, 0x2 = write
+  // bits 33:02 - 32-bit value to write
+  // bits 63:34 - Most significant 30 bits of the AHB address
+  // This value must be sent in bit reversed order.
+  // i.e. bit 63 must be sent first.
+
+   if (rd_n_wr == 1)
+   {
+      ahb_op = 0x1;  // AHB read
+   }
+   else
+   {
+      ahb_op = 0x2;  // AHB write
+   }
+
+   // Write to the TDR to initiate the operation.
+   JLINK_SYS_Report("jtag2ahb_tdr: JTAG_StartDR()");
+
+   JLINK_JTAG_StartDR();
+
+   rv_data = bit_reverse(addr >> 2, 30);
+   JLINK_JTAG_WriteDRCont(rv_data, 30);
+
+   rv_data = bit_reverse(data, 32);
+   JLINK_JTAG_WriteDRCont(rv_data, 32);
+
+   rv_data = bit_reverse(ahb_op, 2);
+   JLINK_JTAG_WriteDREnd(rv_data, 2);
+
+   // Wait for the operation to complete by polling the TDR.
+
+   do
+   {
+      // Write TDR = 0 to poll for status and data from the AHB operation.
+      JLINK_JTAG_ReadWriteBits(&tdi_buf[0], &tms_buf[0], &tdo_buf[0], 69);
+
+      // The status word format is as follows:
+      // bit 0     - Completion status 1 = error, 0 = success
+      // bit 32:01 - 32-bit value read from AHB addr
+      // bit 33    - Transaction status 1 = completed, 0 = pending
+      // bit 63:34 - Zeros
+      status_lo = ((tdo_buf[3] << 24) | (tdo_buf[2] << 16) |
+                   (tdo_buf[1] << 8) | tdo_buf[0]);
+      status_hi = ((tdo_buf[7] << 24) | (tdo_buf[6] << 16) |
+                   (tdo_buf[5] << 8) | tdo_buf[4]);
+
+      JLINK_SYS_Report1("jtag2ahb status_lo= ", status_lo);
+      JLINK_SYS_Report1("jtag2ahb status_hi= ", status_hi);
+   } while((status_hi & 0x2) == 0);
+
+   if (status_lo & 1)
+   {
+      JLINK_SYS_Report1("jtag2ahb failed addr[31:2], opcode[1:0] = ",
+                        (addr & 0xFFFFFFFC) | ahb_op);
+   }
+
+   if (ahb_op == 0x01)
+   {
+      rd_data = ((status_hi & 0x1) << 31) | (status_lo >> 1);
+   }
+   else
+   {
+      rd_data = 0;
+   }
+
+   return rd_data;
+}
+
+int ConfigTargetSettings(void)
+{
+   CPU = CORTEX_M4;
+   JTAG_Speed = 10000;
+   JTAG_IRPre = 0;
+   JTAG_DRPre = 0;
+   JTAG_IRPost = 0;
+   JTAG_DRPost = 0;
+   JTAG_IRLen = 4;
+
+   return 0;
+}
+
+void AfterResetTarget()
+{
+   JLINK_SelectTIF(JLINK_TIF_JTAG);
+
+   qtap_exec(0x0B);  // Connect to the M4 TAP
+
+   local_reset_halt();
+}
+
+void InitTarget(void)
+{
+   JLINK_ExecCommand("CORESIGHT_AddAP = Index=0 Type=AHB-AP BaseAddr=0x40000");
+   JLINK_ExecCommand("CORESIGHT_SetIndexAHBAPToUse = 0");
+
+
+   qtap_exec(0x0B);  // 7-bit QTAP instr to connect to the M4 TAP
+
+}

@@ -1,0 +1,27 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0
+# Qualcomm QCC730 I2C configuration options
+
+config I2C_QCC730
+	bool "Qualcomm QCC730 I2C driver"
+	default y
+	depends on I2C
+	depends on DT_HAS_QCOM_QCC730_I2C_ENABLED
+	help
+	  Enable support for the Qualcomm QCC730 I2C controllers.
+
+if I2C_QCC730
+config I2C_QCC730_TIMEOUT_MS
+	int "QCC730 I2C operations timeout in miliseconds"
+	default 1000
+	help
+	  If this timeout will be exceeded - I2C operation will return
+	  with ETIMEDOUT error code.
+
+config I2C_QCC730_INTERRUPT_SUPPORT
+	bool "Interrupt support for QCC730 I2C driver"
+	default n
+	help
+	  Enable interrupts support for Qualcomm QCC730 I2C driver.
+	  If this value is not defined - driver will work in polling mode.
+endif

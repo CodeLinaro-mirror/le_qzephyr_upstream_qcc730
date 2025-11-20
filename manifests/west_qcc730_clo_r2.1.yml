@@ -1,0 +1,36 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0;
+manifest:
+  remotes:
+    - name: upstream
+      url-base: https://git.codelinaro.org/clo/le/qzephyr/upstream
+    - name: qoss
+      url-base: https://git.codelinaro.org/clo/le/qzephyr/qoss
+    - name: prop
+      url-base: https://git.codelinaro.org/clo/le/qzephyr/prop
+    - name: zephyrproject-rtos
+      url-base: https://git.codelinaro.org/clo/le/qzephyr/zephyrproject-rtos
+  defaults:
+    remote: zephyrproject-rtos
+    revision: IOT.ZE.1.0.r1-00800-QCC730.0
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      import:
+        # By using name-allowlist we can clone only the modules that are
+        # strictly needed by the application.
+        name-allowlist:
+          - zcbor      # for c++ programming
+    - name: cmsis
+      remote: zephyrproject-rtos
+      path: modules/hal/cmsis
+    - name: mbedtls
+      remote: zephyrproject-rtos
+      path: modules/crypto/mbedtls
+    - name: qapp
+      remote: qoss
+    - name: qhal
+      remote: upstream
+      path: modules/hal/qcom
+  self:
+    west-commands: zephyr/scripts/west-commands.yml

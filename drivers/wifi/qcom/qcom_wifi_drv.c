@@ -16,8 +16,13 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #include <zephyr/net/wifi_mgmt.h>
 #include <zephyr/device.h>
 #include <soc.h>
+#ifdef CONFIG_PM_DEVICE
+#include <zephyr/pm/device.h>
+#endif
 
 #include <qwifi_api.h>
+#include <libwifi.h>
+#include <libwifi/wlan_defs.h>
 
 #define SCAN_MODE_BLOCKING 1
 #define SCAN_MODE_UNBLOCKING 2
@@ -26,12 +31,6 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 struct qwifi_bss_status_t {
     bool connected;
     uint8_t bssid[NET_ETH_ADDR_LEN];
-    uint8_t channel;
-    uint8_t band;
-    int rssi;
-    int security;
-    int link_mode;
-    int beacon_interval;
     int ssid_length;
     char ssid[WIFI_SSID_MAX_LEN + 1];
 };
@@ -48,7 +47,6 @@ struct qwifi_drv_dev_data_t {
     struct qwifi_bss_status_t bss_status;
     struct net_if *iface;
     const struct device *dev;
-    uint8_t frame_buf[NET_ETH_MAX_FRAME_SIZE];
 };
 
 struct qwifi_drv_dev_cfg_t {
@@ -120,11 +118,9 @@ static void qwifi_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *c
     LOG_DBG("connect event report:");
     LOG_DBG("ssid: %s", dev_data->cfg_connect.ssid);
     LOG_DBG("mac addr: %02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    LOG_DBG("band: %d", cxnInfo->band);
-    LOG_DBG("channel: %d", cxnInfo->channel);
     LOG_DBG("security: %d", dev_data->cfg_connect.security);
-    LOG_DBG("status: %d", cxnInfo->evt_hdr.status);
     LOG_DBG("connection status: %d", cxnInfo->bss_Connection_Status);
+    LOG_DBG("status: %d", cxnInfo->evt_hdr.status);
     LOG_DBG("reason code: %d", cxnInfo->reason_code);
 
     if (cxnInfo->ssid_Length) {
@@ -133,18 +129,12 @@ static void qwifi_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *c
     }
 
     memcpy(bss->bssid, cxnInfo->bssid, NET_ETH_ADDR_LEN);
-    bss->band = cxnInfo->band;
-    bss->channel = cxnInfo->channel;
 
     if (cxnInfo->evt_hdr.status == QAPI_OK) {
-        if (cxnInfo->bss_Connection_Status) {
-            bss->connected = true;
-        }
+        bss->connected = true;
     } else {
         connect_status = WIFI_STATUS_CONN_FAIL;
-        if (cxnInfo->bss_Connection_Status) {
-            bss->connected = false;
-        }
+        bss->connected = false;
     }
 
     wifi_mgmt_raise_connect_result_event(dev_data->iface, connect_status);
@@ -313,32 +303,93 @@ static int qwifi_drv_scan(const struct device *dev, struct wifi_scan_params *par
 
 static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_status *status)
 {
+    uint32_t length = 0;
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t dev_id = dev_data->active_device;
     struct qwifi_bss_status_t *bss_status = &dev_data->bss_status;
 
     status->state = bss_status->connected ? WIFI_STATE_COMPLETED : WIFI_STATE_DISCONNECTED;
-    status->band = bss_status->band;
-    status->channel = bss_status->channel;
     status->ssid_len = bss_status->ssid_length;
     memcpy(status->bssid, bss_status->bssid, sizeof(status->bssid));
     strlcpy(status->ssid, bss_status->ssid, sizeof(status->ssid));
     status->ssid[WIFI_SSID_MAX_LEN] = '\0';
-    status->rssi = bss_status->rssi;
-    status->security = bss_status->security;
-    status->link_mode = bss_status->link_mode;
-    status->beacon_interval = bss_status->beacon_interval;
+
+    qapi_WLAN_Status_t wifi_status = {0};
+    length = sizeof(wifi_status);
+    qapi_Status_t ret = qapi_WLAN_Get_Param(dev_id, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                                            __QAPI_WLAN_PARAM_GROUP_WIRELESS_WIFI_STATUS,
+                                            &wifi_status, &length);
+    if (ret != QAPI_OK) {
+        return ret;
+    }
+
+    /** link mode */
+    switch (wifi_status.link_mode) {
+    case MODE_11B:
+        status->link_mode = WIFI_1;
+        break;
+    case MODE_11A_ONLY:
+    case MODE_11A_HT20:
+        status->link_mode = WIFI_2;
+        break;
+    case MODE_11G:
+        status->link_mode = WIFI_3;
+        break;
+    case MODE_11NG_HT20:
+    case MODE_11ABGN_HT20:
+        status->link_mode = WIFI_4;
+        break;
+    default:
+        status->link_mode = WIFI_LINK_MODE_UNKNOWN;
+        break;
+    }
+
+    /* security */
+    switch (wifi_status.auth_mode) {
+    case QAPI_WLAN_AUTH_WPA2_PSK_E:
+        status->security = WIFI_SECURITY_TYPE_PSK;
+        break;
+    case QAPI_WLAN_AUTH_NONE_E:
+        status->security = WIFI_SECURITY_TYPE_NONE;
+        break;
+    default:
+        status->security = WIFI_SECURITY_TYPE_UNKNOWN;
+        break;
+    }
+
+    status->rssi = wifi_status.rssi;
+    status->dtim_period = wifi_status.dtim_period;
+    status->beacon_interval = wifi_status.beacon_interval;
+    status->band = wifi_status.band;
+    status->channel = wifi_status.channel;
 
     return 0;
 }
 
 static int qwifi_drv_send(const struct device *dev, struct net_pkt *pkt)
 {
+    qapi_Status_t ret;
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     uint8_t deviceId = dev_data->active_device;
-    const int pkt_len = net_pkt_get_len(pkt);
+    const size_t pkt_len = net_pkt_get_len(pkt);
 
-    net_pkt_read(pkt, dev_data->frame_buf, pkt_len);
-    qwifi_hal_tx(deviceId, dev_data->frame_buf, pkt_len);
+    void *pkt_buf = nt_dpm_allocate_buffer_ext(pkt_len);
+    if (!pkt_buf) {
+        return -ENOMEM;
+    }
+
+    size_t n = net_buf_linearize(pkt_buf, pkt_len, pkt->buffer, 0, pkt_len);
+    if (n != pkt_len) {
+        nt_dpm_free_buffer_ext(pkt_buf);
+        LOG_ERR("%s:%d copy fail.", __func__, __LINE__);
+        return -EFAULT;
+    }
+
+    ret = qwifi_hal_tx(deviceId, pkt_buf, pkt_len);
+    if (ret != NT_OK) {
+        nt_dpm_free_buffer_ext(pkt_buf);
+        return -EAGAIN;
+    }
 
     return 0;
 }
@@ -386,6 +437,9 @@ static void qwifi_drv_intf_init(struct net_if *iface)
     ethernet_init(iface);
     net_if_carrier_off(iface);
     net_eth_carrier_on(iface);
+#ifdef CONFIG_PM_DEVICE
+    pm_device_busy_set(dev);
+#endif
     LOG_DBG("%s", __FUNCTION__);
 }
 
@@ -401,6 +455,49 @@ static int qwifi_drv_dev_init(const struct device *dev)
     return 0;
 }
 
+static int get_config(const struct device *dev, enum ethernet_config_type type,
+                      struct ethernet_config *config)
+{
+    int ret = 0;
+
+    switch (type) {
+    case ETHERNET_CONFIG_TYPE_EXTRA_TX_PKT_HEADROOM:
+        config->extra_tx_pkt_headroom = 0;
+        break;
+    default:
+        return -EINVAL;
+    }
+
+    return ret;
+}
+
+#ifdef CONFIG_PM_DEVICE
+
+static int device_wlan_pm_action(const struct device *dev, enum pm_device_action pm_action)
+{
+    //printk("%s\n", __func__);
+    int ret = 0;
+
+    switch (pm_action) {
+        case PM_DEVICE_ACTION_SUSPEND:
+            ret = qapi_WLAN_Suspend();
+            //printk("%s ret:%d\r\n",__func__, ret);
+            if(ret != QAPI_OK)
+                ret = -EFAULT;
+            break;
+        case PM_DEVICE_ACTION_RESUME:
+            qapi_WLAN_Resume();
+            break;
+        default:
+            break;
+    }
+
+    return ret;
+}
+
+PM_DEVICE_DT_INST_DEFINE(0, device_wlan_pm_action);
+#endif
+
 static const struct wifi_mgmt_ops qwifi_drv_mgmt = {
     .scan = qwifi_drv_scan,
     .connect = qwifi_drv_connect,
@@ -411,9 +508,10 @@ static const struct wifi_mgmt_ops qwifi_drv_mgmt = {
 static const struct net_wifi_mgmt_offload qwifi_drv_api = {
     .wifi_iface.iface_api.init = qwifi_drv_intf_init,
     .wifi_iface.send = qwifi_drv_send,
+    .wifi_iface.get_config = get_config,
     .wifi_mgmt_api = &qwifi_drv_mgmt,
 };
 
-NET_DEVICE_INIT_INSTANCE(qwifi_sta, "qwifi_sta", 0, qwifi_drv_dev_init, NULL, &g_wifi_dev_data, &g_wifi_dev_cfg,
+NET_DEVICE_INIT_INSTANCE(qwifi_sta, "qwifi_sta", 0, qwifi_drv_dev_init, PM_DEVICE_DT_INST_GET(0), &g_wifi_dev_data, &g_wifi_dev_cfg,
                          CONFIG_WIFI_INIT_PRIORITY, &qwifi_drv_api, ETHERNET_L2, NET_L2_GET_CTX_TYPE(ETHERNET_L2),
                          NET_ETH_MTU);

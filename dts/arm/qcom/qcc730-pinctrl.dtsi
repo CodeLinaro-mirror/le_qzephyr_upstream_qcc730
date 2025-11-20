@@ -1,0 +1,102 @@
+/*
+ * Copyright (c) 2025 Qualcomm Technologies, Inc. and/or its subsidiaries
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/dt-bindings/pinctrl/qcom-qcc730-pinctrl.h>
+
+/ {
+	soc {
+		pinctrl: pinctrl {
+			status = "okay";
+			/* UART Option 0 - Default (GPIO11 TX, GPIO12 RX) */
+			uart0_option0: uart0_option0 {
+				group1 {
+					pinmux = <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_11, QCC730_UART_OPTION_0)>,
+					         <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_12, QCC730_UART_OPTION_0)>;
+					bias-pull-up;
+					high-drive-strength;
+				};
+			};
+
+			uart0_option0_sleep: uart0_option0_sleep {
+				group1 {
+					pinmux = <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_11, QCC730_UART_OPTION_0)>,
+						<QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_12, QCC730_UART_OPTION_0)>;
+					bias-disable;  /* Explicit: no pull-up, no pull-down */
+					/* No high-drive-strength = low drive (0) */
+				};
+			};
+
+			/* UART Option 1 (GPIO14 TX, GPIO13 RX) */
+			uart0_option1: uart0_option1 {
+				group1 {
+					pinmux = <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_14, QCC730_UART_OPTION_1)>,
+					         <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_13, QCC730_UART_OPTION_1)>;
+					bias-pull-up;
+					high-drive-strength;
+				};
+			};
+
+			uart0_option1_sleep: uart0_option1_sleep {
+				group1 {
+					pinmux = <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_14, QCC730_UART_OPTION_1)>,
+						<QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_13, QCC730_UART_OPTION_1)>;
+					bias-disable;  /* Explicit: no pull-up, no pull-down */
+					/* No high-drive-strength = low drive (0) */
+				};
+			};
+
+			/* UART Option 2 (GPIO9 TX, GPIO10 RX) */
+			uart0_option2: uart0_option2 {
+				group1 {
+					pinmux = <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_9, QCC730_UART_OPTION_2)>,
+					         <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_10, QCC730_UART_OPTION_2)>;
+					bias-pull-up;
+					high-drive-strength;
+				};
+			};
+
+			uart0_option2_sleep: uart0_option2_sleep {
+				group1 {
+					pinmux = <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_9, QCC730_UART_OPTION_2)>,
+						<QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_10, QCC730_UART_OPTION_2)>;
+					bias-disable;  /* Explicit: no pull-up, no pull-down */
+					/* No high-drive-strength = low drive (0) */
+				};
+			};
+
+			/* UART Option 3 (GPIO3 TX, GPIO1 RX) */
+			uart0_option3: uart0_option3 {
+				group1 {
+					pinmux = <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_3, QCC730_UART_OPTION_3)>,
+					         <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_1, QCC730_UART_OPTION_3)>;
+					bias-pull-up;
+					high-drive-strength;
+				};
+			};
+
+			uart0_option3_sleep: uart0_option3_sleep {
+				group1 {
+					pinmux = <QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_3, QCC730_UART_OPTION_3)>,
+						<QCC730_PINMUX_UART_PERIPHERAL(QCC730_GPIO_1, QCC730_UART_OPTION_3)>;
+					bias-disable;  /* Explicit: no pull-up, no pull-down */
+					/* No high-drive-strength = low drive (0) */
+				};
+			};
+
+			qcspi_default: qcspi_default {
+				group1 {
+					pinmux = <
+						QCOM_PINMUX_PIN_NUM(0)  // SCK
+						QCOM_PINMUX_PIN_NUM(3)  // MISO
+						QCOM_PINMUX_PIN_NUM(2)  // MOSI
+						>;
+					bias-disable;
+					high-drive-strength;
+				};
+			};
+		};
+	};
+};

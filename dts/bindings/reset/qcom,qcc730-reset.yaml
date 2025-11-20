@@ -1,0 +1,31 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  QCC730 Reset Controller.
+
+  This node is in charge of reset control for PMU and MCU domains.
+
+  To specify the reset line in a peripheral, the standard resets property needs
+  to be used, e.g.:
+
+    uart0: uart@xxx {
+        ...
+        /* Cell contains information about reset register (PMU_SOFT_RESET or MCU_SOFT_RESET) and bit */
+        resets = <&reset QCC730_RESET(PMU_SOFT_RESET, 11)>;
+        ...
+    };
+
+  The reset cells are available in
+  include/zephyr/dts-bindings/reset/qcom_qcc730_reset.h header files.
+
+compatible: "qcom,qcc730-reset"
+
+include: [reset-controller.yaml, base.yaml]
+
+properties:
+  "#reset-cells":
+    const: 1
+
+reset-cells:
+  - id

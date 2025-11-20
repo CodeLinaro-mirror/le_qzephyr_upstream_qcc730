@@ -1,5 +1,6 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
-# SPDX-License-Identifier: Apache-2.0;
+# SPDX-License-Identifier: Apache-2.0
+
 name: qcom porting
 
 build:
@@ -9,7 +10,5 @@ build:
     board_root: .
     dts_root: .
     soc_root: .
-    arch_root: .
-    module_ext_root: .
 runners:
-  - file: ../modules/hal/qcom/tools/nvm_programmer/nvmprogrammer.py
+  - file: scripts/west_commands/runners/qccsdk.py

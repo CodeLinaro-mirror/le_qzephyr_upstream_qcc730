@@ -1,0 +1,14 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0
+
+description: Qualcomm Quad-SPI NOR flash controller
+
+compatible: "qcom,qspi-qcc730-nor"
+
+include: flash-controller.yaml
+include: base.yaml
+
+properties:
+  device-id:
+    type: int
+    description: ID of the flash device that is expected to be obtained in initialization phase

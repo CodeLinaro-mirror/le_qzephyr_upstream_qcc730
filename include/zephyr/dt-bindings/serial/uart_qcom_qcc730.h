@@ -1,0 +1,25 @@
+/*
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#ifndef ZEPHYR_INCLUDE_DT_BINDINGS_SERIAL_QCOM_QCC730_SERIAL_H_
+#define ZEPHYR_INCLUDE_DT_BINDINGS_SERIAL_QCOM_QCC730_SERIAL_H_
+
+// Default value for MCR register
+#define QCC730_UART_MCR_DEFAULT 0x0
+#define QCC730_UART_DLH_DEFAULT 0x0
+
+#define QCC730_UART_LCR_DLS_MASK 0x3
+
+#define UART_ERDA_INTTERUPT_DISABLE 0x00
+#define UART_ERDA_INTTERUPT_ENABLE  0x01
+#define FCR_DISABLE                 0x00
+
+#define QCC730_PMU_BOOT_STRAP_UNLOCK (0x63887466)
+
+#define QCC730_UART_ENABLE 1
+#define QCC730_UART_DISABLE 0
+
+#endif /* ZEPHYR_INCLUDE_DT_BINDINGS_SERIAL_QCOM_QCC730_SERIAL_H_ */

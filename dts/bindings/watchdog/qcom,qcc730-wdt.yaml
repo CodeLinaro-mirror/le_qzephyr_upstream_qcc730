@@ -1,0 +1,5 @@
+description: Qualcomm QCC730 watchdog
+
+compatible: "qcom,qcc730-wdt"
+
+include: base.yaml

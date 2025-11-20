@@ -1,0 +1,18 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: Apache-2.0
+# Qualcomm QCC730 GPIO configuration options
+
+config RESET_QCC730
+	bool "Qualcomm QCC730 Reset driver"
+	default y if DT_HAS_QCOM_QCC730_RESET_ENABLED
+	select RESET
+	help
+	  Enable support for the Qualcomm QCC730 Reset function.
+
+config RESET_LOG_LEVEL
+	int "Log level for reset controller drivers"
+	default 2
+	range 0 4
+	help
+	  Sets the log level for reset controller drivers.
+	  0=Off, 1=Error, 2=Warning, 3=Info, 4=Debug
