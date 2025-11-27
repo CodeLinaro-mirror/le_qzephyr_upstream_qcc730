@@ -507,11 +507,158 @@ static int device_wlan_pm_action(const struct device *dev, enum pm_device_action
 PM_DEVICE_DT_INST_DEFINE(0, device_wlan_pm_action);
 #endif
 
+static int qwifi_drv_channel(const struct device *dev, struct wifi_channel_info *channel_info)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+
+    if (!channel_info) {
+        return -EINVAL;
+    }
+
+    if (channel_info->oper == WIFI_MGMT_SET) {
+        uint32_t channel[2] = {0, 0};
+        channel[0] = channel_info->channel;
+        channel[1] = 0;
+        
+        qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId, 
+                                               __QAPI_WLAN_PARAM_GROUP_WIRELESS, 
+                                               __QAPI_WLAN_PARAM_GROUP_WIRELESS_CHANNEL,
+                                               (void *)&channel, sizeof(channel), false);
+        if (ret != QAPI_OK) {
+            LOG_ERR("%s:%d Set channel %u failed: %d", __func__, __LINE__, channel_info->channel, ret);
+            return -EAGAIN;
+        }
+        
+        return 0;
+    } else if (channel_info->oper == WIFI_MGMT_GET) {
+        qapi_WLAN_Status_t wifi_status = {0};
+        uint32_t length = sizeof(wifi_status);
+        qapi_Status_t ret = qapi_WLAN_Get_Param(deviceId, 
+                                               __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                                               __QAPI_WLAN_PARAM_GROUP_WIRELESS_WIFI_STATUS,
+                                               &wifi_status, &length);
+        if (ret != QAPI_OK) {
+            LOG_ERR("%s:%d Get wifi status failed: %d", __func__, __LINE__, ret);
+            return -EAGAIN;
+        }
+        
+        channel_info->channel = wifi_status.channel;
+        return 0;
+    }
+
+    return -ENOTSUP;
+}
+
+static int qwifi_drv_reg_domain(const struct device *dev, struct wifi_reg_domain *regd)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+
+    if (!regd) {
+        return -EINVAL;
+    }
+
+    if (regd->oper == WIFI_MGMT_SET) {
+        uint8_t country_code[3] = {0};
+        country_code[0] = regd->country_code[0];
+        country_code[1] = regd->country_code[1];
+        country_code[2] = 0;
+
+        qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                                               __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                                               __QAPI_WLAN_PARAM_GROUP_WIRELESS_COUNTRY_CODE,
+                                               (void *)country_code, sizeof(country_code), false);
+
+        if (ret != QAPI_OK) {
+            LOG_ERR("%s:%d Set country code %c%c failed: %d", __func__, __LINE__,
+                    regd->country_code[0], regd->country_code[1], ret);
+            return -EAGAIN;
+        }
+
+        return 0;
+    } else if (regd->oper == WIFI_MGMT_GET) {
+        uint8_t country_code[4] = {0};
+        uint32_t length = 4;
+        qapi_Status_t ret = qapi_WLAN_Get_Param(deviceId,
+                                               __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                                               __QAPI_WLAN_PARAM_GROUP_WIRELESS_COUNTRY_CODE,
+                                               country_code, &length);
+        bool country_code_valid = false;
+
+        if (ret == QAPI_OK && country_code[0] != 0 && country_code[1] != 0) {
+            regd->country_code[0] = country_code[0];
+            regd->country_code[1] = country_code[1];
+            country_code_valid = true;
+            LOG_DBG("%s:%d Country code: %c%c", __func__, __LINE__, country_code[0], country_code[1]);
+        } else {
+            regd->country_code[0] = 'W';
+            regd->country_code[1] = 'W';
+            LOG_DBG("%s:%d Failed to get country code (ret=%d), using default: WW", __func__, __LINE__, ret);
+        }
+
+        qapi_WLAN_Reg_Evt_t reg_evt = {0};
+        ret = qapi_WLAN_Get_Regulatory_Info(&reg_evt);
+        if (ret != QAPI_OK) {
+            LOG_ERR("%s:%d qapi_WLAN_Get_Regulatory_Info failed: %d", __func__, __LINE__, ret);
+            regd->num_channels = 0;
+            return 0; 
+        }
+
+        if (!regd->chan_info) {
+            LOG_ERR("%s:%d chan_info buffer not provided by caller", __func__, __LINE__);
+            return -EINVAL;
+        }
+
+        int idx = 0;
+        const int max_out = MAX_REG_CHAN_NUM;
+        int total_rules = reg_evt.num_2g_reg_rules + reg_evt.num_5g_reg_rules;
+
+        LOG_DBG("%s:%d Regulatory domain: %c%c, rules: %d (2G:%d + 5G:%d)", __func__, __LINE__,
+                reg_evt.alpha[0], reg_evt.alpha[1], total_rules,
+                reg_evt.num_2g_reg_rules, reg_evt.num_5g_reg_rules);
+
+        for (int r = 0; r < total_rules && idx < max_out; r++) {
+            uint16_t start_freq = reg_evt.reg_rules[r].start_freq;
+            uint16_t end_freq = reg_evt.reg_rules[r].end_freq;
+            uint8_t reg_power = reg_evt.reg_rules[r].reg_power;
+            uint16_t flags = reg_evt.reg_rules[r].flag_info;
+
+            LOG_DBG("%s:%d Rule[%d]: %u-%u MHz, power=%u dBm, flags=0x%04x", __func__, __LINE__,
+                r, start_freq, end_freq, reg_power, flags);
+
+            uint16_t step = (start_freq >= 5000) ? 20 : 5;
+            for (uint16_t freq = start_freq; freq <= end_freq && idx < max_out; freq += step) {
+                if ((step == 5 && (freq < 2412 || (freq > 2484 && freq < 5000))) ||
+                    (step == 20 && (freq < 5180 || freq > 5825))) {
+                    continue;
+                }
+                if (step == 5 && freq > 2472 && freq != 2484)
+                    continue;
+                if (freq == 2484 && !(start_freq <= 2484 && end_freq >= 2484))
+                    continue;
+                regd->chan_info[idx].center_frequency = freq;
+                regd->chan_info[idx].max_power = reg_power;
+                regd->chan_info[idx].supported = 1;
+                regd->chan_info[idx].passive_only = (flags & 0x02) ? 1 : 0;
+                regd->chan_info[idx].dfs = (step == 20 && (flags & 0x10)) ? 1 : 0;
+                idx++;
+            }
+        }
+
+        regd->num_channels = idx;
+        LOG_DBG("%s:%d Generated %d channels from %d regulatory rules", __func__, __LINE__, idx, total_rules);
+        return 0;
+    }
+    return -ENOTSUP;
+}
 static const struct wifi_mgmt_ops qwifi_drv_mgmt = {
     .scan = qwifi_drv_scan,
     .connect = qwifi_drv_connect,
     .disconnect = qwifi_drv_disconnect,
     .iface_status = qwifi_drv_intf_status,
+    .channel = qwifi_drv_channel,
+    .reg_domain = qwifi_drv_reg_domain,
 };
 
 static const struct net_wifi_mgmt_offload qwifi_drv_api = {
