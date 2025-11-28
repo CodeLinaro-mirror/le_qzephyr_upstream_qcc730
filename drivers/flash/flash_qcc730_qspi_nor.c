@@ -19,6 +19,9 @@
 #define QCC730_FLASH_QUAD_MODE2_ENABLE_BIT   6
 #define QCC730_FLASH_QUAD_MODE3_ENABLE_BIT   7
 
+#define POWERUP_OPCODE   0xAB
+#define DEEPSLEEP_OPCODE 0xB9
+
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(flash_qcc730, CONFIG_FLASH_LOG_LEVEL);
 
@@ -259,7 +262,9 @@ static int drv_flash_controller_init()
 static int flash_qcc730_qspi_enable(const struct device *dev)
 {
 	int ret = 0;
+
 #ifdef CONFIG_PM_DEVICE
+    qspi_cmd_t qspi_power_up;
 	struct flash_qcc730_data *data = dev->data;
 #endif
 
@@ -272,6 +277,11 @@ static int flash_qcc730_qspi_enable(const struct device *dev)
 	}
 #ifdef CONFIG_PM_DEVICE
 	data->qspi_initialized = true;
+
+    (void)drv_qspi_prepare_cmd(&qspi_power_up, POWERUP_OPCODE, 0, 0, QSPI_SDR_1BIT_E, QSPI_SDR_1BIT_E, QSPI_SDR_1BIT_E,
+                               false);
+
+    drv_qspi_run_cmd(&qspi_power_up, 0, NULL, 0, QSPI_TRANS_MODE);
 #endif
 
 	return ret;
@@ -282,6 +292,12 @@ static int flash_qcc730_qspi_enable(const struct device *dev)
 static int flash_qcc730_qspi_suspend(const struct device *dev)
 {
 	struct flash_qcc730_data *data = dev->data;
+    qspi_cmd_t qspi_power_sleep;
+
+    (void)drv_qspi_prepare_cmd(&qspi_power_sleep, DEEPSLEEP_OPCODE, 0, 0, QSPI_SDR_1BIT_E, QSPI_SDR_1BIT_E,
+                               QSPI_SDR_1BIT_E, false);
+
+    drv_qspi_run_cmd(&qspi_power_sleep, 0, NULL, 0, QSPI_TRANS_MODE);
 
 	/* deinit function returns true as a success */
 	if (!drv_qspi_deinit()) {
