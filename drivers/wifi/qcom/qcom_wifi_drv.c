@@ -23,6 +23,7 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #include <qwifi_api.h>
 #include <libwifi.h>
 #include <libwifi/wlan_defs.h>
+#include "inc/qcom_wifi_mgmt.h"
 
 #define SCAN_MODE_BLOCKING 1
 #define SCAN_MODE_UNBLOCKING 2
@@ -47,6 +48,7 @@ struct qwifi_drv_dev_data_t {
     struct qwifi_bss_status_t bss_status;
     struct net_if *iface;
     const struct device *dev;
+    struct qcom_wifi_mgmt_ops qcom_wifi_cmd;
 };
 
 struct qwifi_drv_dev_cfg_t {
@@ -58,6 +60,26 @@ static struct qwifi_drv_dev_data_t g_wifi_dev_data;
 static struct qwifi_drv_dev_cfg_t g_wifi_dev_cfg = {
     .scan_mode = SCAN_MODE_UNBLOCKING,
 };
+
+const struct qcom_wifi_mgmt_ops *const get_qcom_wifi_api(struct net_if *iface)
+{
+	const struct device *dev = net_if_get_device(iface);
+	struct qcom_wifi_mgmt_ops *off_api;
+
+	if (dev == NULL) {
+		return NULL;
+	}
+	struct qwifi_drv_dev_data_t *dev_data = dev->data;
+	off_api = &dev_data->qcom_wifi_cmd;
+#ifdef CONFIG_WIFI_NM
+	struct wifi_nm_instance *nm = wifi_nm_get_instance_iface(iface);
+
+	if (nm) {
+		return nm->ops;
+	}
+#endif /* CONFIG_WIFI_NM */
+	return off_api ? off_api : NULL;
+}
 
 static void qwifi_scan_complete_event(struct device *dev, qapi_WLAN_Scan_Comp_Evt_t *scan_result)
 {
@@ -301,6 +323,61 @@ static int qwifi_drv_scan(const struct device *dev, struct wifi_scan_params *par
     return 0;
 };
 
+static int qwifi_drv_set_tx_power(const struct device *dev, struct qcom_wifi_set_tx_power_params *params)
+{
+    int ret = 0;
+    qapi_WLAN_Set_Txpower_Params_t set_tx_power_cfg;
+    set_tx_power_cfg.txpower = params->txpower;
+    set_tx_power_cfg.policy = params->policy;
+
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+
+    ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_TX_POWER_IN_DBM,
+                        &set_tx_power_cfg,
+                        sizeof(set_tx_power_cfg),
+                        false);
+
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set tx power for device %d", deviceId);
+        return -EIO;
+    }
+
+    return 0;
+}
+
+static int qwifi_drv_get_tx_power(const struct device *dev, struct qcom_wifi_get_tx_power_params *params)
+{
+    qapi_WLAN_Get_Power_Evt_t power;
+    uint32_t length = sizeof(power);
+
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+
+    if(0 != qapi_WLAN_Get_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_TX_POWER_IN_DBM,
+                        &power,
+                        &length)) {
+        LOG_ERR("get tx power fail for device %d",deviceId);
+        return -EIO;
+    }
+    
+    LOG_INF("get real_power: %d dbm", power.real_power);
+    LOG_INF("get ctl_power: %d dbm", power.ctl_power);
+    LOG_INF("get reg_power: %d dbm", power.reg_power);
+    LOG_INF("get target_power: %d dbm", power.target_power);
+
+    params->reg_power = power.reg_power;
+    params->ctl_power = power.ctl_power;
+    params->target_power = power.target_power;
+    params->real_power = power.real_power;
+
+    return 0;
+}
+
 static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_status *status)
 {
     uint32_t length = 0;
@@ -451,6 +528,12 @@ static int qwifi_drv_dev_init(const struct device *dev)
     qwifi_init();
     qapi_WLAN_Set_Callback(qwifi_drv_event_handler, (void *)dev);
     dev_data->e_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
+
+    struct qcom_wifi_mgmt_ops qwifi_ops = {
+        .set_tx_power = qwifi_drv_set_tx_power,
+        .get_tx_power = qwifi_drv_get_tx_power,
+    };
+    dev_data->qcom_wifi_cmd = qwifi_ops;
 
     return 0;
 }
