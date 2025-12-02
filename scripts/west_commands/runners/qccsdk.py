@@ -3,10 +3,55 @@
 
 from runners.core import RunnerCaps, ZephyrBinaryRunner
 import argparse
-from os import path, getenv, environ
+from os import getenv, environ
 from pathlib import Path
 import sys
 import os
+import subprocess
+import logging
+import xml.etree.ElementTree as ET
+
+# Configure module logger
+logger = logging.getLogger(__name__)
+
+# Determine output directory for generated files
+# Default to ${ZEPHYR_HAL_QCOM_MODULE_DIR}/zephyr/blobs/ if set, otherwise current directory
+OUTPUT_DIR = Path(os.getcwd())
+try:
+    zephyr_base = getenv("ZEPHYR_BASE")
+    if zephyr_base:
+        hal_qcom_dir = (
+            Path(zephyr_base).absolute() / ".." / "modules" / "hal" / "qcom" 
+        )
+    if hal_qcom_dir:
+        blobs_dir = Path(hal_qcom_dir) / "zephyr" / "blobs"
+        if blobs_dir.exists() or blobs_dir.parent.exists():
+            # Create blobs directory if it doesn't exist
+            blobs_dir.mkdir(parents=True, exist_ok=True)
+            OUTPUT_DIR = blobs_dir
+except Exception:
+    pass
+
+print ("OUTPUT_DIR for generated files is ", str(OUTPUT_DIR))
+
+# Construct path to firmware upgrade scripts
+try:
+    zephyr_base = getenv("ZEPHYR_BASE")
+    if zephyr_base:
+        FW_UPGRADE_SCRIPTS_PATH = (
+            Path(zephyr_base).absolute() / ".." / "modules" / "hal" / "qcom" / "qfdt"
+        )
+        logger.debug(f"FW_UPGRADE_SCRIPTS_PATH: {FW_UPGRADE_SCRIPTS_PATH}")
+        if FW_UPGRADE_SCRIPTS_PATH.exists():
+            sys.path.append(str(FW_UPGRADE_SCRIPTS_PATH))
+        else:
+            logger.warning(f"FW_UPGRADE_SCRIPTS_PATH does not exist: {FW_UPGRADE_SCRIPTS_PATH}")
+    else:
+        logger.warning("ZEPHYR_BASE environment variable not set")
+except Exception as e:
+    logger.error(f"Failed to configure FW_UPGRADE_SCRIPTS_PATH: {e}")
+
+# from gen_download_table import Download_Table
 
 if sys.platform.startswith("win"):
     import winreg
@@ -78,10 +123,17 @@ class qccsdkRunner(ZephyrBinaryRunner):
         sbl_filename = self.build_conf.get("CONFIG_QCC730_SBL_FILE")
         sbl_path = Path(blobs_path, sbl_filename)
         fdt_bin_name = Path(blobs_path, "frn_curr_age_with_app_bin.bin")
+        fdt_default_name = Path(blobs_path, "frn_curr_age_default.bin")
+        fdt_flash_name = Path(blobs_path, "firmware_table.bin")
         #build_root = os.getcwd()
         bin_name = Path(self.cfg.bin_file).as_posix()
-        elf_name = Path(self.cfg.elf_file).as_posix()
+        base_bin_name = os.path.basename(bin_name)
+        name_without_ext = os.path.splitext(base_bin_name)[0]
         #print("bin_name: "+str(bin_name))
+        #print("base_bin_name: "+str(base_bin_name))
+        
+        hashed_elf_name = Path(bin_name).parent / (name_without_ext + "_HASHED.elf")
+        print("hashed_elf_name: "+str(hashed_elf_name))
         #wifi related
         regdb_path = Path(blobs_path, "regdb.bin")
         
@@ -90,13 +142,54 @@ class qccsdkRunner(ZephyrBinaryRunner):
         bdf_filename = self.build_conf.get("CONFIG_QCC730_BDF_FILE")
         bdf_path = Path(blobs_path, bdf_filename)
         cmd_pre = 'python %s -s %s -i %s --nvm-name rram --server-script %s '%(nvm_programmer, self.j, str(prg_path), str(cfgpath))
+        cmd_flash_pre = 'python %s -s %s -i %s --nvm-name flash --server-script %s '%(nvm_programmer, self.j, str(prg_path), str(cfgpath))
         if self.erase:
             self.logger.info('Erasing chip')
-            os.system('%s -E'%cmd_pre)
-        if self.m == "rram":
+            os.system('%s -E'%(cmd_flash_pre))
+        if self.m == "rram" or self.m == "flash" :
             if self.all:
-                self.logger.info(f'Flashing firmware description table: {fdt_bin_name}')
-                os.system('%s -b 0x208000 -f %s'%(cmd_pre, str(fdt_bin_name)))
+                if self.m == "rram":
+                    self.logger.info(f'Flashing firmware description table: {fdt_bin_name}')
+                    os.system('%s -b 0x208000 -f %s'%(cmd_pre, str(fdt_bin_name)))
+                if self.m == "flash":
+                    # Copy existing FDT file to OUTPUT_DIR if it exists
+                    fdt_source = Path(blobs_path, "frn_curr_age_with_app_bin.bin")
+                    
+                    # Update download_config.xml with correct SBL path and FDT path
+                    download_config_path = Path(module_path, "qfdt/download_config.xml")
+                    if download_config_path.exists():
+                        try:
+                            tree = ET.parse(download_config_path)
+                            root = tree.getroot()
+                            # Update all FERMION_SBL entries with the actual sbl_path
+                            for flash_elem in root.findall(".//flash[@image='FERMION_SBL']"):
+                                flash_elem.set('file', str(sbl_path))
+                            # Update FDT entry to use OUTPUT_DIR
+                            for flash_elem in root.findall(".//flash[@image='FDT']"):
+                                flash_elem.set('file', str(fdt_default_name))
+                            # Save updated config to OUTPUT_DIR
+                            updated_config_path = Path(blobs_path / "download_config.xml")
+                            tree.write(str(updated_config_path))
+                            self.logger.info(f'Updated download_config.xml with path: {blobs_path}')
+                        except Exception as e:
+                            self.logger.warning(f'Failed to update download_config.xml: {e}')
+                    
+                    self.logger.info(f'generating firmware description table: {fdt_default_name}')
+                    # Generate FDT using gen_download_table.py with updated config
+                    gen_download_table_script = Path(module_path, "qfdt/gen_download_table.py")
+                    if gen_download_table_script.exists():
+                        updated_config_path = Path(blobs_path / "download_config.xml")
+                        # Set ZEPHYR_HAL_QCOM_MODULE_DIR environment variable to ensure OUTPUT_DIR is used
+                        env = os.environ.copy()
+                        env['ZEPHYR_HAL_QCOM_MODULE_DIR'] = str(module_path)
+                        cmd_gen_fdt = f'python {gen_download_table_script} --app {hashed_elf_name} -c {updated_config_path} -A'
+                        self.logger.info(f'Running: {cmd_gen_fdt}')
+                        self.logger.info(f'With ZEPHYR_HAL_QCOM_MODULE_DIR={module_path}')
+                        subprocess.run(cmd_gen_fdt, shell=True, env=env)
+                    
+                    # Use FDT from OUTPUT_DIR
+                    self.logger.info(f'Flashing firmware description table: {fdt_default_name}')
+                    os.system('%s -b 0x208000 -f %s'%(cmd_pre, str(fdt_default_name)))
                 self.logger.info(f'Flashing SBL: {sbl_path}')
                 os.system('%s -b 0x20a400 -f %s'%(cmd_pre, str(sbl_path)))
                 self.logger.info(f'Flashing regdb: {regdb_path}')
@@ -105,7 +198,12 @@ class qccsdkRunner(ZephyrBinaryRunner):
                 self.logger.info(f'Flashing bdf: {bdf_path}')
                 os.system('%s -b 0x37a000 -f %s'%(cmd_pre, str(bdf_path)))
             self.logger.info(f'Flashing file: {bin_name}')
-            cmd = '%s -b 0x21a400 -f %s '%(cmd_pre, bin_name)
+            if self.m == "rram":
+                cmd = '%s -b 0x21a400 -f %s '%(cmd_pre, bin_name)
+            if self.m == "flash" :
+                self.logger.info(f'Flashing firmware description table in flash: {fdt_flash_name}')
+                os.system('%s -b 0x0 -f %s'%(cmd_flash_pre, str(fdt_flash_name)))
+                cmd = '%s -b 0x43000 -f %s '%(cmd_flash_pre, hashed_elf_name)
         else:
             print(f"Error: flash failed - unknown memory type {self.m}")
             raise
