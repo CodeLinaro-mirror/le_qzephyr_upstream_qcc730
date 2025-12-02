@@ -185,5 +185,21 @@ class qccsdkRunner(ZephyrBinaryRunner):
         self.require(self.cfg.gdb)
 
         elf_name = str(Path(self.cfg.elf_file))
-        gdb_cmd = [self.cfg.gdb, elf_name, "-ex", "target extended-remote localhost:3333"]
+        
+        # Fix for Windows Ctrl+C issue: Replace gdb-py with gdb
+        gdb_path = Path(self.cfg.gdb)
+
+        if os.name == "nt" and gdb_path.name.endswith("-py.exe"):
+            # Replace gdb-py.exe with gdb.exe
+            gdb_no_py = str(gdb_path.parent / gdb_path.name.replace("-py.exe", ".exe"))
+            if Path(gdb_no_py).exists():
+                gdb_exe = gdb_no_py
+                #print(f"DEBUG: Replaced with: {gdb_exe}")
+            else:
+                gdb_exe = self.cfg.gdb
+                #print(f"DEBUG: Replacement not found, using original: {gdb_exe}")
+        else:
+            gdb_exe = self.cfg.gdb
+        
+        gdb_cmd = [gdb_exe, elf_name, '-ex', 'target extended-remote localhost:3333']
         self.run_server_and_client(server_cmd, gdb_cmd)
