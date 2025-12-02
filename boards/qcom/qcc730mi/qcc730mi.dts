@@ -40,3 +40,15 @@
 &i2c0 {
 	status = "okay";
 };
+
+&qspi_nor_flash1 {
+	status = "okay";
+};
+
+&qspi_nor_flash2 {
+	status = "okay";
+};
+
+&qspi_nor_flash3 {
+	status = "okay";
+};
