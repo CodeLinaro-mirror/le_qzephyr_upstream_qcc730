@@ -49,7 +49,7 @@
 	/* 0x90000~0xA0000 are reserved as wifi hw packet */
 	sram0: memory@10000 {
 		compatible = "mmio-sram";
-		reg = <0x10000 0x80000>;
+		reg = <0x10000 0x90000>;
 	};
 
 	soc {
