@@ -568,7 +568,7 @@ static int device_wlan_pm_action(const struct device *dev, enum pm_device_action
             if(ret != QAPI_OK)
             {
                 LOG_ERR("%s: qapi_WLAN_Suspend return:%d", __FUNCTION__, ret);
-                ret = -EFAULT;
+                ret = -ret;
             }
             break;
         case PM_DEVICE_ACTION_RESUME:
