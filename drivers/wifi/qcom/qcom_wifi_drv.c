@@ -573,11 +573,13 @@ static int device_wlan_pm_action(const struct device *dev, enum pm_device_action
             break;
         case PM_DEVICE_ACTION_RESUME:
             qapi_WLAN_Resume();
-            if(bmps_duration== 0)
-            {
-                k_timer_stop(&bmps_timer);
-                pm_device_busy_set(dev);
-                LOG_INF("%s: bmps_duration is 0, exit bmps.", __FUNCTION__);
+            if (k_timer_remaining_get(&bmps_timer) > 0) {
+                if(bmps_duration== 0)
+                {
+                    k_timer_stop(&bmps_timer);
+                    pm_device_busy_set(dev);
+                    LOG_INF("%s: bmps_duration is 0, exit bmps.", __FUNCTION__);
+                }
             }
             break;
         default:
