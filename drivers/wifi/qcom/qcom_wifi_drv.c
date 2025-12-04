@@ -356,9 +356,14 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
         LOG_DBG("ssid=%s", params->ssid);
     }
 
-    if (!params->bssid[0]) {
-        qapi_WLAN_Set_Param(0, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_BSSID,
-                            (void *)params->bssid, __QAPI_WLAN_MAC_LEN, false);
+    if(deviceId == NT_DEV_STA_ID) {
+	if (params->bssid && (params->bssid[0] || params->bssid[1]
+				|| params->bssid[2] || params->bssid[3]
+				|| params->bssid[4] || params->bssid[5])) {
+		qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+				__QAPI_WLAN_PARAM_GROUP_WIRELESS_BSSID,
+				(void *)params->bssid, __QAPI_WLAN_MAC_LEN, false);
+	}
     }
 
     if (params->channel != WIFI_CHANNEL_ANY) {
