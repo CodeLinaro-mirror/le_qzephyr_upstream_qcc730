@@ -970,6 +970,43 @@ static int qwifi_drv_reg_domain(const struct device *dev, struct wifi_reg_domain
     }
     return -ENOTSUP;
 }
+
+static int qwifi_power_save(const struct device *dev, struct wifi_ps_params *params)
+{
+    int ret = -1;
+    switch (params->type) {
+        case WIFI_PS_PARAM_LISTEN_INTERVAL:
+		    if ((params->listen_interval <
+		         WIFI_LISTEN_INTERVAL_MIN) ||
+		        (params->listen_interval >
+		         WIFI_LISTEN_INTERVAL_MAX)) {
+		        params->fail_reason =
+                    WIFI_PS_PARAM_LISTEN_INTERVAL_RANGE_INVALID;
+		        return -EINVAL;
+		    }
+            ret = wlan_set_sta_slptime(0 , params->listen_interval , 0);
+            break;
+
+    }
+    return ret;
+}
+
+int qwifi_get_power_save(const struct device *dev, struct wifi_ps_config *config)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint16_t listen_interval;
+    uint32_t length = sizeof(listen_interval);
+
+    qapi_WLAN_Get_Param (deviceId,
+                         __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                         __QAPI_WLAN_PARAM_GROUP_WIRELESS_STA_LISTEN_INTERVAL_IN_TU,
+                         &listen_interval,
+                         &length);
+    config->ps_params.listen_interval = listen_interval;
+    return 0;
+}
+
 static const struct wifi_mgmt_ops qwifi_drv_mgmt = {
     .scan = qwifi_drv_scan,
     .connect = qwifi_drv_connect,
@@ -980,6 +1017,8 @@ static const struct wifi_mgmt_ops qwifi_drv_mgmt = {
     .ap_enable = ap_enable,
     .ap_disable = ap_disable,
     .ap_sta_disconnect = ap_sta_disconnect,
+    .set_power_save = qwifi_power_save,
+    .get_power_save_config = qwifi_get_power_save,
 };
 
 static const struct net_wifi_mgmt_offload qwifi_drv_api = {
