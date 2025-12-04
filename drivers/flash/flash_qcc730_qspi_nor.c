@@ -1089,7 +1089,7 @@ static int flash_qcc730_qspi_nor_init(const struct device *dev)
 	}
 
 	if (device_id != cfg->device_id) {
-		LOG_ERR("FLASH device with ID: %x was not found!\n", cfg->device_id);
+		LOG_ERR("FLASH device with ID: %x was not found, actually %x!\n", cfg->device_id, device_id);
 		return -ENODEV;
 	}
 
