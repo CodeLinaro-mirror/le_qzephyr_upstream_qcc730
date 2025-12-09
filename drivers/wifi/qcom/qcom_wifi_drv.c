@@ -311,6 +311,7 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
 
     uint8_t deviceId = dev_data->active_device;
     qapi_WLAN_Auth_Mode_e e_wpa_ver = QAPI_WLAN_AUTH_NONE_E;
+    qapi_WLAN_Crypt_Type_e e_cipher;
     const uint8_t *psk = NULL;
     uint8_t psk_length = 0;
 
@@ -320,12 +321,18 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
     switch (params->security) {
     case WIFI_SECURITY_TYPE_PSK:
         e_wpa_ver = QAPI_WLAN_AUTH_WPA2_PSK_E;
+	e_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
         break;
     case WIFI_SECURITY_TYPE_WPA_PSK:
         e_wpa_ver = QAPI_WLAN_AUTH_WPA_PSK_E;
         break;
     case WIFI_SECURITY_TYPE_SAE:
         e_wpa_ver = QAPI_WLAN_AUTH_WPA3_SAE_E;
+	e_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
+        break;
+    case WIFI_SECURITY_TYPE_WPA_AUTO_PERSONAL:
+        e_wpa_ver = QAPI_WLAN_AUTH_WPA_WPA2_SAE_MIXED_E;
+	e_cipher = QAPI_WLAN_CRYPT_AUTO;
         break;
     case WIFI_SECURITY_TYPE_NONE:
         e_wpa_ver = QAPI_WLAN_AUTH_NONE_E;
@@ -365,7 +372,9 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
     if (e_wpa_ver) {
         psk = params->psk;
         psk_length = params->psk_length;
-        if ((params->security == WIFI_SECURITY_TYPE_SAE) && (params->sae_password)) {
+        if (((params->security == WIFI_SECURITY_TYPE_SAE)
+		||(params->security == WIFI_SECURITY_TYPE_WPA_AUTO_PERSONAL))
+			&& (params->sae_password)) {
             psk = params->sae_password;
             psk_length = params->sae_password_length;
         }
@@ -374,7 +383,7 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
                             __QAPI_WLAN_PARAM_GROUP_SECURITY_AUTH_MODE, (void *)&e_wpa_ver,
                             sizeof(qapi_WLAN_Auth_Mode_e), false);
         qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
-                            __QAPI_WLAN_PARAM_GROUP_SECURITY_ENCRYPTION_TYPE, (void *)&dev_data->e_cipher,
+                            __QAPI_WLAN_PARAM_GROUP_SECURITY_ENCRYPTION_TYPE, (void *)&e_cipher,
                             sizeof(qapi_WLAN_Crypt_Type_e), false);
         qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
                             __QAPI_WLAN_PARAM_GROUP_SECURITY_PASSPHRASE, (void *)psk, psk_length, false);
