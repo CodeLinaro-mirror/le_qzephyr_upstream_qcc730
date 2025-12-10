@@ -36,6 +36,11 @@ struct qwifi_bss_status_t {
     char ssid[WIFI_SSID_MAX_LEN + 1];
 };
 
+struct qwifi_ap_status_t {
+    int status;
+    char ssid[WIFI_SSID_MAX_LEN + 1];
+};
+
 struct qwifi_drv_dev_data_t {
     uint8_t wlan_enabled;
     uint8_t active_device;
@@ -43,6 +48,7 @@ struct qwifi_drv_dev_data_t {
     scan_result_cb_t scan_cb;
     struct wifi_connect_req_params cfg_connect;
     struct qwifi_bss_status_t bss_status;
+    struct qwifi_ap_status_t ap_status;
     struct net_if *iface;
     const struct device *dev;
     struct qcom_wifi_mgmt_ops qcom_wifi_cmd;
@@ -170,22 +176,30 @@ static int station_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *
 
 static int ap_station_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *info)
 {
-    struct wifi_ap_sta_info sta_info = {0};
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     struct net_if *iface = dev_data->iface;
-    uint8_t *sta_mac = info->bssid;
-
-    if (info->evt_hdr.status != QAPI_OK) {
-        return -EPERM;
-    }
+    uint8_t *mac_addr = info->bssid;
+    bool success = info->evt_hdr.status == QAPI_OK;
 
     /* filter ap itself connection event. */
-    struct net_linkaddr * link_addr = net_if_get_link_addr(iface);
-    if (!memcmp(link_addr->addr, sta_mac, link_addr->len)) {
+    struct net_linkaddr *link_addr = net_if_get_link_addr(iface);
+    if (!memcmp(link_addr->addr, mac_addr, link_addr->len)) {
+        if (success) {
+            dev_data->ap_status.status = WIFI_SAP_IFACE_ENABLED;
+            wifi_mgmt_raise_ap_enable_result_event(iface, WIFI_STATUS_AP_SUCCESS);
+        } else {
+            dev_data->ap_status.status = WIFI_SAP_IFACE_DISABLED;
+            wifi_mgmt_raise_ap_enable_result_event(iface, WIFI_STATUS_AP_FAIL);
+        }
         return 0;
     }
 
-    memcpy(&sta_info.mac, sta_mac, sizeof(sta_info.mac));
+    if (!success) {
+        return -EPERM;
+    }
+
+    struct wifi_ap_sta_info sta_info = {0};
+    memcpy(&sta_info.mac, mac_addr, sizeof(sta_info.mac));
     sta_info.mac_length = sizeof(sta_info.mac);
 
     wifi_mgmt_raise_ap_sta_connected_event(iface, &sta_info);
@@ -248,6 +262,8 @@ static void ap_station_disconnect_event(struct device *dev, qapi_WLAN_Join_Comp_
     /* filter ap itself connection event. */
     struct net_linkaddr * link_addr = net_if_get_link_addr(iface);
     if (!memcmp(link_addr->addr, sta_mac, link_addr->len)) {
+        wifi_mgmt_raise_ap_disable_result_event(iface, WIFI_STATUS_AP_SUCCESS);
+        dev_data->ap_status.status = WIFI_SAP_IFACE_DISABLED;
         return ;
     }
 
@@ -495,8 +511,9 @@ static int qwifi_drv_get_tx_power(const struct device *dev, struct qcom_wifi_get
 static int ap_enable(const struct device *dev, struct wifi_connect_req_params *params)
 {
     qapi_Status_t ret;
-    struct qwifi_drv_dev_data_t *dev_data = dev->data;
     const uint8_t dev_id = 0;
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    struct qwifi_ap_status_t *ap_status = &dev_data->ap_status;
 
     qapi_WLAN_DEV_Mode_e mode = DEV_MODE_AP_E;
     ret = qapi_WLAN_Set_Param(dev_id,
@@ -587,11 +604,15 @@ static int ap_enable(const struct device *dev, struct wifi_connect_req_params *p
             __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_PHY_MODE,
             &phymode, sizeof(phymode), false);
 
+    dev_data->ap_status.status = WIFI_SAP_IFACE_DISABLED;
     ret = qapi_WLAN_Commit(dev_id);
     if (ret) {
         LOG_WRN("ret = %d, commit fail.", ret);
         return -EAGAIN;
     }
+
+    /* save ssid for `wifi ap status` command. */
+    strlcpy(ap_status->ssid, params->ssid, sizeof(ap_status->ssid));
 
     return 0;
 }
@@ -611,6 +632,7 @@ static int ap_sta_disconnect(const struct device *dev, const uint8_t *mac)
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     uint8_t dev_id = dev_data->active_device;
     qapi_WLAN_AP_Disconnect_Station(dev_id, mac, NET_ETH_ADDR_LEN);
+
     return 0;
 }
 static int qwifi_drv_unit_test(const struct device *dev, struct qcom_wifi_unit_test_params *params)
@@ -628,23 +650,39 @@ static int qwifi_drv_unit_test(const struct device *dev, struct qcom_wifi_unit_t
 
 static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_status *status)
 {
-    uint32_t length = 0;
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     uint8_t dev_id = dev_data->active_device;
     struct qwifi_bss_status_t *bss_status = &dev_data->bss_status;
+    struct qwifi_ap_status_t *ap_status = &dev_data->ap_status;
 
-    status->state = bss_status->connected ? WIFI_STATE_COMPLETED : WIFI_STATE_DISCONNECTED;
-    status->ssid_len = bss_status->ssid_length;
-    memcpy(status->bssid, bss_status->bssid, sizeof(status->bssid));
-    strlcpy(status->ssid, bss_status->ssid, sizeof(status->ssid));
-    status->ssid[WIFI_SSID_MAX_LEN] = '\0';
+    qapi_WLAN_DEV_Mode_e dev_mode = DEV_MODE_STATION_E;
+    uint32_t size = sizeof(dev_mode);
+    qapi_WLAN_Get_Param(dev_id, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
+                        &dev_mode, &size);
+    if (dev_mode == DEV_MODE_STATION_E) {
+        status->state = bss_status->connected ? WIFI_STATE_COMPLETED : WIFI_STATE_DISCONNECTED;
+        status->ssid_len = bss_status->ssid_length;
+        memcpy(status->bssid, bss_status->bssid, sizeof(status->bssid));
+        strlcpy(status->ssid, bss_status->ssid, sizeof(status->ssid));
+    } else if (dev_mode == DEV_MODE_AP_E) {
+        status->state = ap_status->status;
+        status->iface_mode = WIFI_MODE_AP;
+        struct net_linkaddr *link_addr = net_if_get_link_addr(dev_data->iface);
+        memcpy(status->bssid, link_addr->addr, sizeof(status->bssid));
+        strlcpy(status->ssid, ap_status->ssid, sizeof(status->ssid));
+    } else {
+        LOG_ERR("%s:%d unknown mode %d.", __func__, __LINE__, dev_mode);
+        return -EINVAL;
+    }
 
     qapi_WLAN_Status_t wifi_status = {0};
-    length = sizeof(wifi_status);
+    uint32_t length = sizeof(wifi_status);
     qapi_Status_t ret = qapi_WLAN_Get_Param(dev_id, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
                                             __QAPI_WLAN_PARAM_GROUP_WIRELESS_WIFI_STATUS,
                                             &wifi_status, &length);
     if (ret != QAPI_OK) {
+        LOG_ERR("%s:%d fail to get wifi status, ret %d", __func__, __LINE__, ret);
         return ret;
     }
 
@@ -654,12 +692,12 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
         status->link_mode = WIFI_1;
         break;
     case MODE_11A_ONLY:
-    case MODE_11A_HT20:
         status->link_mode = WIFI_2;
         break;
     case MODE_11G:
         status->link_mode = WIFI_3;
         break;
+    case MODE_11A_HT20:
     case MODE_11NG_HT20:
     case MODE_11ABGN_HT20:
         status->link_mode = WIFI_4;
