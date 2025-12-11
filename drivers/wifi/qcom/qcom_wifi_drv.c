@@ -613,6 +613,18 @@ static int ap_sta_disconnect(const struct device *dev, const uint8_t *mac)
     qapi_WLAN_AP_Disconnect_Station(dev_id, mac, NET_ETH_ADDR_LEN);
     return 0;
 }
+static int qwifi_drv_unit_test(const struct device *dev, struct qcom_wifi_unit_test_params *params)
+{
+    qapi_Status_t ret = QAPI_WLAN_ERROR;
+	struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t dev_id = dev_data->active_device;
+    ret = qapi_WLAN_Unit_Test(dev_id, params, sizeof(struct qcom_wifi_unit_test_params));
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to send unit test command via QAPI");
+        return -EIO;
+    }
+    return 0;
+}
 
 static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_status *status)
 {
@@ -779,6 +791,7 @@ static int qwifi_drv_dev_init(const struct device *dev)
     struct qcom_wifi_mgmt_ops qwifi_ops = {
         .set_tx_power = qwifi_drv_set_tx_power,
         .get_tx_power = qwifi_drv_get_tx_power,
+        .unit_test = qwifi_drv_unit_test,
     };
     dev_data->qcom_wifi_cmd = qwifi_ops;
 
