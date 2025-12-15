@@ -410,21 +410,56 @@ static int qwifi_drv_scan(const struct device *dev, struct wifi_scan_params *par
     uint8_t deviceId = dev_data->active_device;
 
     LOG_DBG("%s", __FUNCTION__);
-    dev_data->scan_cb = cb;
+    if (params->scan_type != WIFI_SCAN_TYPE_ACTIVE) {
+	LOG_WRN("Currently only supports active scanning...");
+        return -EINVAL;
+    }
 
+    if (params->bands > 0) {
+	LOG_WRN("Currently not supports [-b, --bands] option, scanning\
+			different bands separately is not supported. It\
+			supports scanning all 2.4 G and 5G bands at once.");
+	return -EINVAL;
+    }
+
+    if (params->dwell_time_active > 0) {
+	LOG_WRN("Currently Not support [-a, --dwell_time_active <val_in_ms>] option");
+        return -EINVAL;
+    }
+
+    if (params->dwell_time_passive > 0) {
+	LOG_WRN("Currently Not support [-p, --dwell_time_passive <val_in_ms>] option");
+        return -EINVAL;
+    }
+
+    if (params->max_bss_cnt > 0) {
+	LOG_WRN("Currently not supports [-m, --max_bss <val>] option");
+        return -EINVAL;
+    }
+
+    for (uint8_t i = 0; i < WIFI_MGMT_SCAN_CHAN_MAX_MANUAL; i++) {
+	    if (params->band_chan[i].channel != 0) {
+		LOG_WRN("Currently not supports [-c, --chans] option");
+		return -EINVAL;
+	    }
+    }
+
+    dev_data->scan_cb = cb;
     qapi_WLAN_Get_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
                         &opmode, &length);
     if (opmode != DEV_MODE_STATION_E) {
         LOG_WRN("%s current operation mode %d do not support scan, need to set station mode", __FUNCTION__, opmode);
         return -EINVAL;
     }
+
 #if (CONFIG_WIFI_MGMT_SCAN_SSID_FILT_MAX == 1)
     if (params->ssids[0]) {
         strlcpy(scan_param.ssid, params->ssids[0], WIFI_SSID_MAX_LEN);
         scan_param.ssid_Length = strnlen(params->ssids[0], WIFI_SSID_MAX_LEN);
-        LOG_INF("scan ssid=%s", params->ssids[0]);
+        LOG_INF("scan ssid = %s", params->ssids[0]);
     }
 #endif
+
     if (scan_param.ssid_Length) {
         ret = qapi_WLAN_Start_Scan(deviceId, &scan_param);
     } else {
@@ -626,6 +661,520 @@ static int qwifi_drv_unit_test(const struct device *dev, struct qcom_wifi_unit_t
     return 0;
 }
 
+/**
+ * @brief Enable or disable RTS/CTS protection on the active WLAN device.
+ *
+ * Controls RTS/CTS protection via qapi_WLAN_Set_Param for the currently active
+ * WLAN interface. When enabled, RTS/CTS handshaking can reduce collisions in
+ * congested or hidden-node scenarios by requiring a request-to-send and
+ * clear-to-send exchange before data transmission.
+ *
+ * @param rts_cts RTS/CTS control flag:
+ *        - 1: enable RTS/CTS protection
+ *        - 0: disable RTS/CTS protection
+ *
+ * @return 0 on success; -1 on failure.
+ */
+static int qwifi_drv_set_rts_cts(const struct device *dev, struct qcom_wifi_set_rts_cts_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint32_t enable = params->enable;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_RTS,
+                        &enable,
+                        sizeof(enable),
+                        FALSE);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set RTS/CTS (enable=%u) for device %d: %d", enable, deviceId, ret);
+        return -EIO;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Set the RTS control frame transmit rate on the active WLAN device (2.4 GHz).
+ *
+ * Configures the transmit rate used for RTS/CTS control frames via qapi_WLAN_Set_Param
+ * on the currently active interface. Adjusting the RTS rate can influence airtime and
+ * robustness of the RTS/CTS protection mechanism, particularly on 2.4 GHz links.
+ *
+ * Preconditions:
+ * - Operates on the active device.
+ * - Intended for 2.4 GHz operation (uses __QAPI_WLAN_PARAM_GROUP_WIRELESS_RTS_RATE_2G).
+ *   The accompanying comment suggests using this after a 2G connection.
+ *
+ * @param rate RTS rate selector (indexed mapping):
+ *        - 0: 1 Mbps (802.11b long)
+ *        - 1: 6 Mbps (OFDM)
+ *        - 2: 12 Mbps (OFDM)
+ *   Note: Valid values and their mapping are defined by the underlying firmware/QAPI
+ *   and may be limited to the options shown above.
+ *
+ * @return 0 on success; -1 on failure.
+ */
+static int qwifi_drv_set_rts_rate(const struct device *dev, struct qcom_wifi_set_rts_rate_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint32_t rts_rate = params->rts_rate;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_RTS_RATE_2G,
+                        &rts_rate,
+                        sizeof(rts_rate),
+                        false);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set RTS rate (rate=%u) for device %d: %d", rts_rate, deviceId, ret);
+        return -EIO;
+    }
+    return 0;
+}
+
+/**
+ * @brief Configure EDCA (WMM) parameters on the active WLAN device.
+ *
+ * Programs the per-queue Enhanced Distributed Channel Access (EDCA) parameters
+ * (AIFSN, CWmin, CWmax, and TXOP limit) via qapi_WLAN_Set_Param for the queue
+ * identified by qid, or for all queues when qid == 0xFF.
+ *
+ * @param qid        Access category/queue identifier:
+ *                   - 0..7: apply to the specified hardware/software queue
+ *                   - 0xFF: apply to all queues
+ * @param aifsn      Arbitration Inter-Frame Space Number. Lower values give higher priority.
+ * @param cw_min     Minimum contention window exponent e_min. Effective CWmin = 2^e_min - 1.
+ * @param cw_max     Maximum contention window exponent e_max. Effective CWmax = 2^e_max - 1.
+ * @param txop_limit Transmit opportunity limit for the queue; duration as defined by the
+ *                   firmware/QAPI (commonly in 32 µs units). A value of 0 typically disables
+ *                   bursting for the queue.
+ *
+ * @return 0 on success; -1 on failure.
+ *
+ * Notes:
+ * - Operates on the active device.
+ * - Ensure values adhere to firmware/regulatory bounds; invalid values will be rejected
+ *   by qapi_WLAN_Set_Param.
+ */
+static int qwifi_drv_set_edca_param_cfg(const struct device *dev, struct qcom_wifi_set_edca_param_cfg_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    qapi_WLAN_Edca_Params_t edca_param_cfg;
+
+    edca_param_cfg.qid = params->qid;
+    edca_param_cfg.aifsn = params->aifsn;
+    edca_param_cfg.cw_min = params->cw_min;
+    edca_param_cfg.cw_max = params->cw_max;
+    edca_param_cfg.txop_limit = params->txop_limit;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_EDCA_PARAM,
+                        &edca_param_cfg,
+                        sizeof(edca_param_cfg),
+                        false);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set EDCA (qid=%u, aifsn=%u, cw_min=%u, cw_max=%u, txop=%u) for device %d: %d",
+                params->qid, params->aifsn, params->cw_min, params->cw_max, params->txop_limit, deviceId, ret);
+        return -EIO;
+    }
+    return 0;
+}
+
+/**
+ * @brief Set the upper Packet Error Rate (PER) threshold on the active WLAN device.
+ *
+ * Configures the PER upper threshold via qapi_WLAN_Set_Param for the currently
+ * active interface. This threshold can be used by firmware to trigger internal
+ * algorithms (e.g., rate control or diagnostics) when the measured PER exceeds
+ * the configured limit.
+ *
+ * @param value Upper PER threshold value. The valid range is enforced by the
+ *              firmware; values must be less than 100 (implementation-specific
+ *              units; commonly interpreted as percentage 0..99).
+ *
+ * @return 0 on success; -1 on failure.
+ *
+ * Notes:
+ * - Operates on the active device.
+ * - The function fails if the driver/firmware rejects the provided threshold.
+ */
+static int qwifi_drv_set_threshold(const struct device *dev, struct qcom_wifi_set_threshold_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint32_t threshold = params->threshold;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_PER_UPPER_THRESHOLD,
+                        &threshold,
+                        sizeof(threshold),
+                        false);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set PER upper threshold (value=%u) for device %d: %d", threshold, deviceId, ret);
+        return -EIO;
+    }
+    return 0;
+}
+
+/**
+ * @brief Configure Block Ack (BA) window timing parameters on the active WLAN device.
+ *
+ * Programs the BA window parameters (ACK timeout and delay) via qapi_WLAN_Set_Param
+ * for the currently active interface. These timing values influence the Block Ack
+ * exchange behavior and can affect both reliability and throughput.
+ *
+ * @param ack_time   ACK timeout in microseconds. Must be less than 4096 µs.
+ * @param delay_time Delay value in SM clock cycles (firmware-specific units).
+ *                   Typically constrained to less than 64 SM cycles.
+ *
+ * @return 0 on success; -1 on failure.
+ *
+ * Notes:
+ * - Operates on the active device.
+ * - The firmware enforces valid ranges; invalid values are rejected by qapi_WLAN_Set_Param.
+ */
+static int qwifi_drv_set_ba_win_timing(const struct device *dev, struct qcom_wifi_set_ba_win_timing_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    qapi_WLAN_BA_Window_Params_t ba_win_timing_cfg;
+
+    ba_win_timing_cfg.ack_timeout = params->ack_timeout;
+    ba_win_timing_cfg.delay = params->delay;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_BA_WINDOW,
+                        &ba_win_timing_cfg,
+                        sizeof(ba_win_timing_cfg),
+                        false);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set BA window (ack_timeout=%u, delay=%u) for device %d: %d",
+                params->ack_timeout, params->delay, deviceId, ret);
+        return -EIO;
+    }
+    return 0;
+}
+
+/**
+ * @brief Set the PHY slot time on the active WLAN device.
+ *
+ * Configures the slot time used by the MAC backoff algorithm via qapi_WLAN_Set_Param
+ * for the currently active interface. Typical values are 9 µs (short slot) and 20 µs
+ * (long slot), depending on PHY mode and regulatory/compatibility constraints.
+ *
+ * @param time Slot time in microseconds (commonly 9 or 20).
+ *
+ * @return 0 on success; -1 on failure.
+ *
+ * Notes:
+ * - Operates on the active device.
+ * - The firmware enforces valid slot times; invalid values are rejected by qapi_WLAN_Set_Param.
+ */
+static int qwifi_drv_set_slot_time(const struct device *dev, struct qcom_wifi_set_slot_time_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint32_t slot_time = params->slot_time;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_SLOT_TIME,
+                        &slot_time,
+                        sizeof(slot_time),
+                        false);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set slot time (time=%u) for device %d: %d", slot_time, deviceId, ret);
+        return -EIO;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Set STA beacon-miss (BMISS) threshold.
+ *
+ * Configures the number of consecutive missed beacons that the STA tolerates
+ * before firmware triggers BMISS handling (e.g., roaming or disconnect) via
+ * qapi_WLAN_Set_Param using __QAPI_WLAN_PARAM_GROUP_WIRELESS_STA_BMISS_CONFIG.
+ *
+ * @param dev Pointer to the driver device instance (provides active deviceId).
+ * @param params Input structure:
+ *        - params->threshold: BMISS threshold (firmware-defined range; units
+ *          are number of missed beacon intervals).
+ *
+ * @return 0 on success; negative error code on failure.
+ *
+ * Notes:
+ * - Operates on the currently active device (dev->data->active_device).
+ * - The firmware validates acceptable threshold values; invalid inputs cause
+ *   qapi_WLAN_Set_Param to return an error.
+ */
+static int qwifi_drv_set_bmiss_threshold(const struct device *dev, struct qcom_wifi_set_bmiss_threshold_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint32_t bmiss = params->threshold;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_STA_BMISS_CONFIG,
+                        &bmiss,
+                        sizeof(bmiss),
+                        false);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set BMISS threshold (value=%u) for device %d: %d", bmiss, deviceId, ret);
+        return -EIO;
+    }
+    return 0;
+}
+
+/**
+ * @brief Get RTS/CTS protection enable status.
+ *
+ * Retrieves the current RTS/CTS protection flag from the active WLAN device
+ * via qapi_WLAN_Get_Param using __QAPI_WLAN_PARAM_GROUP_WIRELESS_RTS.
+ *
+ * @param dev Pointer to the device structure for the driver instance.
+ * @param params Output structure; on success, params->enable is set to:
+ *        - 1: RTS/CTS enabled
+ *        - 0: RTS/CTS disabled
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+static int qwifi_drv_get_rts_cts(const struct device *dev, struct qcom_wifi_get_rts_cts_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint32_t enable = 0;
+    uint32_t length = sizeof(enable);
+
+    if (0 != qapi_WLAN_Get_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_RTS,
+                        &enable,
+                        &length)) {
+        LOG_ERR("get RTS/CTS fail for device %d", deviceId);
+        return -EIO;
+    }
+
+    params->enable = enable;
+    return 0;
+}
+
+/**
+ * @brief Get the RTS control frame transmit rate (2.4 GHz).
+ *
+ * Reads the RTS rate selector used on 2.4 GHz via qapi_WLAN_Get_Param
+ * with __QAPI_WLAN_PARAM_GROUP_WIRELESS_RTS_RATE_2G.
+ *
+ * @param dev Pointer to the driver device instance.
+ * @param params Output structure; on success, params->rts_rate contains the
+ *        firmware-defined rate index (e.g. 0: 1 Mbps, 1: 6 Mbps, 2: 12 Mbps).
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+static int qwifi_drv_get_rts_rate(const struct device *dev, struct qcom_wifi_get_rts_rate_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint32_t rts_rate = 0;
+    uint32_t length = sizeof(rts_rate);
+
+    if (0 != qapi_WLAN_Get_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_RTS_RATE_2G,
+                        &rts_rate,
+                        &length)) {
+        LOG_ERR("get RTS rate fail for device %d", deviceId);
+        return -EIO;
+    }
+
+    params->rts_rate = rts_rate;
+    return 0;
+}
+
+/**
+ * @brief Get EDCA (WMM) parameters for a queue or all queues.
+ *
+ * Retrieves the EDCA parameters (AIFSN, CWmin, CWmax, TXOP limit) via
+ * qapi_WLAN_Get_Param with __QAPI_WLAN_PARAM_GROUP_WIRELESS_EDCA_PARAM.
+ *
+ * @param dev Pointer to the driver device instance.
+ * @param params Input/Output structure:
+ *        - Input: params->qid selects the queue (0..7) or 0xFF for all queues,
+ *                 when supported by firmware.
+ *        - Output: params->qid, params->aifsn, params->cw_min, params->cw_max,
+ *                  params->txop_limit are filled with current configuration.
+ *
+ * @return 0 on success, negative error code on failure.
+ *
+ * Notes:
+ * - Queue selector semantics depend on firmware support.
+ */
+static int qwifi_drv_get_edca_param_cfg(const struct device *dev, struct qcom_wifi_get_edca_param_cfg_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    qapi_WLAN_Edca_Params_t edca_param_cfg = {0};
+    uint32_t length = sizeof(edca_param_cfg);
+
+    /* Use caller-provided qid as selector when supported by firmware */
+    edca_param_cfg.qid = params->qid;
+
+    if (0 != qapi_WLAN_Get_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_EDCA_PARAM,
+                        &edca_param_cfg,
+                        &length)) {
+        LOG_ERR("get EDCA param fail for device %d", deviceId);
+        return -EIO;
+    }
+
+    params->qid        = edca_param_cfg.qid;
+    params->aifsn      = edca_param_cfg.aifsn;
+    params->cw_min     = edca_param_cfg.cw_min;
+    params->cw_max     = edca_param_cfg.cw_max;
+    params->txop_limit = edca_param_cfg.txop_limit;
+    return 0;
+}
+
+/**
+ * @brief Get the upper Packet Error Rate (PER) threshold.
+ *
+ * Retrieves the configured PER upper threshold via
+ * __QAPI_WLAN_PARAM_GROUP_WIRELESS_PER_UPPER_THRESHOLD.
+ *
+ * @param dev Pointer to the driver device instance.
+ * @param params Output structure; on success, params->threshold holds the
+ *        current PER threshold (firmware-defined units; commonly 0..99).
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+static int qwifi_drv_get_threshold(const struct device *dev, struct qcom_wifi_get_threshold_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint32_t threshold = 0;
+    uint32_t length = sizeof(threshold);
+
+    if (0 != qapi_WLAN_Get_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_PER_UPPER_THRESHOLD,
+                        &threshold,
+                        &length)) {
+        LOG_ERR("get PER upper threshold fail for device %d", deviceId);
+        return -EIO;
+    }
+
+    params->threshold = threshold;
+    return 0;
+}
+
+/**
+ * @brief Get Block Ack (BA) window timing parameters.
+ *
+ * Reads the BA window configuration (ACK timeout and delay) via
+ * __QAPI_WLAN_PARAM_GROUP_WIRELESS_BA_WINDOW.
+ *
+ * @param dev Pointer to the driver device instance.
+ * @param params Output structure; on success:
+ *        - params->ack_timeout: ACK timeout in microseconds
+ *        - params->delay: delay value in SM clock cycles
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+static int qwifi_drv_get_ba_win_timing(const struct device *dev, struct qcom_wifi_get_ba_win_timing_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    qapi_WLAN_BA_Window_Params_t ba_win_timing_cfg = {0};
+    uint32_t length = sizeof(ba_win_timing_cfg);
+
+    if (0 != qapi_WLAN_Get_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_BA_WINDOW,
+                        &ba_win_timing_cfg,
+                        &length)) {
+        LOG_ERR("get BA window size fail for device %d", deviceId);
+        return -EIO;
+    }
+
+    params->ack_timeout = ba_win_timing_cfg.ack_timeout;
+    params->delay       = ba_win_timing_cfg.delay;
+    return 0;
+}
+
+/**
+ * @brief Get the PHY slot time in microseconds.
+ *
+ * Retrieves the MAC slot time used for backoff via
+ * __QAPI_WLAN_PARAM_GROUP_WIRELESS_SLOT_TIME.
+ *
+ * @param dev Pointer to the driver device instance.
+ * @param params Output structure; on success, params->slot_time is set
+ *        to the current slot time (e.g., 9 or 20 µs).
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+static int qwifi_drv_get_slot_time(const struct device *dev, struct qcom_wifi_get_slot_time_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint32_t slot_time = 0;
+    uint32_t length = sizeof(slot_time);
+
+    if (0 != qapi_WLAN_Get_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_SLOT_TIME,
+                        &slot_time,
+                        &length)) {
+        LOG_ERR("get slot time fail for device %d", deviceId);
+        return -EIO;
+    }
+
+    params->slot_time = slot_time;
+    return 0;
+}
+
+/**
+ * @brief Get STA beacon-miss (BMISS) threshold.
+ *
+ * Reads the current BMISS threshold configured in firmware via
+ * qapi_WLAN_Get_Param using __QAPI_WLAN_PARAM_GROUP_WIRELESS_STA_BMISS_CONFIG.
+ *
+ * @param dev Pointer to the driver device instance (provides active deviceId).
+ * @param params Output structure:
+ *        - params->threshold: BMISS threshold (number of missed beacons) on success.
+ *
+ * @return 0 on success; negative error code on failure.
+ */
+static int qwifi_drv_get_bmiss_threshold(const struct device *dev, struct qcom_wifi_get_bmiss_threshold_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint32_t bmiss_threshold = 0;
+    uint32_t length = sizeof(bmiss_threshold);
+
+    if (0 != qapi_WLAN_Get_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_STA_BMISS_CONFIG,
+                        &bmiss_threshold,
+                        &length)) {
+        LOG_ERR("get BMISS threshold fail for device %d", deviceId);
+        return -EIO;
+    }
+
+    params->threshold = bmiss_threshold;
+    return 0;
+}
+
 static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_status *status)
 {
     uint32_t length = 0;
@@ -792,6 +1341,21 @@ static int qwifi_drv_dev_init(const struct device *dev)
         .set_tx_power = qwifi_drv_set_tx_power,
         .get_tx_power = qwifi_drv_get_tx_power,
         .unit_test = qwifi_drv_unit_test,
+        .set_rts_cts        = qwifi_drv_set_rts_cts,
+        .set_rts_rate       = qwifi_drv_set_rts_rate,
+        .set_edca_param_cfg = qwifi_drv_set_edca_param_cfg,
+        .set_threshold      = qwifi_drv_set_threshold,
+        .set_ba_win_timing    = qwifi_drv_set_ba_win_timing,
+        .set_slot_time      = qwifi_drv_set_slot_time,
+
+        .get_rts_cts        = qwifi_drv_get_rts_cts,
+        .get_rts_rate       = qwifi_drv_get_rts_rate,
+        .get_edca_param_cfg = qwifi_drv_get_edca_param_cfg,
+        .get_threshold      = qwifi_drv_get_threshold,
+        .get_ba_win_timing    = qwifi_drv_get_ba_win_timing,
+        .get_slot_time      = qwifi_drv_get_slot_time,
+        .set_bmiss_threshold      = qwifi_drv_set_bmiss_threshold,
+        .get_bmiss_threshold      = qwifi_drv_get_bmiss_threshold,
     };
     dev_data->qcom_wifi_cmd = qwifi_ops;
 
