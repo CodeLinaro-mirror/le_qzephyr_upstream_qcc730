@@ -60,7 +60,8 @@ else:
 
 class qccsdkRunner(ZephyrBinaryRunner):
     """qccsdk runner for flashing QCC730 with nvm_programmer.py."""
-    def __init__(self, cfg, memory_type, jtag, chip_erase=False, all=False, reset=False, bdf=False):
+    def __init__(self, cfg, memory_type, jtag, chip_erase=False, all=False, reset=False, bdf=False, 
+                 read_rram=False, read_addr=None, read_len=None, read_file=None):
         super().__init__(cfg)
         self.m = memory_type
         self.j = jtag
@@ -68,6 +69,10 @@ class qccsdkRunner(ZephyrBinaryRunner):
         self.all = all
         self.reset = reset
         self.bdf = bdf
+        self.read_rram = read_rram
+        self.read_addr = read_addr
+        self.read_len = read_len
+        self.read_file = read_file
 
     @classmethod
     def name(cls):
@@ -84,11 +89,18 @@ class qccsdkRunner(ZephyrBinaryRunner):
         parser.add_argument("-e", "--chip-erase", action="store_true", help="Erase chip")
         parser.add_argument("-a", "--all", action="store_true", help="Write ftd, SBL, regdb and Zephyr app image")
         parser.add_argument("--bdf", action="store_true", help="Write bdf [WARNING: may affect WiFi RF performance]")
+        parser.add_argument("--read-rram", action="store_true", help="Read RRAM instead of flashing (requires --read-addr, --read-len, --read-file)")
+        parser.add_argument("--read-addr", type=str, help="Start address for reading RRAM (hex format, e.g., 0x208000)")
+        parser.add_argument("--read-len", type=str, help="Length to read from RRAM (hex or decimal, e.g., 0x1000 or 4096)")
+        parser.add_argument("--read-file", type=str, help="Output file path to save read data")
         parser.set_defaults(reset=True)
 
     @classmethod
     def do_create(cls, cfg, args: argparse.Namespace):
-        return qccsdkRunner(cfg, memory_type=args.memory_type, jtag=args.jtag, chip_erase=args.chip_erase, all=args.all, reset=args.reset, bdf=args.bdf)
+        return qccsdkRunner(cfg, memory_type=args.memory_type, jtag=args.jtag, 
+                          chip_erase=args.chip_erase, all=args.all, reset=args.reset, bdf=args.bdf,
+                          read_rram=args.read_rram, read_addr=args.read_addr, 
+                          read_len=args.read_len, read_file=args.read_file)
     
     def do_run(self, command: str, **kwargs):
         if command == "flash" or command == "debug":
@@ -97,6 +109,11 @@ class qccsdkRunner(ZephyrBinaryRunner):
             self.debug(**kwargs)
 
     def flash(self, **kwargs):
+        # If read_rram flag is set, perform read operation instead of flash
+        if self.read_rram:
+            self.do_read_rram(**kwargs)
+            return
+        
         if self.j == "jlink":
             cfgpath = Path(self.cfg.board_dir) / ".." / "common" / "qcc730.JLinkScript"
         elif self.j == "ch347":
@@ -211,6 +228,63 @@ class qccsdkRunner(ZephyrBinaryRunner):
             cmd += " --reset "
         print(cmd)
         os.system(cmd)
+
+    def do_read_rram(self, **kwargs):
+        """Read RRAM from specified address and length, save to file."""
+        if not self.read_addr or not self.read_len or not self.read_file:
+            raise ValueError("--read-addr, --read-len, and --read-file are required when using --read-rram")
+        
+        # Parse address and length (support both hex and decimal)
+        try:
+            addr = int(self.read_addr, 0)  # 0 base allows auto-detection of hex/decimal
+            length = int(self.read_len, 0)
+        except ValueError as e:
+            raise ValueError(f"Invalid address or length format: {e}")
+        
+        if self.j == "jlink":
+            cfgpath = Path(self.cfg.board_dir) / ".." / "common" / "qcc730.JLinkScript"
+        elif self.j == "ch347":
+            cfgpath = Path(self.cfg.board_dir) / ".." / "common" / "qcc730_openocd_ch347.cfg"
+        
+        if not cfgpath.exists():
+            raise FileNotFoundError(f"config file not found: {cfgpath}")
+
+        module_path = (
+            Path(getenv("ZEPHYR_BASE")).absolute()
+            / r".."
+            / "modules"
+            / "hal"
+            / "qcom"
+        )
+        nvmprogrammerpath = Path(module_path, "tools/qprgc")
+        blobs_path = Path(module_path, "zephyr/blobs")
+        nvm_programmer = Path(nvmprogrammerpath, "nvm_programmer.py")
+        prg_filename = self.build_conf.get("CONFIG_QCC730_PRG_FILE")
+        prg_path = Path(blobs_path, prg_filename)
+        
+        # Determine output file path (absolute or relative to current directory)
+        output_file = Path(self.read_file)
+        if not output_file.is_absolute():
+            output_file = Path(os.getcwd()) / output_file
+        
+        # Create output directory if it doesn't exist
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        self.logger.info(f'Reading RRAM from address 0x{addr:X}, length 0x{length:X} ({length} bytes)')
+        self.logger.info(f'Output file: {output_file}')
+        
+        # Build read command
+        # nvm_programmer.py uses -d (--read) for read operation, -b for base address, -S for size, -f for output file
+        cmd = f'python {nvm_programmer} -s {self.j} -i {prg_path} --nvm-name {self.m} --server-script {cfgpath} -d -b 0x{addr:X} -S 0x{length:X} -f {output_file}'
+        
+        print(f"Executing: {cmd}")
+        result = os.system(cmd)
+        
+        if result == 0:
+            self.logger.info(f'Successfully read {length} bytes from 0x{addr:X} to {output_file}')
+        else:
+            self.logger.error(f'Failed to read RRAM (exit code: {result})')
+            raise RuntimeError(f'RRAM read operation failed with exit code {result}')
 
     def debug(self, **kwargs):
         if self.j == "jlink":
