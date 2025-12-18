@@ -49,6 +49,18 @@ enum qcom_net_request_wifi_cmd {
 	NET_REQUEST_WIFI_CMD_QCOM_SET_BMISS_THRESHOLD,
 	/** Get STA BMISS threshold */
 	NET_REQUEST_WIFI_CMD_QCOM_GET_BMISS_THRESHOLD,
+	/** Set PHY mode */
+	NET_REQUEST_WIFI_CMD_QCOM_SET_PHY_MODE,
+	/** Get PHY mode */
+	NET_REQUEST_WIFI_CMD_QCOM_GET_PHY_MODE,
+	/** Set aggregation TID masks */
+	NET_REQUEST_WIFI_CMD_QCOM_SET_AGGREGATION,
+	/** Set AMSDU RX enable/disable */
+	NET_REQUEST_WIFI_CMD_QCOM_SET_AMSDU_RX,
+	/** Set data rate */
+	NET_REQUEST_WIFI_CMD_QCOM_SET_RATE,
+	/** Get data rate */
+	NET_REQUEST_WIFI_CMD_QCOM_GET_RATE,
 };
 
 /** Request a Wi-Fi set tx power */
@@ -137,6 +149,36 @@ NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_BMISS_THRESHOLD);
 #define NET_REQUEST_WIFI_QCOM_GET_BMISS_THRESHOLD				\
 	(_NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_GET_BMISS_THRESHOLD)
 NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_BMISS_THRESHOLD);
+
+/* Set PHY mode */
+#define NET_REQUEST_WIFI_QCOM_SET_PHY_MODE					\
+	(_NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_SET_PHY_MODE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_PHY_MODE);
+
+/* Get PHY mode */
+#define NET_REQUEST_WIFI_QCOM_GET_PHY_MODE					\
+	(_NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_GET_PHY_MODE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_PHY_MODE);
+
+/* Set aggregation TID masks */
+#define NET_REQUEST_WIFI_QCOM_SET_AGGREGATION					\
+	(_NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_SET_AGGREGATION)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_AGGREGATION);
+
+/* Set AMSDU RX enable */
+#define NET_REQUEST_WIFI_QCOM_SET_AMSDU_RX					\
+	(_NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_SET_AMSDU_RX)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_AMSDU_RX);
+
+/* Set data rate */
+#define NET_REQUEST_WIFI_QCOM_SET_RATE					\
+	(_NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_SET_RATE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_RATE);
+
+/* Get data rate */
+#define NET_REQUEST_WIFI_QCOM_GET_RATE					\
+	(_NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_GET_RATE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_RATE);
 
 /** Set TX Power parameters */
 struct qcom_wifi_set_tx_power_params{
@@ -260,6 +302,46 @@ struct qcom_wifi_set_bmiss_threshold_params {
 struct qcom_wifi_get_bmiss_threshold_params {
 	/** BMISS threshold (missed beacons before disconnect/trigger) */
 	uint32_t threshold;
+};
+
+/** Set PHY mode parameters */
+struct qcom_wifi_set_phy_mode_params {
+	/** PHY mode value (qapi_WLAN_Phy_Mode_e) */
+	uint32_t phy_mode;
+};
+
+/** Get PHY mode parameters */
+struct qcom_wifi_get_phy_mode_params {
+	/** PHY mode value (qapi_WLAN_Phy_Mode_e) */
+	uint32_t phy_mode;
+};
+
+/** Set aggregation TID masks parameters */
+struct qcom_wifi_set_aggregation_params {
+	/** TX aggregation TID bitmask (bit i enables aggregation for TID i) */
+	uint8_t tx_tid_mask;
+	/** RX aggregation TID bitmask (bit i enables aggregation for TID i) */
+	uint8_t rx_tid_mask;
+};
+
+/** Set AMSDU RX enable/disable parameters */
+struct qcom_wifi_set_amsdu_rx_params {
+	/** AMSDU RX control flag: 1 enable, 0 disable */
+	uint8_t enable;
+};
+
+/** Set/Get data rate parameters (wrapper around QAPI struct) */
+struct qcom_wifi_set_rate_params {
+	/** 1: auto rate, 0: manual */
+	uint8_t ra_ON;
+	/** Station ID */
+	uint8_t rate_staid;
+	/** Primary rate */
+	uint8_t rate_p_rate;
+	/** Secondary rate */
+	uint8_t rate_s_rate;
+	/** Tertiary rate */
+	uint8_t rate_t_rate;
 };
 
 /** Unit test dispatch params */
@@ -553,6 +635,95 @@ struct qcom_wifi_mgmt_ops {
 	 */
 	int (*get_bmiss_threshold)(const struct device *dev,
 			struct qcom_wifi_get_bmiss_threshold_params *params);
+
+	/**
+	 * @brief Set PHY mode on the active WLAN device.
+	 *
+	 * Configures PHY mode via qapi_WLAN_Set_Param using
+	 * __QAPI_WLAN_PARAM_GROUP_WIRELESS_PHY_MODE.
+	 *
+	 * @param dev Pointer to the driver device instance.
+	 * @param params Input structure with params->phy_mode (qapi_WLAN_Phy_Mode_e).
+	 *
+	 * @return 0 if ok, < 0 if error.
+	 */
+	int (*set_phy_mode)(const struct device *dev,
+			struct qcom_wifi_set_phy_mode_params *params);
+
+	/**
+	 * @brief Get PHY mode on the active WLAN device.
+	 *
+	 * Retrieves PHY mode via qapi_WLAN_Get_Param using
+	 * __QAPI_WLAN_PARAM_GROUP_WIRELESS_PHY_MODE.
+	 *
+	 * @param dev Pointer to the driver device instance.
+	 * @param params Output structure with params->phy_mode (qapi_WLAN_Phy_Mode_e).
+	 *
+	 * @return 0 if ok, < 0 if error.
+	 */
+	int (*get_phy_mode)(const struct device *dev,
+			struct qcom_wifi_get_phy_mode_params *params);
+
+	/**
+	 * @brief Configure TX/RX aggregation TID bitmasks on the active WLAN device.
+	 *
+	 * Programs aggregation enable masks via qapi_WLAN_Set_Param using
+	 * __QAPI_WLAN_PARAM_GROUP_WIRELESS_ALLOW_TX_RX_AGGR_SET_TID.
+	 *
+	 * @param dev Pointer to the driver device instance.
+	 * @param params Input structure:
+	 *        - params->tx_tid_mask: 8-bit bitmask; bit i (0..7) enables TX aggregation for TID i.
+	 *        - params->rx_tid_mask: 8-bit bitmask; bit i (0..7) enables RX aggregation for TID i.
+	 *
+	 * @return 0 if ok, < 0 if error.
+	 *
+	 * Notes:
+	 * - Operates on the currently active device returned by get_qcom_wifi_api().
+	 * - Each mask is limited to 0..0xFF; invalid values are rejected by the shell prior to dispatch.
+	 */
+	int (*set_aggregation)(const struct device *dev,
+			struct qcom_wifi_set_aggregation_params *params);
+	/**
+	 * @brief Enable or disable AMSDU RX on the active WLAN device.
+	 *
+	 * Configures AMSDU RX via qapi_WLAN_Set_Param using
+	 * __QAPI_WLAN_PARAM_GROUP_WIRELESS_AMSDU_RX.
+	 *
+	 * @param dev Pointer to the driver device instance.
+	 * @param params Input structure with params->enable (1: enable, 0: disable).
+	 *
+	 * @return 0 if ok, < 0 if error.
+	 */
+	int (*set_amsdu_rx)(const struct device *dev,
+			struct qcom_wifi_set_amsdu_rx_params *params);
+
+	/**
+	 * @brief Set data rate configuration (auto or manual rates).
+	 *
+	 * Calls qapi_WLAN_Set_Rate with the provided parameters.
+	 *
+	 * @param dev Pointer to the driver device instance.
+	 * @param params Pointer to qapi_WLAN_Set_Rate_Params_t containing:
+	 *        - ra_ON: 1 for auto rate, 0 for manual
+	 *        - rate_staid: station ID
+	 *        - rate_p_rate, rate_s_rate, rate_t_rate: primary/secondary/tertiary rates
+	 * @return 0 if ok, < 0 if error.
+	 */
+	int (*set_rate)(const struct device *dev,
+			struct qcom_wifi_set_rate_params *params);
+
+	/**
+	 * @brief Get data rate configuration for a station.
+	 *
+	 * Calls qapi_WLAN_Get_Rate to retrieve current rates.
+	 *
+	 * @param dev Pointer to the driver device instance.
+	 * @param params Pointer to qapi_WLAN_Set_Rate_Params_t; on success,
+	 *        rate_p_rate, rate_s_rate, rate_t_rate are filled.
+	 * @return 0 if ok, < 0 if error.
+	 */
+	int (*get_rate)(const struct device *dev,
+			struct qcom_wifi_set_rate_params *params);
 };
 
 #endif
