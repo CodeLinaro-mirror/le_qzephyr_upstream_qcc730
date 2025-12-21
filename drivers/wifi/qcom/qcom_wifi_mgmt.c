@@ -627,3 +627,50 @@ static int wifi_set_sap_csa(uint64_t mgmt_request, struct net_if *iface,
 	return api->set_sap_csa(dev, params);
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_SAP_CSA, wifi_set_sap_csa);
+static int wifi_set_operation_mode(uint64_t mgmt_request, struct net_if *iface,
+				  void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *qcom_wifi_mgmt_api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_set_op_mode_params *op_params = data;
+
+	if (qcom_wifi_mgmt_api == NULL || qcom_wifi_mgmt_api->set_op_mode == NULL) {
+		return -ENOTSUP;
+	}
+
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+
+	if (!data || len != sizeof(*op_params)) {
+		return -EINVAL;
+	}
+
+	return qcom_wifi_mgmt_api->set_op_mode(dev, op_params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_OPERATION_MODE, wifi_set_operation_mode);
+
+static int wifi_set_device_id(uint64_t mgmt_request, struct net_if *iface,
+				  void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *qcom_wifi_mgmt_api = get_qcom_wifi_api(iface);
+	uint16_t *device_id = data;
+
+	if (qcom_wifi_mgmt_api == NULL || qcom_wifi_mgmt_api->set_device_id == NULL) {
+		return -ENOTSUP;
+	}
+
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+
+	if (!data || len != sizeof(*device_id)) {
+		return -EINVAL;
+	}
+
+	return qcom_wifi_mgmt_api->set_device_id(dev, device_id);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_DEVICE_ID, wifi_set_device_id);
+
+

@@ -76,6 +76,10 @@ enum qcom_net_request_wifi_cmd {
 	NET_REQUEST_WIFI_CMD_QCOM_GET_BOOT_REASON,
 	/** Channel Switch Announcement */
 	NET_REQUEST_WIFI_CMD_QCOM_SET_SAP_CSA,
+	/** Set Operation Mode for Wi-Fi networks */
+	NET_REQUEST_WIFI_CMD_QCOM_SET_OPERATION_MODE,
+	/** Set device id for Wi-Fi networks */
+	NET_REQUEST_WIFI_CMD_QCOM_SET_DEVICE_ID,
 	NET_REQUEST_WIFI_CMD_QCOM_MAX,
 };
 
@@ -225,6 +229,16 @@ NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_OPERATION_MODE);
 #define NET_REQUEST_WIFI_QCOM_SET_SAP_CSA					\
 	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_SET_SAP_CSA)
 NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_SAP_CSA);
+
+/** Request a Wi-Fi set operation mode */
+#define NET_REQUEST_WIFI_QCOM_SET_OPERATION_MODE					\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_SET_OPERATION_MODE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_OPERATION_MODE);
+
+/** Request a Wi-Fi set device id */
+#define NET_REQUEST_WIFI_QCOM_SET_DEVICE_ID					\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_SET_DEVICE_ID)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_DEVICE_ID);
 
 /** Set TX Power parameters */
 struct qcom_wifi_set_tx_power_params{
@@ -436,6 +450,18 @@ struct qcom_wifi_csa_params {
 	uint8_t switch_count;
 	/** New Channel Number */
 	uint16_t new_channel;
+};
+/**
+ * @brief Set Operation Mode parameters
+ *
+ * Structure used to configure the Wi-Fi operation mode (station, AP, or concurrent)
+ * and AP-specific settings like hidden SSID.
+ */
+struct qcom_wifi_set_op_mode_params{
+    /** Operation mode string: "station", "ap", or "ap_sta" for concurrent mode */
+    char *opmode;
+    /** Hidden SSID configuration for AP mode: "hidden", "0", or "" (empty string for visible) */
+    char *hidden_ssid;
 };
 
 /** Wi-Fi management API */
@@ -916,7 +942,19 @@ struct qcom_wifi_mgmt_ops {
 	 * announcement frame to swtich new channel.
 	 * @return 0 if ok, < 0 if error.
 	 */
-	int (*set_sap_csa)(const struct device *dev, struct qcom_wifi_csa_params *params)
+	int (*set_sap_csa)(const struct device *dev, struct qcom_wifi_csa_params *params);
+	/** Set Operation Mode for Wi-Fi networks
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param params Set Operation Mode parameters
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*set_op_mode)(const struct device *dev,
+		    struct qcom_wifi_set_op_mode_params *params);
+
+	int (*set_device_id)(const struct device *dev,
+		    uint16_t *device_id);
 };
 
 #endif
