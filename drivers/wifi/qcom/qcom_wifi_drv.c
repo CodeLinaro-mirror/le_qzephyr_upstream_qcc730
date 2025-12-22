@@ -1029,6 +1029,192 @@ static int qwifi_drv_get_phy_mode(const struct device *dev, struct qcom_wifi_get
 }
 
 /**
+ * @brief Get Wi-Fi power mode of the active device.
+ *
+ * Retrieves the current power performance/save mode via qapi_WLAN_Get_Param
+ * using __QAPI_WLAN_PARAM_GROUP_WIRELESS_POWER_MODE_PARAMS on the active device.
+ *
+ * On success, params->power_mode contains:
+ *  - 0: Max Perf (no power saving)
+ *  - bit0 (1): BMPS enabled (Beacon Mode Power Save)
+ *  - bit1 (2): IMPS enabled (Idle Mode Power Save)
+ *  - bit2 (4): WUR enabled (Wake-Up Radio)
+ *  - bit3 (8): WNM enabled (Wireless Network Management power features)
+ *
+ * @param dev    Pointer to the driver device instance.
+ * @param params Output structure of type qcom_wifi_get_power_mode_params;
+ *               on success, params->power_mode is filled with the bitfield above.
+ *
+ * @return 0 if ok, negative error code if error.
+ */
+static int qwifi_drv_get_power_mode(const struct device *dev, struct qcom_wifi_get_power_mode_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint8_t power_mode = 0;
+    uint32_t length = sizeof(power_mode);
+
+    if (0 != qapi_WLAN_Get_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_POWER_MODE_PARAMS,
+                        &power_mode,
+                        &length)) {
+        LOG_ERR("get power mode fail for device %d", deviceId);
+        return -EIO;
+    }
+
+    params->power_mode = power_mode;
+    return 0;
+}
+
+/**
+ * @brief Get system boot reason bitfield from platform core/PMU.
+ *
+ * Retrieves the raw boot-reason bitfield via qapi_Core_Obtain_Boot_Reason().
+ * The interpretation of the returned flags (e.g., cold/warm boot, DTIM sleep,
+ * deep sleep) is platform-specific and typically performed at a higher layer
+ * (e.g., shell/UI) using platform-defined masks.
+ *
+ * @param dev    Pointer to the driver device instance. Used for logging and
+ *               access to the active device context when needed.
+ * @param params Output structure of type qcom_wifi_get_boot_reason_params;
+ *               on success, params->boot_reason is set to the raw 32-bit
+ *               bitfield returned by the platform.
+ *
+ * @return 0 on success; negative error code on failure:
+ *         - -EIO if qapi_Core_Obtain_Boot_Reason() fails.
+ *
+ * Notes:
+ * - Known masks for decoding may include:
+ *   - PMU_BASE_pmu_PMU_SYSTEM_STATUS_COLD_WARM_BOOT_Msk
+ *   - QWLAN_PMU_SYSTEM_STATUS_WARM_BOOT_FROM_SLEEP_MASK
+ *   - QWLAN_PMU_SYSTEM_STATUS_WARM_BOOT_FROM_DEEPSLEEP_MASK
+ *   These masks are defined in platform headers; this function only surfaces
+ *   the raw value without performing interpretation.
+ */
+static int qwifi_drv_get_boot_reason(const struct device *dev, struct qcom_wifi_get_boot_reason_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    qapi_boot_reason_t data = 0;
+    uint32_t length = sizeof(data);
+
+    if (QAPI_OK != qapi_core_obtain_boot_reason(&data)) {
+        LOG_ERR("get boot reason fail for device %d", deviceId);
+        return -EIO;
+    }
+
+    params->boot_reason = data;
+    return 0;
+}
+
+/**
+ * @brief Get MAC address of the active WLAN device.
+ *
+ * Retrieves the device MAC address via qapi_WLAN_Get_Param using
+ * __QAPI_WLAN_PARAM_GROUP_WIRELESS_MAC_ADDRESS on the active device.
+ *
+ * On success, params->mac is filled with ETH_ALEN (6) bytes of the MAC address.
+ *
+ * @param dev    Pointer to the driver device instance.
+ * @param params Output structure of type qcom_wifi_get_mac_address_params;
+ *               on success, params->mac[] contains the device MAC.
+ *
+ * @return 0 if ok, negative error code if error.
+ */
+static int qwifi_drv_get_mac_address(const struct device *dev, struct qcom_wifi_get_mac_address_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint8_t mac[__QAPI_WLAN_MAC_LEN] = {0};
+    uint32_t length = __QAPI_WLAN_MAC_LEN;
+
+    if (0 != qapi_WLAN_Get_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_MAC_ADDRESS,
+                        mac,
+                        &length)) {
+        LOG_ERR("get MAC address fail for device %d", deviceId);
+        return -EIO;
+    }
+
+    memcpy(params->mac, mac, __QAPI_WLAN_MAC_LEN);
+    return 0;
+}
+
+/**
+ * @brief Get WLAN concurrency mode of the active device.
+ *
+ * Retrieves concurrency mode via qapi_WLAN_Get_Param using
+ * __QAPI_WLAN_PARAM_GROUP_WIRELESS_CONCURRENCY_MODE.
+ *
+ * On success, params->conc_mode holds the concurrency mode enum
+ * (qapi_WLAN_DEV_Mode_e), e.g. DEV_MODE_AP_STA_E for AP+STA concurrency,
+ * or a single-mode value when concurrency is disabled.
+ *
+ * @param dev    Pointer to the driver device instance.
+ * @param params Output structure of type qcom_wifi_get_concurrency_mode_params;
+ *               on success, params->conc_mode is set to the current mode.
+ *
+ * @return 0 if ok, negative error code if error.
+ */
+static int qwifi_drv_get_concurrency_mode(const struct device *dev, struct qcom_wifi_get_concurrency_mode_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    qapi_WLAN_DEV_Mode_e conc_mode = DEV_MODE_STATION_E;
+    uint32_t length = sizeof(conc_mode);
+
+    if (0 != qapi_WLAN_Get_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_CONCURRENCY_MODE,
+                        &conc_mode,
+                        &length)) {
+        LOG_ERR("get concurrency mode fail for device %d", deviceId);
+        return -EIO;
+    }
+
+    params->conc_mode = conc_mode;
+    return 0;
+}
+
+/**
+ * @brief Get WLAN operation mode of the active device.
+ *
+ * Retrieves operation mode via qapi_WLAN_Get_Param using
+ * __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE.
+ *
+ * On success, params->opmode holds the operation mode enum
+ * (qapi_WLAN_DEV_Mode_e), typically DEV_MODE_STATION_E for STA
+ * or DEV_MODE_AP_E for SoftAP.
+ *
+ * @param dev    Pointer to the driver device instance.
+ * @param params Output structure of type qcom_wifi_get_operation_mode_params;
+ *               on success, params->opmode is set to the current operation mode.
+ *
+ * @return 0 if ok, negative error code if error.
+ */
+static int qwifi_drv_get_operation_mode(const struct device *dev, struct qcom_wifi_get_operation_mode_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    qapi_WLAN_DEV_Mode_e opmode = DEV_MODE_STATION_E;
+    uint32_t length = sizeof(opmode);
+
+    if (0 != qapi_WLAN_Get_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
+                        &opmode,
+                        &length)) {
+        LOG_ERR("get operation mode fail for device %d", deviceId);
+        return -EIO;
+    }
+
+    params->opmode = opmode;
+    return 0;
+}
+
+/**
  * @brief Set STA beacon-miss (BMISS) threshold.
  *
  * Configures the number of consecutive missed beacons that the STA tolerates
@@ -1529,6 +1715,11 @@ static int qwifi_drv_dev_init(const struct device *dev)
         .get_ba_win_timing    = qwifi_drv_get_ba_win_timing,
         .get_slot_time      = qwifi_drv_get_slot_time,
         .get_phy_mode       = qwifi_drv_get_phy_mode,
+        .get_power_mode     = qwifi_drv_get_power_mode,
+        .get_boot_reason    = qwifi_drv_get_boot_reason,
+        .get_mac_address    = qwifi_drv_get_mac_address,
+        .get_concurrency_mode = qwifi_drv_get_concurrency_mode,
+        .get_operation_mode = qwifi_drv_get_operation_mode,
         .get_rate           = qwifi_drv_get_rate,
         .set_bmiss_threshold      = qwifi_drv_set_bmiss_threshold,
         .get_bmiss_threshold      = qwifi_drv_get_bmiss_threshold,
