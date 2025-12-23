@@ -624,6 +624,11 @@ static int ap_disable(const struct device *dev)
 
     qapi_WLAN_Disconnect(dev_id);
 
+    /* swtch to station mode. */
+    qapi_WLAN_DEV_Mode_e mode = DEV_MODE_STATION_E;
+    qapi_WLAN_Set_Param(dev_id, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
+                        &mode, sizeof(mode), false);
+
     return 0;
 }
 
