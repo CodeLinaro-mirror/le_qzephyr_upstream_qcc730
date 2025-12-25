@@ -69,6 +69,7 @@ void __weak relocate_vector_table(void)
 #include <zephyr/device.h>
 #include <zephyr/init.h>
 #include <soc.h>
+#include <string.h>
 
 #include <zephyr/logging/log.h>
 #include <zephyr/irq.h>
@@ -107,7 +108,7 @@ void soc_reset_hook(void)
     );
     
     rram_boot_early_init(sbl_args);
-    z_early_memset(&bootup_info, 0, sizeof(bootup_info_t));
+    memset(&bootup_info, 0, sizeof(bootup_info_t));
     bootup_info.bootup_slp_us = nt_socpm_get_slp_tmr_us();
 }
 
@@ -252,8 +253,8 @@ void rram_boot_early_init(void *sbl_args)
         do_memload = 0;
     }
     if (do_memload==1) {
-        z_bss_zero();
-        z_data_copy();
+        arch_bss_zero();
+        arch_data_copy();
     }
     else
     {
