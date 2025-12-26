@@ -75,3 +75,297 @@ static int wifi_unit_test(uint32_t mgmt_request, struct net_if *iface,
 	return qcom_wifi_mgmt_api->unit_test(dev, params);
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_UNIT_TEST, wifi_unit_test);
+
+static int wifi_set_rts_cts(uint32_t mgmt_request, struct net_if *iface,
+			    void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_set_rts_cts_params *params = data;
+
+	if (api == NULL || api->set_rts_cts == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->set_rts_cts(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_RTS_CTS, wifi_set_rts_cts);
+
+static int wifi_set_rts_rate(uint32_t mgmt_request, struct net_if *iface,
+			     void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_set_rts_rate_params *params = data;
+
+	if (api == NULL || api->set_rts_rate == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->set_rts_rate(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_RTS_RATE, wifi_set_rts_rate);
+
+static int wifi_set_edca_param_cfg(uint32_t mgmt_request, struct net_if *iface,
+				   void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_set_edca_param_cfg_params *params = data;
+
+	if (api == NULL || api->set_edca_param_cfg == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->set_edca_param_cfg(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_EDCA_PARAM_CFG, wifi_set_edca_param_cfg);
+
+static int wifi_set_threshold(uint32_t mgmt_request, struct net_if *iface,
+			      void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_set_threshold_params *params = data;
+
+	if (api == NULL || api->set_threshold == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->set_threshold(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_THRESHOLD, wifi_set_threshold);
+
+static int wifi_set_ba_win_timing(uint32_t mgmt_request, struct net_if *iface,
+				void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_set_ba_win_timing_params *params = data;
+
+	if (api == NULL || api->set_ba_win_timing == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->set_ba_win_timing(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_BA_WIN_TIMING, wifi_set_ba_win_timing);
+
+static int wifi_set_slot_time(uint32_t mgmt_request, struct net_if *iface,
+			      void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_set_slot_time_params *params = data;
+
+	if (api == NULL || api->set_slot_time == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->set_slot_time(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_SLOT_TIME, wifi_set_slot_time);
+
+static int wifi_get_rts_cts(uint32_t mgmt_request, struct net_if *iface,
+			    void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_get_rts_cts_params *params = data;
+
+	if (api == NULL || api->get_rts_cts == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->get_rts_cts(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_RTS_CTS, wifi_get_rts_cts);
+
+static int wifi_get_rts_rate(uint32_t mgmt_request, struct net_if *iface,
+			     void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_get_rts_rate_params *params = data;
+
+	if (api == NULL || api->get_rts_rate == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->get_rts_rate(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_RTS_RATE, wifi_get_rts_rate);
+
+static int wifi_get_edca_param_cfg(uint32_t mgmt_request, struct net_if *iface,
+				   void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_get_edca_param_cfg_params *params = data;
+
+	if (api == NULL || api->get_edca_param_cfg == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->get_edca_param_cfg(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_EDCA_PARAM_CFG, wifi_get_edca_param_cfg);
+
+static int wifi_get_threshold(uint32_t mgmt_request, struct net_if *iface,
+			      void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_get_threshold_params *params = data;
+
+	if (api == NULL || api->get_threshold == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->get_threshold(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_THRESHOLD, wifi_get_threshold);
+
+static int wifi_get_ba_win_timing(uint32_t mgmt_request, struct net_if *iface,
+				void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_get_ba_win_timing_params *params = data;
+
+	if (api == NULL || api->get_ba_win_timing == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->get_ba_win_timing(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_BA_WIN_TIMING, wifi_get_ba_win_timing);
+
+static int wifi_get_slot_time(uint32_t mgmt_request, struct net_if *iface,
+			      void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_get_slot_time_params *params = data;
+
+	if (api == NULL || api->get_slot_time == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->get_slot_time(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_SLOT_TIME, wifi_get_slot_time);
+
+static int wifi_set_bmiss_threshold(uint32_t mgmt_request, struct net_if *iface,
+				    void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_set_bmiss_threshold_params *params = data;
+
+	if (api == NULL || api->set_bmiss_threshold == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->set_bmiss_threshold(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_BMISS_THRESHOLD, wifi_set_bmiss_threshold);
+
+static int wifi_get_bmiss_threshold(uint32_t mgmt_request, struct net_if *iface,
+				    void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_get_bmiss_threshold_params *params = data;
+
+	if (api == NULL || api->get_bmiss_threshold == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->get_bmiss_threshold(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_BMISS_THRESHOLD, wifi_get_bmiss_threshold);
