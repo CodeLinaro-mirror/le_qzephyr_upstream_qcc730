@@ -925,6 +925,137 @@ static int qwifi_drv_set_slot_time(const struct device *dev, struct qcom_wifi_se
 }
 
 /**
+ * @brief Configure TX/RX aggregation TID bitmasks on the active WLAN device.
+ *
+ * Programs aggregation enable masks via qapi_WLAN_Set_Param using
+ * __QAPI_WLAN_PARAM_GROUP_WIRELESS_ALLOW_TX_RX_AGGR_SET_TID.
+ *
+ * Internals:
+ * - Builds qapi_WLAN_Aggregation_Params_t from the input params:
+ *   - agg.tx_TID_Mask = params->tx_tid_mask
+ *   - agg.rx_TID_Mask = params->rx_tid_mask
+ * - Operates on dev->data->active_device (the currently active device ID).
+ * - Calls qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+ *   __QAPI_WLAN_PARAM_GROUP_WIRELESS_ALLOW_TX_RX_AGGR_SET_TID, &agg,
+ *   sizeof(agg), FALSE).
+ *
+ * @param dev Pointer to the driver device instance. Used to access the
+ *            active deviceId (dev->data->active_device).
+ * @param params Input structure providing two 8-bit bitmasks:
+ *            - params->tx_tid_mask: bit i (0..7) enables TX aggregation for TID i.
+ *            - params->rx_tid_mask: bit i (0..7) enables RX aggregation for TID i.
+ *
+ * @return 0 on success; negative error code on failure:
+ *         - -EIO if the underlying qapi_WLAN_Set_Param call fails.
+ *
+ * Notes:
+ * - Each mask is limited to 0..0xFF; higher values are rejected earlier by the shell command.
+ * - On failure, an error is logged with the device ID and the provided masks.
+ */
+static int qwifi_drv_set_aggregation(const struct device *dev, struct qcom_wifi_set_aggregation_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    qapi_WLAN_Aggregation_Params_t agg = {0};
+
+    agg.tx_TID_Mask = params->tx_tid_mask;
+    agg.rx_TID_Mask = params->rx_tid_mask;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_ALLOW_TX_RX_AGGR_SET_TID,
+                        &agg,
+                        sizeof(agg),
+                        FALSE);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set aggregation TIDs (tx=0x%02x, rx=0x%02x) for device %d: %d",
+                agg.tx_TID_Mask, agg.rx_TID_Mask, deviceId, ret);
+        return -EIO;
+    }
+    return 0;
+}
+
+static int qwifi_drv_set_amsdu_rx(const struct device *dev, struct qcom_wifi_set_amsdu_rx_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint8_t enable = params->enable;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_AMSDU_RX,
+                        &enable,
+                        sizeof(enable),
+                        FALSE);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set AMSDU RX (enable=%u) for device %d: %d", enable, deviceId, ret);
+        return -EIO;
+    }
+    return 0;
+}
+
+/**
+ * @brief Set PHY mode on the active WLAN device.
+ *
+ * Configures PHY mode via qapi_WLAN_Set_Param for the currently active interface.
+ * The value corresponds to qapi_WLAN_Phy_Mode_e as defined by the firmware/QAPI.
+ *
+ * @param dev Pointer to the driver device instance.
+ * @param params Input structure with params->phy_mode (qapi_WLAN_Phy_Mode_e).
+ *
+ * @return 0 on success; negative error code on failure.
+ */
+static int qwifi_drv_set_phy_mode(const struct device *dev, struct qcom_wifi_set_phy_mode_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint32_t phy_mode = params->phy_mode;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_PHY_MODE,
+                        &phy_mode,
+                        sizeof(phy_mode),
+                        false);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set PHY mode (value=%u) for device %d: %d", phy_mode, deviceId, ret);
+        return -EIO;
+    }
+    return 0;
+}
+
+/**
+ * @brief Get PHY mode on the active WLAN device.
+ *
+ * Retrieves PHY mode via qapi_WLAN_Get_Param for the currently active interface.
+ * The returned value corresponds to qapi_WLAN_Phy_Mode_e.
+ *
+ * @param dev Pointer to the driver device instance.
+ * @param params Output structure with params->phy_mode filled on success.
+ *
+ * @return 0 on success; negative error code on failure.
+ */
+static int qwifi_drv_get_phy_mode(const struct device *dev, struct qcom_wifi_get_phy_mode_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint32_t phy_mode = 0;
+    uint32_t length = sizeof(phy_mode);
+
+    if (0 != qapi_WLAN_Get_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_PHY_MODE,
+                        &phy_mode,
+                        &length)) {
+        LOG_ERR("get PHY mode fail for device %d", deviceId);
+        return -EIO;
+    }
+
+    params->phy_mode = phy_mode;
+    return 0;
+}
+
+/**
  * @brief Set STA beacon-miss (BMISS) threshold.
  *
  * Configures the number of consecutive missed beacons that the STA tolerates
@@ -1371,6 +1502,45 @@ static void qwifi_drv_intf_init(struct net_if *iface)
     LOG_DBG("%s", __FUNCTION__);
 }
 
+static int qwifi_drv_set_rate(const struct device *dev, struct qcom_wifi_set_rate_params *params)
+{
+    qapi_WLAN_Set_Rate_Params_t cfg = {0};
+
+    cfg.ra_ON = params->ra_ON;
+    cfg.rate_staid = params->rate_staid;
+    cfg.rate_p_rate = params->rate_p_rate;
+    cfg.rate_s_rate = params->rate_s_rate;
+    cfg.rate_t_rate = params->rate_t_rate;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Rate(&cfg);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set rate (staid=%u, p=%u, s=%u, t=%u): %d",
+                cfg.rate_staid, cfg.rate_p_rate, cfg.rate_s_rate, cfg.rate_t_rate, ret);
+        return -EIO;
+    }
+    return 0;
+}
+
+static int qwifi_drv_get_rate(const struct device *dev, struct qcom_wifi_set_rate_params *params)
+{
+    qapi_WLAN_Set_Rate_Params_t cfg = {0};
+
+    cfg.rate_staid = params->rate_staid;
+
+    qapi_Status_t ret = qapi_WLAN_Get_Rate(&cfg);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to get rate (staid=%u): %d", cfg.rate_staid, ret);
+        return -EIO;
+    }
+
+    params->ra_ON = cfg.ra_ON;
+    params->rate_p_rate = cfg.rate_p_rate;
+    params->rate_s_rate = cfg.rate_s_rate;
+    params->rate_t_rate = cfg.rate_t_rate;
+
+    return 0;
+}
+
 static int qwifi_drv_dev_init(const struct device *dev)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
@@ -1390,6 +1560,10 @@ static int qwifi_drv_dev_init(const struct device *dev)
         .set_threshold      = qwifi_drv_set_threshold,
         .set_ba_win_timing    = qwifi_drv_set_ba_win_timing,
         .set_slot_time      = qwifi_drv_set_slot_time,
+        .set_phy_mode       = qwifi_drv_set_phy_mode,
+        .set_aggregation    = qwifi_drv_set_aggregation,
+        .set_amsdu_rx       = qwifi_drv_set_amsdu_rx,
+        .set_rate           = qwifi_drv_set_rate,
 
         .get_rts_cts        = qwifi_drv_get_rts_cts,
         .get_rts_rate       = qwifi_drv_get_rts_rate,
@@ -1397,6 +1571,8 @@ static int qwifi_drv_dev_init(const struct device *dev)
         .get_threshold      = qwifi_drv_get_threshold,
         .get_ba_win_timing    = qwifi_drv_get_ba_win_timing,
         .get_slot_time      = qwifi_drv_get_slot_time,
+        .get_phy_mode       = qwifi_drv_get_phy_mode,
+        .get_rate           = qwifi_drv_get_rate,
         .set_bmiss_threshold      = qwifi_drv_set_bmiss_threshold,
         .get_bmiss_threshold      = qwifi_drv_get_bmiss_threshold,
     };
