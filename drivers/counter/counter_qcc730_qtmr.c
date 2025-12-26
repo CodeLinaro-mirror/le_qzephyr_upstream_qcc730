@@ -380,12 +380,14 @@ static int qtmr_qcc730_deinit(const struct device *dev)
 
 static int qtmr_qcc730_pm_action(const struct device *dev, enum pm_device_action action)
 {
+	const struct qtmr_qcc730_cfg *cfg = dev->config;
+	// LOG_ERR("qtmr_qcc730_pm_action frame %d", cfg->frame_id);
 	switch (action) {
 	case PM_DEVICE_ACTION_SUSPEND:
-		qtmr_qcc730_deinit(dev);
+		// qtmr_qcc730_deinit(dev);
 		break;
 	case PM_DEVICE_ACTION_RESUME:
-		qtmr_qcc730_init(dev);
+		// qtmr_qcc730_init(dev);
 		break;
 	default:
 		return -ENOTSUP;

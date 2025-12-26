@@ -64,6 +64,36 @@ static struct qwifi_drv_dev_cfg_t g_wifi_dev_cfg = {
     .scan_mode = SCAN_MODE_UNBLOCKING,
 };
 
+
+static void wifi_activity_timer_cb(bool isBusy);
+static TimerHandle_t wifi_activity_timer;
+
+void clear_wifi_busy(void);
+
+
+static uint32_t wifi_activity_interval_ms = 30; 
+
+void wifi_activity_timer_cb(bool isBusy)
+{
+    const struct device *wifi_dev = device_get_binding("qwifi_sta");
+    if (!wifi_dev) {
+        LOG_ERR("qwifi_sta not found\r\n");
+        return ;
+    }
+    if (!device_is_ready(wifi_dev)) {
+        LOG_ERR("WiFi device not ready\r\n");
+        return ;
+    }
+    
+    //if wifi do not busy in check period, clear it
+    if(!isBusy && pm_device_is_busy(wifi_dev))
+    {
+        LOG_DBG("wifi busy clear\r\n");
+        pm_device_busy_clear(wifi_dev);
+    }
+}
+
+
 const struct qcom_wifi_mgmt_ops *const get_qcom_wifi_api(struct net_if *iface)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -309,12 +339,23 @@ static void qwifi_drv_event_handler(uint8_t dev_id, uint32_t event, void *contex
         LOG_WRN("%s:%d event: %d, ignored.", __FUNCTION__, __LINE__, event);
         break;
     }
+
+#ifdef CONFIG_PM_DEVICE
+    qapi_WLAN_Start_Check_Activity();
+
+#endif
+
 }
 
 static int qwifi_drv_disconnect(const struct device *dev)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     uint8_t deviceId = dev_data->active_device;
+
+#ifdef CONFIG_PM_DEVICE
+    pm_device_busy_set(dev);
+    qapi_WLAN_Stop_Check_Activity();
+#endif
 
     qapi_WLAN_Disconnect(deviceId);
 
@@ -330,6 +371,11 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
     qapi_WLAN_Crypt_Type_e e_cipher;
     const uint8_t *psk = NULL;
     uint8_t psk_length = 0;
+
+#ifdef CONFIG_PM_DEVICE
+    pm_device_busy_set(dev);
+    qapi_WLAN_Stop_Check_Activity();
+#endif
 
     LOG_DBG("%s", __FUNCTION__);
     memcpy(&dev_data->cfg_connect, params, sizeof(struct wifi_connect_req_params));
@@ -424,6 +470,11 @@ static int qwifi_drv_scan(const struct device *dev, struct wifi_scan_params *par
     uint32_t length = sizeof(qapi_WLAN_DEV_Mode_e);
     qapi_Status_t ret = QAPI_OK;
     uint8_t deviceId = dev_data->active_device;
+
+#ifdef CONFIG_PM_DEVICE
+    pm_device_busy_set(dev);
+    qapi_WLAN_Stop_Check_Activity();
+#endif
 
     LOG_DBG("%s", __FUNCTION__);
     if (params->scan_type != WIFI_SCAN_TYPE_ACTIVE) {
@@ -550,6 +601,10 @@ static int ap_enable(const struct device *dev, struct wifi_connect_req_params *p
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     struct qwifi_ap_status_t *ap_status = &dev_data->ap_status;
 
+#ifdef CONFIG_PM_DEVICE
+    pm_device_busy_set(dev);
+#endif
+
     qapi_WLAN_DEV_Mode_e mode = DEV_MODE_AP_E;
     ret = qapi_WLAN_Set_Param(dev_id,
             __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
@@ -657,6 +712,10 @@ static int ap_disable(const struct device *dev)
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     uint8_t dev_id = dev_data->active_device;
 
+#ifdef CONFIG_PM_DEVICE
+    pm_device_busy_set(dev);
+#endif
+
     qapi_WLAN_Disconnect(dev_id);
 
     /* swtch to station mode. */
@@ -671,6 +730,11 @@ static int ap_sta_disconnect(const struct device *dev, const uint8_t *mac)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     uint8_t dev_id = dev_data->active_device;
+
+    #ifdef CONFIG_PM_DEVICE
+    pm_device_busy_set(dev);
+#endif
+
     qapi_WLAN_AP_Disconnect_Station(dev_id, mac, NET_ETH_ADDR_LEN);
 
     return 0;
@@ -1528,6 +1592,9 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
 
     qapi_WLAN_DEV_Mode_e dev_mode = DEV_MODE_STATION_E;
     uint32_t size = sizeof(dev_mode);
+#ifdef CONFIG_PM_DEVICE
+    pm_device_busy_set(dev);
+#endif
     qapi_WLAN_Get_Param(dev_id, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
                         __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
                         &dev_mode, &size);
@@ -1612,6 +1679,10 @@ static int qwifi_drv_send(const struct device *dev, struct net_pkt *pkt)
         return -ENOMEM;
     }
 
+#ifdef CONFIG_PM_DEVICE
+    pm_device_busy_set(dev);
+#endif
+
     size_t n = net_buf_linearize(pkt_buf, pkt_len, pkt->buffer, 0, pkt_len);
     if (n != pkt_len) {
         nt_dpm_free_buffer_ext(pkt_buf);
@@ -1683,6 +1754,10 @@ static void qwifi_drv_intf_init(struct net_if *iface)
     dev_data->iface = iface;
 
 #ifdef CONFIG_PM_DEVICE
+
+    qapi_WLAN_Activity_Register_CB(wifi_activity_timer_cb);
+    qapi_WLAN_Start_Check_Activity();
+
     pm_device_busy_set(dev);
 #endif
     LOG_DBG("%s", __FUNCTION__);
@@ -1793,7 +1868,7 @@ extern uint64_t bmps_duration;
 extern struct k_timer bmps_timer;
 static int device_wlan_pm_action(const struct device *dev, enum pm_device_action pm_action)
 {
-    LOG_INF("%s", __FUNCTION__);
+
     int ret = 0;
 
     switch (pm_action) {
@@ -1807,14 +1882,7 @@ static int device_wlan_pm_action(const struct device *dev, enum pm_device_action
             break;
         case PM_DEVICE_ACTION_RESUME:
             qapi_WLAN_Resume();
-            if (k_timer_remaining_get(&bmps_timer) > 0) {
-                if(bmps_duration== 0)
-                {
-                    k_timer_stop(&bmps_timer);
-                    pm_device_busy_set(dev);
-                    LOG_INF("%s: bmps_duration is 0, exit bmps.", __FUNCTION__);
-                }
-            }
+            pm_device_busy_set(dev);
             break;
         default:
             break;
@@ -1834,6 +1902,10 @@ static int qwifi_drv_channel(const struct device *dev, struct wifi_channel_info 
     if (!channel_info) {
         return -EINVAL;
     }
+
+#ifdef CONFIG_PM_DEVICE
+    pm_device_busy_set(dev);
+#endif
 
     if (channel_info->oper == WIFI_MGMT_SET) {
         uint32_t channel[2] = {0, 0};
@@ -1877,6 +1949,10 @@ static int qwifi_drv_reg_domain(const struct device *dev, struct wifi_reg_domain
     if (!regd) {
         return -EINVAL;
     }
+
+#ifdef CONFIG_PM_DEVICE
+    pm_device_busy_set(dev);
+#endif
 
     if (regd->oper == WIFI_MGMT_SET) {
         uint8_t country_code[3] = {0};
@@ -1975,6 +2051,9 @@ static int qwifi_drv_reg_domain(const struct device *dev, struct wifi_reg_domain
 static int qwifi_power_save(const struct device *dev, struct wifi_ps_params *params)
 {
     int ret = -1;
+#ifdef CONFIG_PM_DEVICE
+    pm_device_busy_set(dev);
+#endif
     switch (params->type) {
         case WIFI_PS_PARAM_LISTEN_INTERVAL:
 		    if ((params->listen_interval <
@@ -1987,6 +2066,10 @@ static int qwifi_power_save(const struct device *dev, struct wifi_ps_params *par
 		    }
             ret = wlan_set_sta_slptime(0 , params->listen_interval , 0);
             break;
+        
+        // case WIFI_PS_PARAM_MODE:
+      
+        //     break;
 
     }
     return ret;
@@ -1998,6 +2081,10 @@ int qwifi_get_power_save(const struct device *dev, struct wifi_ps_config *config
     uint8_t deviceId = dev_data->active_device;
     uint16_t listen_interval;
     uint32_t length = sizeof(listen_interval);
+
+#ifdef CONFIG_PM_DEVICE
+    pm_device_busy_set(dev);
+#endif
 
     qapi_WLAN_Get_Param (deviceId,
                          __QAPI_WLAN_PARAM_GROUP_WIRELESS,
