@@ -12,6 +12,7 @@
 #include <zephyr/net/wifi.h>
 #include <zephyr/net/ethernet.h>
 #include <zephyr/net/offloaded_netdev.h>
+#include "qapi_wlan_misc.h"
 
 /** @brief Qcom Wi-Fi management commands */
 enum qcom_net_request_wifi_cmd {
@@ -61,6 +62,16 @@ enum qcom_net_request_wifi_cmd {
 	NET_REQUEST_WIFI_CMD_QCOM_SET_RATE,
 	/** Get data rate */
 	NET_REQUEST_WIFI_CMD_QCOM_GET_RATE,
+	/** Get power mode */
+	NET_REQUEST_WIFI_CMD_QCOM_GET_POWER_MODE,
+	/** Get MAC address */
+	NET_REQUEST_WIFI_CMD_QCOM_GET_MAC_ADDRESS,
+	/** Get concurrency mode */
+	NET_REQUEST_WIFI_CMD_QCOM_GET_CONCURRENCY_MODE,
+	/** Get operation mode */
+	NET_REQUEST_WIFI_CMD_QCOM_GET_OPERATION_MODE,
+	/** Get boot reason */
+	NET_REQUEST_WIFI_CMD_QCOM_GET_BOOT_REASON,
 };
 
 /** Request a Wi-Fi set tx power */
@@ -179,6 +190,31 @@ NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_RATE);
 #define NET_REQUEST_WIFI_QCOM_GET_RATE					\
 	(_NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_GET_RATE)
 NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_RATE);
+
+/* Get power mode */
+#define NET_REQUEST_WIFI_QCOM_GET_BOOT_REASON					\
+	(_NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_GET_BOOT_REASON)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_BOOT_REASON);
+
+/* Get power mode */
+#define NET_REQUEST_WIFI_QCOM_GET_POWER_MODE					\
+	(_NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_GET_POWER_MODE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_POWER_MODE);
+
+/* Get MAC address */
+#define NET_REQUEST_WIFI_QCOM_GET_MAC_ADDRESS					\
+	(_NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_GET_MAC_ADDRESS)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_MAC_ADDRESS);
+
+/* Get concurrency mode */
+#define NET_REQUEST_WIFI_QCOM_GET_CONCURRENCY_MODE					\
+	(_NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_GET_CONCURRENCY_MODE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_CONCURRENCY_MODE);
+
+/* Get operation mode */
+#define NET_REQUEST_WIFI_QCOM_GET_OPERATION_MODE					\
+	(_NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_GET_OPERATION_MODE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_OPERATION_MODE);
 
 /** Set TX Power parameters */
 struct qcom_wifi_set_tx_power_params{
@@ -314,6 +350,36 @@ struct qcom_wifi_set_phy_mode_params {
 struct qcom_wifi_get_phy_mode_params {
 	/** PHY mode value (qapi_WLAN_Phy_Mode_e) */
 	uint32_t phy_mode;
+};
+
+/** Get power mode parameters */
+struct qcom_wifi_get_power_mode_params {
+	/** Power mode bitfield (0: Max Perf, non-zero indicates Power Save flags) */
+	uint8_t power_mode;
+};
+
+/** Get boot reason parameters */
+struct qcom_wifi_get_boot_reason_params {
+	/** Boot reason bitfield */
+	uint32_t boot_reason;
+};
+
+/** Get MAC address parameters */
+struct qcom_wifi_get_mac_address_params {
+	/** MAC address (__QAPI_WLAN_MAC_LEN bytes) */
+	uint8_t mac[__QAPI_WLAN_MAC_LEN];
+};
+
+/** Get concurrency mode parameters */
+struct qcom_wifi_get_concurrency_mode_params {
+	/** Concurrency mode (qapi_WLAN_DEV_Mode_e) */
+	uint32_t conc_mode;
+};
+
+/** Get operation mode parameters */
+struct qcom_wifi_get_operation_mode_params {
+	/** Operation mode (qapi_WLAN_DEV_Mode_e) */
+	uint32_t opmode;
 };
 
 /** Set aggregation TID masks parameters */
@@ -663,6 +729,101 @@ struct qcom_wifi_mgmt_ops {
 	 */
 	int (*get_phy_mode)(const struct device *dev,
 			struct qcom_wifi_get_phy_mode_params *params);
+	/**
+	 * @brief Get Wi-Fi power mode of the active device.
+	 *
+	 * Retrieves the current power performance/save mode via qapi_WLAN_Get_Param
+	 * using __QAPI_WLAN_PARAM_GROUP_WIRELESS_POWER_MODE_PARAMS on the active device.
+	 *
+	 * On success, params->power_mode contains:
+	 *  - 0: Max Perf (no power saving)
+	 *  - bit0 (1): BMPS enabled (Beacon Mode Power Save)
+	 *  - bit1 (2): IMPS enabled (Idle Mode Power Save)
+	 *  - bit2 (4): WUR enabled (Wake-Up Radio)
+	 *  - bit3 (8): WNM enabled (Wireless Network Management power features)
+	 *
+	 * @param dev    Pointer to the driver device instance.
+	 * @param params Output structure of type qcom_wifi_get_power_mode_params;
+	 *               on success, params->power_mode is filled with the bitfield above.
+	 *
+	 * @return 0 if ok, < 0 if error.
+	 */
+	int (*get_power_mode)(const struct device *dev,
+			struct qcom_wifi_get_power_mode_params *params);
+
+	/**
+	 * @brief Get system boot reason bitfield.
+	 *
+	 * Retrieves the raw boot-reason bitfield from the platform via the driver.
+	 * The underlying driver typically calls qapi_Core_Obtain_Boot_Reason() to
+	 * obtain this value.
+	 *
+	 * On success, params->boot_reason contains a 32-bit bitfield whose
+	 * interpretation is platform-specific (e.g., cold/warm boot, wake from DTIM
+	 * sleep, wake from deep sleep). Decoding can be performed at higher layers
+	 * using platform-defined mask macros.
+	 *
+	 * @param dev    Pointer to the driver device instance.
+	 * @param params Output structure of type qcom_wifi_get_boot_reason_params; on
+	 *               success, params->boot_reason is filled with the bitfield.
+	 *
+	 * @return 0 if ok; negative error code if failure.
+	 */
+	int (*get_boot_reason)(const struct device *dev,
+			struct qcom_wifi_get_boot_reason_params *params);
+
+	/**
+	 * @brief Get MAC address of the active WLAN device.
+	 *
+	 * Retrieves the device MAC address via qapi_WLAN_Get_Param using
+	 * __QAPI_WLAN_PARAM_GROUP_WIRELESS_MAC_ADDRESS on the active device.
+	 *
+	 * On success, params->mac is filled with ETH_ALEN (6) bytes of the MAC address.
+	 *
+	 * @param dev    Pointer to the driver device instance.
+	 * @param params Output structure of type qcom_wifi_get_mac_address_params;
+	 *               on success, params->mac[] contains the device MAC.
+	 *
+	 * @return 0 if ok, < 0 if error.
+	 */
+	int (*get_mac_address)(const struct device *dev,
+			struct qcom_wifi_get_mac_address_params *params);
+	/**
+	 * @brief Get WLAN concurrency mode of the active device.
+	 *
+	 * Retrieves concurrency mode via qapi_WLAN_Get_Param using
+	 * __QAPI_WLAN_PARAM_GROUP_WIRELESS_CONCURRENCY_MODE.
+	 *
+	 * On success, params->conc_mode holds the concurrency mode enum
+	 * (qapi_WLAN_DEV_Mode_e), e.g. DEV_MODE_AP_STA_E for AP+STA concurrency,
+	 * or a single-mode value when concurrency is disabled.
+	 *
+	 * @param dev    Pointer to the driver device instance.
+	 * @param params Output structure of type qcom_wifi_get_concurrency_mode_params;
+	 *               on success, params->conc_mode is set to the current mode.
+	 *
+	 * @return 0 if ok, < 0 if error.
+	 */
+	int (*get_concurrency_mode)(const struct device *dev,
+			struct qcom_wifi_get_concurrency_mode_params *params);
+	/**
+	 * @brief Get WLAN operation mode of the active device.
+	 *
+	 * Retrieves operation mode via qapi_WLAN_Get_Param using
+	 * __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE.
+	 *
+	 * On success, params->opmode holds the operation mode enum
+	 * (qapi_WLAN_DEV_Mode_e), typically DEV_MODE_STATION_E for STA
+	 * or DEV_MODE_AP_E for SoftAP.
+	 *
+	 * @param dev    Pointer to the driver device instance.
+	 * @param params Output structure of type qcom_wifi_get_operation_mode_params;
+	 *               on success, params->opmode is set to the current operation mode.
+	 *
+	 * @return 0 if ok, < 0 if error.
+	 */
+	int (*get_operation_mode)(const struct device *dev,
+			struct qcom_wifi_get_operation_mode_params *params);
 
 	/**
 	 * @brief Configure TX/RX aggregation TID bitmasks on the active WLAN device.

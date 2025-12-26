@@ -454,6 +454,111 @@ static int wifi_get_phy_mode(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_PHY_MODE, wifi_get_phy_mode);
 
+static int wifi_get_boot_reason(uint32_t mgmt_request, struct net_if *iface,
+			       void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_get_boot_reason_params *params = data;
+
+	if (api == NULL || api->get_boot_reason == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->get_boot_reason(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_BOOT_REASON, wifi_get_boot_reason);
+
+static int wifi_get_power_mode(uint32_t mgmt_request, struct net_if *iface,
+			       void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_get_power_mode_params *params = data;
+
+	if (api == NULL || api->get_power_mode == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->get_power_mode(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_POWER_MODE, wifi_get_power_mode);
+
+static int wifi_get_mac_address(uint32_t mgmt_request, struct net_if *iface,
+				void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_get_mac_address_params *params = data;
+
+	if (api == NULL || api->get_mac_address == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->get_mac_address(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_MAC_ADDRESS, wifi_get_mac_address);
+
+static int wifi_get_concurrency_mode(uint32_t mgmt_request, struct net_if *iface,
+				     void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_get_concurrency_mode_params *params = data;
+
+	if (api == NULL || api->get_concurrency_mode == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->get_concurrency_mode(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_CONCURRENCY_MODE, wifi_get_concurrency_mode);
+
+static int wifi_get_operation_mode(uint32_t mgmt_request, struct net_if *iface,
+				   void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_get_operation_mode_params *params = data;
+
+	if (api == NULL || api->get_operation_mode == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->get_operation_mode(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_OPERATION_MODE, wifi_get_operation_mode);
+
 static int wifi_set_rate(uint32_t mgmt_request, struct net_if *iface,
 			 void *data, size_t len)
 {
