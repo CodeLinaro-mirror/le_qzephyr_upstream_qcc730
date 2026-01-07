@@ -7,7 +7,7 @@
 
 const struct qcom_wifi_mgmt_ops *const get_qcom_wifi_api(struct net_if *iface);
 
-static int wifi_set_tx_power(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_set_tx_power(uint64_t mgmt_request, struct net_if *iface,
 				  void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -30,7 +30,7 @@ static int wifi_set_tx_power(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_TX_POWER, wifi_set_tx_power);
 
-static int wifi_get_tx_power(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_get_tx_power(uint64_t mgmt_request, struct net_if *iface,
 				  void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -53,7 +53,7 @@ static int wifi_get_tx_power(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_TX_POWER, wifi_get_tx_power);
 
-static int wifi_unit_test(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_unit_test(uint64_t mgmt_request, struct net_if *iface,
 			  void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -76,7 +76,7 @@ static int wifi_unit_test(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_UNIT_TEST, wifi_unit_test);
 
-static int wifi_set_rts_cts(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_set_rts_cts(uint64_t mgmt_request, struct net_if *iface,
 			    void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -97,7 +97,7 @@ static int wifi_set_rts_cts(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_RTS_CTS, wifi_set_rts_cts);
 
-static int wifi_set_rts_rate(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_set_rts_rate(uint64_t mgmt_request, struct net_if *iface,
 			     void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -118,7 +118,7 @@ static int wifi_set_rts_rate(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_RTS_RATE, wifi_set_rts_rate);
 
-static int wifi_set_edca_param_cfg(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_set_edca_param_cfg(uint64_t mgmt_request, struct net_if *iface,
 				   void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -139,7 +139,7 @@ static int wifi_set_edca_param_cfg(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_EDCA_PARAM_CFG, wifi_set_edca_param_cfg);
 
-static int wifi_set_threshold(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_set_threshold(uint64_t mgmt_request, struct net_if *iface,
 			      void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -160,7 +160,7 @@ static int wifi_set_threshold(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_THRESHOLD, wifi_set_threshold);
 
-static int wifi_set_ba_win_timing(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_set_ba_win_timing(uint64_t mgmt_request, struct net_if *iface,
 				void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -181,7 +181,7 @@ static int wifi_set_ba_win_timing(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_BA_WIN_TIMING, wifi_set_ba_win_timing);
 
-static int wifi_set_slot_time(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_set_slot_time(uint64_t mgmt_request, struct net_if *iface,
 			      void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -202,7 +202,7 @@ static int wifi_set_slot_time(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_SLOT_TIME, wifi_set_slot_time);
 
-static int wifi_set_aggregation(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_set_aggregation(uint64_t mgmt_request, struct net_if *iface,
 				void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -223,7 +223,7 @@ static int wifi_set_aggregation(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_AGGREGATION, wifi_set_aggregation);
 
-static int wifi_set_amsdu_rx(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_set_amsdu_rx(uint64_t mgmt_request, struct net_if *iface,
 			     void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -244,7 +244,7 @@ static int wifi_set_amsdu_rx(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_AMSDU_RX, wifi_set_amsdu_rx);
 
-static int wifi_get_rts_cts(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_get_rts_cts(uint64_t mgmt_request, struct net_if *iface,
 			    void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -265,7 +265,7 @@ static int wifi_get_rts_cts(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_RTS_CTS, wifi_get_rts_cts);
 
-static int wifi_get_rts_rate(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_get_rts_rate(uint64_t mgmt_request, struct net_if *iface,
 			     void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -286,7 +286,7 @@ static int wifi_get_rts_rate(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_RTS_RATE, wifi_get_rts_rate);
 
-static int wifi_get_edca_param_cfg(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_get_edca_param_cfg(uint64_t mgmt_request, struct net_if *iface,
 				   void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -307,7 +307,7 @@ static int wifi_get_edca_param_cfg(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_EDCA_PARAM_CFG, wifi_get_edca_param_cfg);
 
-static int wifi_get_threshold(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_get_threshold(uint64_t mgmt_request, struct net_if *iface,
 			      void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -328,7 +328,7 @@ static int wifi_get_threshold(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_THRESHOLD, wifi_get_threshold);
 
-static int wifi_get_ba_win_timing(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_get_ba_win_timing(uint64_t mgmt_request, struct net_if *iface,
 				void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -349,7 +349,7 @@ static int wifi_get_ba_win_timing(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_BA_WIN_TIMING, wifi_get_ba_win_timing);
 
-static int wifi_get_slot_time(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_get_slot_time(uint64_t mgmt_request, struct net_if *iface,
 			      void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -370,7 +370,7 @@ static int wifi_get_slot_time(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_SLOT_TIME, wifi_get_slot_time);
 
-static int wifi_set_bmiss_threshold(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_set_bmiss_threshold(uint64_t mgmt_request, struct net_if *iface,
 				    void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -391,7 +391,7 @@ static int wifi_set_bmiss_threshold(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_BMISS_THRESHOLD, wifi_set_bmiss_threshold);
 
-static int wifi_get_bmiss_threshold(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_get_bmiss_threshold(uint64_t mgmt_request, struct net_if *iface,
 				    void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -412,7 +412,7 @@ static int wifi_get_bmiss_threshold(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_BMISS_THRESHOLD, wifi_get_bmiss_threshold);
 
-static int wifi_set_phy_mode(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_set_phy_mode(uint64_t mgmt_request, struct net_if *iface,
 			     void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -433,7 +433,7 @@ static int wifi_set_phy_mode(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_PHY_MODE, wifi_set_phy_mode);
 
-static int wifi_get_phy_mode(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_get_phy_mode(uint64_t mgmt_request, struct net_if *iface,
 			     void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -454,7 +454,7 @@ static int wifi_get_phy_mode(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_PHY_MODE, wifi_get_phy_mode);
 
-static int wifi_get_boot_reason(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_get_boot_reason(uint64_t mgmt_request, struct net_if *iface,
 			       void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -475,7 +475,7 @@ static int wifi_get_boot_reason(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_BOOT_REASON, wifi_get_boot_reason);
 
-static int wifi_get_power_mode(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_get_power_mode(uint64_t mgmt_request, struct net_if *iface,
 			       void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -496,7 +496,7 @@ static int wifi_get_power_mode(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_POWER_MODE, wifi_get_power_mode);
 
-static int wifi_get_mac_address(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_get_mac_address(uint64_t mgmt_request, struct net_if *iface,
 				void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -517,7 +517,7 @@ static int wifi_get_mac_address(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_MAC_ADDRESS, wifi_get_mac_address);
 
-static int wifi_get_concurrency_mode(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_get_concurrency_mode(uint64_t mgmt_request, struct net_if *iface,
 				     void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -538,7 +538,7 @@ static int wifi_get_concurrency_mode(uint32_t mgmt_request, struct net_if *iface
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_CONCURRENCY_MODE, wifi_get_concurrency_mode);
 
-static int wifi_get_operation_mode(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_get_operation_mode(uint64_t mgmt_request, struct net_if *iface,
 				   void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -559,7 +559,7 @@ static int wifi_get_operation_mode(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_OPERATION_MODE, wifi_get_operation_mode);
 
-static int wifi_set_rate(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_set_rate(uint64_t mgmt_request, struct net_if *iface,
 			 void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -580,7 +580,7 @@ static int wifi_set_rate(uint32_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_RATE, wifi_set_rate);
 
-static int wifi_get_rate(uint32_t mgmt_request, struct net_if *iface,
+static int wifi_get_rate(uint64_t mgmt_request, struct net_if *iface,
 			 void *data, size_t len)
 {
 	const struct device *dev = net_if_get_device(iface);
