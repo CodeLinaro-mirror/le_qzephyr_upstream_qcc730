@@ -96,7 +96,7 @@ void rram_boot_early_init(void *sbl_args);
 
 LOG_MODULE_REGISTER(soc, CONFIG_SOC_LOG_LEVEL);
 
-void soc_reset_hook(void)
+void soc_early_reset_hook(void)
 {
     void *sbl_args = NULL;
     
