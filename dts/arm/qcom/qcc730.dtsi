@@ -28,6 +28,7 @@
 			power-state-name = "soft-off";
 			min-residency-us = <3000000>;
 			exit-latency-us = <500000>;
+			status = "disabled";
 		};
 	};
 
@@ -39,7 +40,10 @@
 			device_type = "cpu";
 			compatible = "arm,cortex-m4";
 			reg = <0>;
-			cpu-power-states = <&softoff &s2ram>;
+			/* new zephyr version require this list to be ordered */
+			/* sorted by min + exit time in ascending order. */
+			/* cpu-power-states = <&softoff &s2ram>; */
+			cpu-power-states = <&s2ram &softoff>;
 			clock-frequency = <DT_FREQ_M(60)>;
 		};
 	};
