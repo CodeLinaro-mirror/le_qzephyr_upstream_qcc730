@@ -22,10 +22,6 @@ manifest:
         # strictly needed by the application.
         name-allowlist:
           - zcbor      # for c++ programming
-    - name: cmsis
-      remote: zephyrproject-rtos
-      revision: cmsis.qzephyr.2.0
-      path: modules/hal/cmsis
     - name: cmsis_6
       remote: zephyrproject-rtos
       revision: cmsis_6.qzephyr.2.0
