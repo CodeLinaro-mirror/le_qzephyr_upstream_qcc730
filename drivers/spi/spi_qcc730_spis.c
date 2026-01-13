@@ -38,6 +38,13 @@ QCSPI_CONFIG_SPI_ACC_CTRL is unset
 */
 #define QCC730_QCSPI_HOST_CONFIG 0x0a050800
 
+#define QCSPI_SLAVE_HOST_INT0_MASK      0x1000000
+#define QCSPI_SLAVE_HOST_INT1_MASK      0x2000000
+#define QCSPI_SLAVE_HOST_INT2_MASK      0x4000000
+
+#define QCSPI_SLAVE_ENABLE              0x1
+#define QCSPI_SLAVE_DISABLE             0x0
+
 const struct device *gpio_dev = DEVICE_DT_GET(DT_NODELABEL(gpioa));
 
 struct spi_qcc730_data {
@@ -78,6 +85,11 @@ static int spi_qcc730_spis_release(const struct device *dev, const struct spi_co
 	return 0;
 }
 
+/* Forward declaration for ring service handler */
+#ifdef CONFIG_RING_SERVICE
+extern void ring_rx_handler(void);
+#endif
+
 /**
  * @brief QCSPI interrupt handler
  *
@@ -88,6 +100,9 @@ static void spi_qcc730_spis_isr(const struct device *dev)
 	const struct spi_qcc730_cfg *cfg = dev->config;
 	QCSPI_SLAVE_BASE_qcspi_slave_Type *regs = cfg->regs;
 	struct spi_qcc730_data *data = dev->data;
+	uint32_t int_status;
+
+	int_status = regs->QCSPI_SLAVE_R_SPI_SLAVE_IRQ_STATUS.reg;
 
 	/* Clear the interrupt */
 	regs->QCSPI_SLAVE_R_SPI_SLAVE_IRQ_CLR.bit.HOST_INT0_IRQ_CLR = 1U;
@@ -98,7 +113,19 @@ static void spi_qcc730_spis_isr(const struct device *dev)
 	}
 #endif
 
-	LOG_DBG("SPI Interrupt triggered!");
+	if (int_status & QCSPI_SLAVE_HOST_INT0_MASK) {
+#ifdef CONFIG_RING_SERVICE
+	/* Notify ring service if enabled */
+	ring_rx_handler();
+#endif	
+	}
+	
+	if (regs->QCSPI_SLAVE_R_SPI_SLAVE_SW_RST_IRQ.bit.SW_RST_REQ_IRQ) {
+		regs->QCSPI_SLAVE_R_SPI_SLAVE_SW_RESET.bit.SW_RESET = QCSPI_SLAVE_ENABLE;
+		LOG_ERR("SPI RESET Interrupt triggered!");
+	}
+
+	//LOG_DBG("SPI Interrupt triggered!");
 }
 
 /**
@@ -179,6 +206,9 @@ static int spi_qcc730_spis_init(const struct device *dev)
 
 	/* Enable HOST_INT0 interrupt */
 	regs->QCSPI_SLAVE_R_SPI_SLAVE_IRQ_EN.bit.HOST_INT0_IRQ_EN = 1U;
+
+	/* Enable SW_RESET_IRQ_EN interrupt */
+	regs->QCSPI_SLAVE_R_SPI_SLAVE_IRQ_EN.bit.SW_RESET_IRQ_EN = 1U;
 
 	spi_context_unlock_unconditionally(&data->ctx);
 
