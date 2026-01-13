@@ -61,7 +61,7 @@ else:
 class qccsdkRunner(ZephyrBinaryRunner):
     """qccsdk runner for flashing QCC730 with nvm_programmer.py."""
     def __init__(self, cfg, memory_type, jtag, chip_erase=False, all=False, reset=False, bdf=False, 
-                 read_rram=False, read_addr=None, read_len=None, read_file=None):
+                 read_rram=False, read_addr=None, read_len=None, read_file=None, sign=False):
         super().__init__(cfg)
         self.m = memory_type
         self.j = jtag
@@ -73,6 +73,7 @@ class qccsdkRunner(ZephyrBinaryRunner):
         self.read_addr = read_addr
         self.read_len = read_len
         self.read_file = read_file
+        self.sign = sign
 
     @classmethod
     def name(cls):
@@ -88,6 +89,7 @@ class qccsdkRunner(ZephyrBinaryRunner):
         parser.add_argument("-j", "--jtag", choices=["ch347", "jlink"], action="store", help="Jtag: ch347 or jlink", default="ch347")
         parser.add_argument("-e", "--chip-erase", action="store_true", help="Erase chip")
         parser.add_argument("-a", "--all", action="store_true", help="Write ftd, SBL, regdb and Zephyr app image")
+        parser.add_argument("--sign", action="store_true", help="Use signed ELF files instead of HASHED ELF files")
         parser.add_argument("--bdf", action="store_true", help="Write bdf [WARNING: may affect WiFi RF performance]")
         parser.add_argument("--read-rram", action="store_true", help="Read RRAM instead of flashing (requires --read-addr, --read-len, --read-file)")
         parser.add_argument("--read-addr", type=str, help="Start address for reading RRAM (hex format, e.g., 0x208000)")
@@ -100,7 +102,7 @@ class qccsdkRunner(ZephyrBinaryRunner):
         return qccsdkRunner(cfg, memory_type=args.memory_type, jtag=args.jtag, 
                           chip_erase=args.chip_erase, all=args.all, reset=args.reset, bdf=args.bdf,
                           read_rram=args.read_rram, read_addr=args.read_addr, 
-                          read_len=args.read_len, read_file=args.read_file)
+                          read_len=args.read_len, read_file=args.read_file, sign=args.sign)
     
     def do_run(self, command: str, **kwargs):
         if command == "flash" or command == "debug":
@@ -151,11 +153,37 @@ class qccsdkRunner(ZephyrBinaryRunner):
         
         hashed_elf_name = Path(bin_name).parent / (name_without_ext + "_HASHED.elf")
         print("hashed_elf_name: "+str(hashed_elf_name))
+        
+        # Get board name for dynamic path construction
+        board_name = os.path.basename(self.cfg.board_dir)
+        
+        # If --sign flag is set, use signed ELF files instead of HASHED ELF files
+        if self.sign:
+            # Path to signed application ELF
+            signed_app_elf = Path(bin_name).parent / "zephyr_sec_app" / "qcc730" / "app" / "zephyr.elf"
+            # Path to signed SBL ELF (use dynamic board name)
+            build_dir = Path(bin_name).parent.parent
+            signed_sbl_elf = build_dir / "modules" / "hal_qcom" / "qboot" / "zephyr_sec_sbl" / "qcc730" / "sbl" / f"{board_name}_sbl.elf"
+            
+            # Check if signed files exist
+            if not signed_app_elf.exists():
+                raise FileNotFoundError(f"Signed application ELF not found: {signed_app_elf}\nPlease run 'west build -t sign' first")
+            if self.all and not signed_sbl_elf.exists():
+                raise FileNotFoundError(f"Signed SBL ELF not found: {signed_sbl_elf}\nPlease run 'west build -t sign' first")
+            
+            # Use signed ELF files
+            hashed_elf_name = signed_app_elf
+            if self.all:
+                sbl_path = signed_sbl_elf
+            
+            self.logger.info(f"Using signed application ELF: {signed_app_elf}")
+            if self.all:
+                self.logger.info(f"Using signed SBL ELF: {signed_sbl_elf}")
+        
         #wifi related
         regdb_path = Path(blobs_path, "regdb.bin")
         
         print("board_dir: "+str(self.cfg.board_dir))
-        board_name = os.path.basename(self.cfg.board_dir)
         bdf_filename = self.build_conf.get("CONFIG_QCC730_BDF_FILE")
         bdf_path = Path(blobs_path, bdf_filename)
         cmd_pre = 'python %s -s %s -i %s --nvm-name rram --server-script %s '%(nvm_programmer, self.j, str(prg_path), str(cfgpath))
