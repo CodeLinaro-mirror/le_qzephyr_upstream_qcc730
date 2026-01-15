@@ -343,6 +343,8 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
         e_wpa_ver = QAPI_WLAN_AUTH_WPA_PSK_E;
         break;
     case WIFI_SECURITY_TYPE_SAE:
+    case WIFI_SECURITY_TYPE_SAE_H2E:
+    case WIFI_SECURITY_TYPE_SAE_AUTO:
         e_wpa_ver = QAPI_WLAN_AUTH_WPA3_SAE_E;
 	e_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
         break;
@@ -394,6 +396,8 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
         psk = params->psk;
         psk_length = params->psk_length;
         if (((params->security == WIFI_SECURITY_TYPE_SAE)
+		||(params->security == WIFI_SECURITY_TYPE_SAE_H2E)
+		||(params->security == WIFI_SECURITY_TYPE_SAE_AUTO)
 		||(params->security == WIFI_SECURITY_TYPE_WPA_AUTO_PERSONAL))
 			&& (params->sae_password)) {
             psk = params->sae_password;
