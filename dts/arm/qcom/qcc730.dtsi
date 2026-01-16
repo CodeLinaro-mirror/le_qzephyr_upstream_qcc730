@@ -20,7 +20,8 @@
 			compatible = "zephyr,power-state";
 			power-state-name = "suspend-to-ram";
 			min-residency-us = <30000>;
-			exit-latency-us  = <0>;
+			exit-latency-us  = <5000>;
+			status = "okay";
 		};
 
 		softoff: softoff {
@@ -176,7 +177,7 @@
 				interrupts = <0x08 0x2>;
 				clocks = <&clock_controller QCC730_CLOCK_QTIMER>;
 				id = <4>;
-				status = "disabled";
+				status = "okay";
 			};
 		};
 
