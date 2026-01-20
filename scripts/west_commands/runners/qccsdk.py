@@ -379,7 +379,9 @@ class qccsdkRunner(ZephyrBinaryRunner):
                 raise FileNotFoundError(f"OpenOCD config file not found: {openocdcfgpath}")
             exe_name = "openocd.exe" if os.name == "nt" else "openocd"
             openocd_path = Path(environ.get("OPENOCD_PATH")) / exe_name
-            server_cmd = [str(openocd_path), "-f", str(openocdcfgpath), "-l", "openocd.log"]
+            # For debug/attach, don't reset - just connect to running target
+            # The config file will run 'init' but we override to skip 'reset halt'
+            server_cmd = [str(openocd_path), "-f", str(openocdcfgpath), "-c", "init", "-l", "openocd.log"]
         
         self.require(server_cmd[0])
         self.require(self.cfg.gdb)
