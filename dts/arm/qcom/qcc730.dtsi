@@ -114,7 +114,7 @@
 			status = "disabled";
 		};
 
-		qcspi: qcspi@01264000 {
+		qcspi: qcspi@1264000 {
 			compatible = "qcom,qcc730-spi";
 			cs-gpios = <&gpioa 1 GPIO_ACTIVE_LOW>;
 			pinctrl-0 = <&qcspi_default>;
