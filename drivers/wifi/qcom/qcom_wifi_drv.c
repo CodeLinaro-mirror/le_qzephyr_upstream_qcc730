@@ -28,6 +28,7 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #define SCAN_MODE_BLOCKING 1
 #define SCAN_MODE_UNBLOCKING 2
 #define NT_DEV_STA_ID 1
+#define EDGE_BAND_10MHz 10
 
 struct qwifi_bss_status_t {
     bool connected;
@@ -1947,15 +1948,14 @@ static int qwifi_drv_reg_domain(const struct device *dev, struct wifi_reg_domain
                 r, start_freq, end_freq, reg_power, flags);
 
             uint16_t step = (start_freq >= 5000) ? 20 : 5;
-            for (uint16_t freq = start_freq; freq <= end_freq && idx < max_out; freq += step) {
+            for (uint16_t freq = start_freq + EDGE_BAND_10MHz; freq <= end_freq - EDGE_BAND_10MHz && idx < max_out; freq += step) {
                 if ((step == 5 && (freq < 2412 || (freq > 2484 && freq < 5000))) ||
                     (step == 20 && (freq < 5180 || freq > 5825))) {
                     continue;
                 }
                 if (step == 5 && freq > 2472 && freq != 2484)
                     continue;
-                if (freq == 2484 && !(start_freq <= 2484 && end_freq >= 2484))
-                    continue;
+
                 regd->chan_info[idx].center_frequency = freq;
                 regd->chan_info[idx].max_power = reg_power;
                 regd->chan_info[idx].supported = 1;
