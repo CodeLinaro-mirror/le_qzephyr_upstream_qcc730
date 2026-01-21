@@ -82,7 +82,7 @@
 			interrupts = <0x30 0x2>;
 			resets = <&reset QCC730_RESET(PMU_SOFT_RESET, 20U)>;
 			clocks = <&clock_controller QCC730_CLOCK_GPIO>;
-			status = "disabled";
+			status = "okay";
 			ngpios = <15>;
 		};
 
