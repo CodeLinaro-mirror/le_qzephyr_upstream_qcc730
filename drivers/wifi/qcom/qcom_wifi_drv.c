@@ -1710,6 +1710,11 @@ qapi_Status_t qwifi_drv_eth_rx_cb(void *drv_intf_data, void *bufp, uint16_t len,
     struct net_if *iface = (struct net_if *)drv_intf_data;
 
     ARG_UNUSED(hal_data);
+    const struct device *dev = net_if_get_device(iface);
+    
+#ifdef CONFIG_PM_DEVICE
+    pm_device_busy_set(dev);
+#endif
 
     pkt = net_pkt_rx_alloc_with_buffer(iface, len, AF_UNSPEC, 0, K_MSEC(100));
     if (!pkt) {
