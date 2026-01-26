@@ -1,3 +1,9 @@
+/**
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include <zephyr/logging/log.h>
 #include <zephyr/net/net_core.h>
 #include <zephyr/net/net_if.h>
