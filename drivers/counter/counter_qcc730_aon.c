@@ -90,7 +90,7 @@ static inline int set_alarm(const struct device *dev, uint8_t chan_id,
 	data->chan_id = chan_id;
 	data->alarm_cfg = *alarm_cfg;
 	
-	uint32_t tick_us = counter_ticks_to_us(dev,alarm_cfg->ticks);
+	uint64_t tick_us = counter_ticks_to_us(dev,alarm_cfg->ticks);
 
 	extern aon_sleep_info_t last_sleep_info;	
 	aon_timer_set(AON_CLIENT_OS,(uint64_t)tick_us);
