@@ -440,7 +440,7 @@ static DEVICE_API(counter, qtmr_qcc730_api) = {
 	DEVICE_DT_INST_DEFINE(inst, qtmr_qcc730_init_##inst, PM_DEVICE_DT_INST_GET(inst),          \
 			      &qtmr_qcc730_data##inst,                                             \
 			      &qtmr_qcc730_cfg##inst,                                              \
-			      POST_KERNEL,                                                         \
+			      PRE_KERNEL_1,                                                         \
 			      CONFIG_COUNTER_QCC730_INIT_PRIORITY, &qtmr_qcc730_api);
 
 DT_INST_FOREACH_STATUS_OKAY(QTMR_QCC730_INIT)
