@@ -66,15 +66,15 @@ static struct qwifi_drv_dev_cfg_t g_wifi_dev_cfg = {
 };
 
 
-static void wifi_activity_timer_cb(bool isBusy);
+static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity);
 static TimerHandle_t wifi_activity_timer;
 
 void clear_wifi_busy(void);
 
 
-static uint32_t wifi_activity_interval_ms = 30; 
+static uint32_t wifi_activity_interval_ms = 30;
 
-void wifi_activity_timer_cb(bool isBusy)
+static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity)
 {
     const struct device *wifi_dev = device_get_binding("qwifi_sta");
     if (!wifi_dev) {
@@ -85,12 +85,15 @@ void wifi_activity_timer_cb(bool isBusy)
         LOG_ERR("WiFi device not ready\r\n");
         return ;
     }
-    
+
     //if wifi do not busy in check period, clear it
-    if(!isBusy && pm_device_is_busy(wifi_dev))
-    {
-        LOG_DBG("wifi busy clear\r\n");
-        pm_device_busy_clear(wifi_dev);
+    if (activity == PM_WLAN_ACTIVITY_IDLE) {
+        if(pm_device_is_busy(wifi_dev)) {
+            LOG_DBG("wifi busy clear\r\n");
+            pm_device_busy_clear(wifi_dev);
+        }
+    } else {
+        pm_device_busy_set(wifi_dev);
     }
 }
 
@@ -585,7 +588,7 @@ static int qwifi_drv_get_tx_power(const struct device *dev, struct qcom_wifi_get
         LOG_ERR("get tx power fail for device %d",deviceId);
         return -EIO;
     }
-    
+
     LOG_INF("get real_power: %d dbm", power.real_power);
     LOG_INF("get ctl_power: %d dbm", power.ctl_power);
     LOG_INF("get reg_power: %d dbm", power.reg_power);
@@ -1765,7 +1768,7 @@ static void qwifi_drv_intf_init(struct net_if *iface)
 
 #ifdef CONFIG_PM_DEVICE
 
-    qapi_WLAN_Activity_Register_CB(wifi_activity_timer_cb);
+    qapi_WLAN_Activity_Register_CB(wifi_activity_cb);
     qapi_WLAN_Start_Check_Activity();
 
     pm_device_busy_set(dev);
@@ -1886,6 +1889,7 @@ static int device_wlan_pm_action(const struct device *dev, enum pm_device_action
             ret = qapi_WLAN_Suspend();
             if(ret != QAPI_OK)
             {
+                pm_device_busy_set(dev);
                 LOG_ERR("%s: qapi_WLAN_Suspend return:%d", __FUNCTION__, ret);
                 ret = -ret;
             }
@@ -1921,21 +1925,21 @@ static int qwifi_drv_channel(const struct device *dev, struct wifi_channel_info 
         uint32_t channel[2] = {0, 0};
         channel[0] = channel_info->channel;
         channel[1] = 0;
-        
-        qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId, 
-                                               __QAPI_WLAN_PARAM_GROUP_WIRELESS, 
+
+        qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                                               __QAPI_WLAN_PARAM_GROUP_WIRELESS,
                                                __QAPI_WLAN_PARAM_GROUP_WIRELESS_CHANNEL,
                                                (void *)&channel, sizeof(channel), false);
         if (ret != QAPI_OK) {
             LOG_ERR("%s:%d Set channel %u failed: %d", __func__, __LINE__, channel_info->channel, ret);
             return -EAGAIN;
         }
-        
+
         return 0;
     } else if (channel_info->oper == WIFI_MGMT_GET) {
         qapi_WLAN_Status_t wifi_status = {0};
         uint32_t length = sizeof(wifi_status);
-        qapi_Status_t ret = qapi_WLAN_Get_Param(deviceId, 
+        qapi_Status_t ret = qapi_WLAN_Get_Param(deviceId,
                                                __QAPI_WLAN_PARAM_GROUP_WIRELESS,
                                                __QAPI_WLAN_PARAM_GROUP_WIRELESS_WIFI_STATUS,
                                                &wifi_status, &length);
@@ -1943,7 +1947,7 @@ static int qwifi_drv_channel(const struct device *dev, struct wifi_channel_info 
             LOG_ERR("%s:%d Get wifi status failed: %d", __func__, __LINE__, ret);
             return -EAGAIN;
         }
-        
+
         channel_info->channel = wifi_status.channel;
         return 0;
     }
@@ -2007,7 +2011,7 @@ static int qwifi_drv_reg_domain(const struct device *dev, struct wifi_reg_domain
         if (ret != QAPI_OK) {
             LOG_ERR("%s:%d qapi_WLAN_Get_Regulatory_Info failed: %d", __func__, __LINE__, ret);
             regd->num_channels = 0;
-            return 0; 
+            return 0;
         }
 
         if (!regd->chan_info) {
@@ -2075,9 +2079,9 @@ static int qwifi_power_save(const struct device *dev, struct wifi_ps_params *par
 		    }
             ret = wlan_set_sta_slptime(0 , params->listen_interval , 0);
             break;
-        
+
         // case WIFI_PS_PARAM_MODE:
-      
+
         //     break;
 
     }
