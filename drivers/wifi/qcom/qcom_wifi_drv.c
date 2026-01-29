@@ -89,7 +89,6 @@ static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity)
     //if wifi do not busy in check period, clear it
     if (activity == PM_WLAN_ACTIVITY_IDLE) {
         if(pm_device_is_busy(wifi_dev)) {
-            LOG_DBG("wifi busy clear\r\n");
             pm_device_busy_clear(wifi_dev);
         }
     } else {
