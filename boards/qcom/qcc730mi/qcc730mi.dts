@@ -44,3 +44,7 @@
 &qspi_nor_flash3 {
 	status = "okay";
 };
+
+&watchdog0 {
+    status = "disabled";
+};
