@@ -248,7 +248,28 @@ class qccsdkRunner(ZephyrBinaryRunner):
             if self.m == "flash" :
                 self.logger.info(f'Flashing firmware description table in flash: {fdt_flash_name}')
                 os.system('%s -b 0x0 -f %s'%(cmd_flash_pre, str(fdt_flash_name)))
-                cmd = '%s -b 0x43000 -f %s '%(cmd_flash_pre, hashed_elf_name)
+                
+                # Read flash address from generated_download_table.xml
+                flash_addr = 0x23000  # Default fallback address
+                generated_table_path = Path(blobs_path, "generated_download_table.xml")
+                if generated_table_path.exists():
+                    try:
+                        tree = ET.parse(generated_table_path)
+                        root = tree.getroot()
+                        # Find the program entry for zephyr_HASHED.elf in flash
+                        for program in root.findall(".//program[@location='flash']"):
+                            filename = program.get('filename', '')
+                            if 'zephyr_HASHED.elf' in filename:
+                                begin_addr = int(program.get('begin', '0'))
+                                flash_addr = begin_addr
+                                self.logger.info(f'Found zephyr_HASHED.elf flash address from generated_download_table.xml: 0x{flash_addr:X}')
+                                break
+                    except Exception as e:
+                        self.logger.warning(f'Failed to parse generated_download_table.xml, using default address 0x23000: {e}')
+                else:
+                    self.logger.warning(f'generated_download_table.xml not found at {generated_table_path}, using default address 0x23000')
+                
+                cmd = '%s -b 0x%X -f %s '%(cmd_flash_pre, flash_addr, hashed_elf_name)
         else:
             print(f"Error: flash failed - unknown memory type {self.m}")
             raise
