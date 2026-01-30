@@ -338,6 +338,9 @@ static void qwifi_drv_event_handler(uint8_t dev_id, uint32_t event, void *contex
     case QAPI_WLAN_DISCONNECT_CB_E:
         qwifi_disconnect_event(context, private);
         break;
+    case QAPI_WLAN_CHANNEL_SWITCH_CB_E:
+        LOG_INF("CSA Done.");
+        break;
     default:
         LOG_WRN("%s:%d event: %d, ignored.", __FUNCTION__, __LINE__, event);
         break;
@@ -1350,6 +1353,22 @@ static int qwifi_drv_set_bmiss_threshold(const struct device *dev, struct qcom_w
     return 0;
 }
 
+static int qwifi_drv_set_sap_csa(const struct device *dev, struct qcom_wifi_csa_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t dev_id = dev_data->active_device;
+
+    /* not support 6G, default is false */
+    qapi_Status_t ret = qapi_WLAN_Sap_Csa(dev_id, params->switch_mode, params->new_channel, false, params->switch_count);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to CSA, ret %d, switch mode %d, switch channel number %d, channel switch count %d",
+                ret, params->switch_mode, params->new_channel, params->switch_count);
+        return -EINVAL;
+    }
+
+    return ret;
+}
+
 /**
  * @brief Get RTS/CTS protection enable status.
  *
@@ -1837,6 +1856,7 @@ static int qwifi_drv_dev_init(const struct device *dev)
         .set_aggregation    = qwifi_drv_set_aggregation,
         .set_amsdu_rx       = qwifi_drv_set_amsdu_rx,
         .set_rate           = qwifi_drv_set_rate,
+        .set_sap_csa        = qwifi_drv_set_sap_csa,
 
         .get_rts_cts        = qwifi_drv_get_rts_cts,
         .get_rts_rate       = qwifi_drv_get_rts_rate,

@@ -74,6 +74,8 @@ enum qcom_net_request_wifi_cmd {
 	NET_REQUEST_WIFI_CMD_QCOM_GET_OPERATION_MODE,
 	/** Get boot reason */
 	NET_REQUEST_WIFI_CMD_QCOM_GET_BOOT_REASON,
+	/** Channel Switch Announcement */
+	NET_REQUEST_WIFI_CMD_QCOM_SET_SAP_CSA,
 	NET_REQUEST_WIFI_CMD_QCOM_MAX,
 };
 
@@ -218,6 +220,11 @@ NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_CONCURRENCY_MODE);
 #define NET_REQUEST_WIFI_QCOM_GET_OPERATION_MODE					\
 	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_GET_OPERATION_MODE)
 NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_OPERATION_MODE);
+
+/* Channel Switch Announcement */
+#define NET_REQUEST_WIFI_QCOM_SET_SAP_CSA					\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_SET_SAP_CSA)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_SAP_CSA);
 
 /** Set TX Power parameters */
 struct qcom_wifi_set_tx_power_params{
@@ -419,6 +426,16 @@ struct qcom_wifi_unit_test_params {
 	uint8_t module_id;
 	uint16_t num_args;
 	uint32_t args[16];
+};
+
+/** channel switch announcement */
+struct qcom_wifi_csa_params {
+	/** Channel Switch Mode */
+	uint8_t switch_mode;
+	/** Channel Switch Count */
+	uint8_t switch_count;
+	/** New Channel Number */
+	uint16_t new_channel;
 };
 
 /** Wi-Fi management API */
@@ -888,6 +905,18 @@ struct qcom_wifi_mgmt_ops {
 	 */
 	int (*get_rate)(const struct device *dev,
 			struct qcom_wifi_set_rate_params *params);
+
+	/**
+	 * @brief Channel switch announcement for a Soft AP.
+	 *
+	 * Calls qapi_WLAN_Sap_Csa for channel switch announcement.
+	 *
+	 * @param dev Pointer to the driver device instance.
+	 * @param params Pointer to qapi_WLAN_Set_Rate_Params_t; send channel switch
+	 * announcement frame to swtich new channel.
+	 * @return 0 if ok, < 0 if error.
+	 */
+	int (*set_sap_csa)(const struct device *dev, struct qcom_wifi_csa_params *params)
 };
 
 #endif

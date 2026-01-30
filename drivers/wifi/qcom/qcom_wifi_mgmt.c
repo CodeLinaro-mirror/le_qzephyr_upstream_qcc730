@@ -606,3 +606,24 @@ static int wifi_get_rate(uint64_t mgmt_request, struct net_if *iface,
 	return api->get_rate(dev, params);
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_RATE, wifi_get_rate);
+
+static int wifi_set_sap_csa(uint64_t mgmt_request, struct net_if *iface,
+			 void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_csa_params *params = data;
+
+	if (api == NULL || api->set_sap_csa == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->set_sap_csa(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_SAP_CSA, wifi_set_sap_csa);
