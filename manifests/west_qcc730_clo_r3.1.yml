@@ -12,11 +12,10 @@ manifest:
       url-base: https://git.codelinaro.org/clo/le/qzephyr/zephyrproject-rtos
   defaults:
     remote: zephyrproject-rtos
-    revision: main
+    revision: IOT.ZE.1.0.r1-01100-QCC730.0
   projects:
     - name: zephyr
       remote: zephyrproject-rtos
-      revision: kernel.qzephyr.2.0.r1-rel
       import:
         # By using name-allowlist we can clone only the modules that are
         # strictly needed by the application.
@@ -24,30 +23,23 @@ manifest:
           - zcbor      # for c++ programming
     - name: mbedtls
       remote: zephyrproject-rtos
-      revision: mbedtls.qzephyr.2.0.r1-rel
       path: modules/crypto/mbedtls
     - name: hostap
       remote: zephyrproject-rtos
-      revision: hostap.qzephyr.2.0.r1-rel
       path: modules/lib/hostap
     - name: littlefs
       remote: zephyrproject-rtos
-      revision: littlefs.qzephyr.2.0.r1-rel
       path: modules/fs/littlefs
     - name: segger
       remote: zephyrproject-rtos
-      revision: segger.qzephyr.2.0.r1-rel
       path: modules/debug/segger
     - name: qapp
       remote: qoss
-      revision: qapp.qzephyr.1.0.r1-rel
     - name: qhal
       remote: upstream
-      revision: hal.qhal.1.0.r1-rel
       path: modules/hal/qcom
     - name: cmsis_6
       remote: zephyrproject-rtos
-      revision: cmsis.qzephyr.2.0.r1-rel
       path: modules/hal/cmsis_6
   self:
     west-commands: zephyr/scripts/west-commands.yml

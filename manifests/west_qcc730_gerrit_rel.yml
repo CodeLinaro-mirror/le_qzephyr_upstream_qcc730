@@ -16,31 +16,31 @@ manifest:
   projects:
     - name: zephyr
       remote: zephyrproject-rtos
-      revision: kernel.qzephyr.1.0.r1-rel
+      revision: kernel.qzephyr.2.0.r1-rel
       import:
         # By using name-allowlist we can clone only the modules that are
         # strictly needed by the application.
         name-allowlist:
           - zcbor      # for c++ programming
-    - name: cmsis
+    - name: cmsis_6
       remote: zephyrproject-rtos
-      revision: cmsis.qzephyr.1.0.r1-rel
-      path: modules/hal/cmsis
+      revision: cmsis.qzephyr.2.0.r1-rel
+      path: modules/hal/cmsis_6
     - name: mbedtls
       remote: zephyrproject-rtos
-      revision: mbedtls.qzephyr.1.0.r2-rel
+      revision: mbedtls.qzephyr.2.0.r1-rel
       path: modules/crypto/mbedtls
     - name: hostap
       remote: zephyrproject-rtos
-      revision: hostap.qzephyr.1.0.r1-rel
+      revision: hostap.qzephyr.2.0.r1-rel
       path: modules/lib/hostap
     - name: littlefs
       remote: zephyrproject-rtos
-      revision: littlefs.qzephyr.1.0.r1-rel
+      revision: littlefs.qzephyr.2.0.r1-rel
       path: modules/fs/littlefs
     - name: segger
       remote: zephyrproject-rtos
-      revision: segger.qzephyr.1.0.r1-rel
+      revision: segger.qzephyr.2.0.r1-rel
       path: modules/debug/segger
     - name: qapp
       remote: qoss
