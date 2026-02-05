@@ -18,6 +18,8 @@
 #include <zephyr/drivers/reset.h>
 #include <zephyr/logging/log.h>
 #include <hal_aon.h>
+#include <aon_tmr_mgr.h>
+#include <qurt_timer.h>
 
 #define LOG_MODULE_NAME 		counter_qcc730
 LOG_MODULE_REGISTER(LOG_MODULE_NAME, CONFIG_COUNTER_LOG_LEVEL);
@@ -25,6 +27,8 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME, CONFIG_COUNTER_LOG_LEVEL);
 #define AON_MAX_TOP_VALUE		((1ull << 48) - 1)
 
 typedef void(*irq_init_t)();
+
+extern void nt_socpm_slp_tmr_set(uint64_t sleep_time);
 
 struct qcc730_counter_config {
 	struct counter_config_info counter_info;
@@ -38,13 +42,16 @@ struct qcc730_counter_data {
 
 static int qcc730_counter_get_value(const struct device *dev, uint32_t *ticks)
 {
-	*ticks = qaon_get_counter32();
+
+	*ticks = counter_us_to_ticks(dev,hres_timer_curr_time_us());
+
 	return 0;
 }
 
 static int qcc730_counter_get_value_64(const struct device *dev, uint64_t *ticks)
 {
-	*ticks = qaon_get_counter64();
+	/* TODO: change to uint64_t format*/
+	*ticks = counter_us_to_ticks(dev,hres_timer_curr_time_us());
 	return 0;
 }
 
@@ -82,8 +89,15 @@ static inline int set_alarm(const struct device *dev, uint8_t chan_id,
 	struct qcc730_counter_data *data = dev->data;
 	data->chan_id = chan_id;
 	data->alarm_cfg = *alarm_cfg;
+	
+	uint64_t tick_us = counter_ticks_to_us(dev,alarm_cfg->ticks);
 
-	qaon_set_alarm(alarm_cfg->ticks);
+	extern aon_sleep_info_t last_sleep_info;	
+	aon_timer_set(AON_CLIENT_OS,(uint64_t)tick_us);
+	aon_get_min_expiry(&last_sleep_info);
+	
+	nt_socpm_slp_tmr_set(((uint64_t)last_sleep_info.sleep_us));
+
 	return 0;
 }
 
@@ -120,9 +134,7 @@ static int qcc730_counter_init(const struct device *dev)
 
 	config->irq_init();
 
-	qaon_init();
-	qcc730_counter_start(dev);
-
+	aon_manager_init(hres_timer_curr_time_us);
 	return 0;
 }
 

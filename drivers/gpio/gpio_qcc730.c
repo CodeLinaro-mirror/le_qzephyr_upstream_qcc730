@@ -358,6 +358,29 @@ static int gpio_qcc730_init(const struct device *dev)
 }
 
 #ifdef CONFIG_PM_DEVICE
+static int gpio_730_restore(const struct device *dev)
+{
+	int ret = 0;
+	const struct gpio_qcc730_cfg *config = dev->config;
+
+	/* GPIO root clock enable */
+	if (config->clock_dev) {
+		if (!device_is_ready(config->clock_dev)) {
+			return -ENODEV;
+		}
+		ret = clock_control_on(config->clock_dev, config->clock_subsys);
+		if (ret < 0 && ret != -EALREADY) {
+			return ret;
+		}
+	}
+
+	/* reset the gpio config 
+	TODO: need handle the wfi failure case and call in ram_minimum_code
+	*/
+    nt_gpio_preset();
+
+	return 0;
+}
 
 static int gpio_qcc730_deinit(const struct device *dev)
 {
@@ -399,10 +422,12 @@ static int gpio_qcc730_pm_action(const struct device *dev, enum pm_device_action
 
 	switch (action) {
 	case PM_DEVICE_ACTION_SUSPEND:
-		ret = gpio_qcc730_deinit(dev);
+		/*ret = gpio_qcc730_deinit(dev); */
 		break;
 	case PM_DEVICE_ACTION_RESUME:
-		ret = gpio_qcc730_init(dev);
+		/* ret = gpio_qcc730_init(dev);
+		ret = gpio_730_restore(dev);*/
+
 		break;
 	default:
 		return -ENOTSUP;

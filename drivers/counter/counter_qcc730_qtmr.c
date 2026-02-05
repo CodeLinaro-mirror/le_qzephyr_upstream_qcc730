@@ -380,12 +380,14 @@ static int qtmr_qcc730_deinit(const struct device *dev)
 
 static int qtmr_qcc730_pm_action(const struct device *dev, enum pm_device_action action)
 {
+	const struct qtmr_qcc730_cfg *cfg = dev->config;
+	// LOG_ERR("qtmr_qcc730_pm_action frame %d", cfg->frame_id);
 	switch (action) {
 	case PM_DEVICE_ACTION_SUSPEND:
-		qtmr_qcc730_deinit(dev);
+		// qtmr_qcc730_deinit(dev);
 		break;
 	case PM_DEVICE_ACTION_RESUME:
-		qtmr_qcc730_init(dev);
+		// qtmr_qcc730_init(dev);
 		break;
 	default:
 		return -ENOTSUP;
@@ -438,7 +440,7 @@ static DEVICE_API(counter, qtmr_qcc730_api) = {
 	DEVICE_DT_INST_DEFINE(inst, qtmr_qcc730_init_##inst, PM_DEVICE_DT_INST_GET(inst),          \
 			      &qtmr_qcc730_data##inst,                                             \
 			      &qtmr_qcc730_cfg##inst,                                              \
-			      POST_KERNEL,                                                         \
+			      PRE_KERNEL_1,                                                         \
 			      CONFIG_COUNTER_QCC730_INIT_PRIORITY, &qtmr_qcc730_api);
 
 DT_INST_FOREACH_STATUS_OKAY(QTMR_QCC730_INIT)

@@ -20,7 +20,8 @@
 			compatible = "zephyr,power-state";
 			power-state-name = "suspend-to-ram";
 			min-residency-us = <30000>;
-			exit-latency-us  = <0>;
+			exit-latency-us  = <5000>;
+			status = "okay";
 		};
 
 		softoff: softoff {
@@ -28,6 +29,7 @@
 			power-state-name = "soft-off";
 			min-residency-us = <3000000>;
 			exit-latency-us = <500000>;
+			status = "disabled";
 		};
 	};
 
@@ -39,7 +41,10 @@
 			device_type = "cpu";
 			compatible = "arm,cortex-m4";
 			reg = <0>;
-			cpu-power-states = <&softoff &s2ram>;
+			/* new zephyr version require this list to be ordered */
+			/* sorted by min + exit time in ascending order. */
+			/* cpu-power-states = <&softoff &s2ram>; */
+			cpu-power-states = <&s2ram &softoff>;
 			clock-frequency = <DT_FREQ_M(60)>;
 		};
 	};
@@ -49,7 +54,7 @@
 	/* 0x90000~0xA0000 are reserved as wifi hw packet */
 	sram0: memory@10000 {
 		compatible = "mmio-sram";
-		reg = <0x10000 0x80000>;
+		reg = <0x10000 0x90000>;
 	};
 
 	soc {
@@ -77,7 +82,7 @@
 			interrupts = <0x30 0x2>;
 			resets = <&reset QCC730_RESET(PMU_SOFT_RESET, 20U)>;
 			clocks = <&clock_controller QCC730_CLOCK_GPIO>;
-			status = "disabled";
+			status = "okay";
 			ngpios = <15>;
 		};
 
@@ -109,7 +114,7 @@
 			status = "disabled";
 		};
 
-		qcspi: qcspi@01264000 {
+		qcspi: qcspi@1264000 {
 			compatible = "qcom,qcc730-spi";
 			cs-gpios = <&gpioa 1 GPIO_ACTIVE_LOW>;
 			pinctrl-0 = <&qcspi_default>;
@@ -172,7 +177,7 @@
 				interrupts = <0x08 0x2>;
 				clocks = <&clock_controller QCC730_CLOCK_QTIMER>;
 				id = <4>;
-				status = "disabled";
+				status = "okay";
 			};
 		};
 
