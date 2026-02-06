@@ -816,6 +816,28 @@ static int ap_sta_disconnect(const struct device *dev, const uint8_t *mac)
 
     return 0;
 }
+
+static int ap_config_params(const struct device *dev, struct wifi_ap_config_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t dev_id = dev_data->active_device;
+
+    if (params->type != WIFI_AP_CONFIG_PARAM_MAX_INACTIVITY) {
+        return -EINVAL;
+    }
+
+    uint32_t inactive_time = params->max_inactivity;
+    qapi_Status_t ret = qapi_WLAN_Set_Param(dev_id, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_AP_INACTIVITY_TIME_IN_SECONDS,
+                        &inactive_time, sizeof(inactive_time), false);
+    if (ret) {
+        LOG_ERR("Fail to set AP inactivity time %u. %d", inactive_time, ret);
+        return -EIO;
+    }
+
+    return 0;
+}
+
 static int qwifi_drv_unit_test(const struct device *dev, struct qcom_wifi_unit_test_params *params)
 {
     qapi_Status_t ret = QAPI_WLAN_ERROR;
@@ -2473,6 +2495,7 @@ static const struct wifi_mgmt_ops qwifi_drv_mgmt = {
     .ap_enable = ap_enable,
     .ap_disable = ap_disable,
     .ap_sta_disconnect = ap_sta_disconnect,
+    .ap_config_params = ap_config_params,
     .set_power_save = qwifi_power_save,
     .get_power_save_config = qwifi_get_power_save,
 };
@@ -2495,6 +2518,7 @@ NET_DEVICE_INIT_INSTANCE(qwifi_sta, "qwifi_sta", 0, qwifi_drv_dev_init, PM_DEVIC
 static const struct wifi_mgmt_ops qwifi_ap_mgmt = {
     .ap_enable = ap_enable,
     .ap_disable = ap_disable,
+    .ap_config_params = ap_config_params,
     .ap_sta_disconnect = ap_sta_disconnect,
     .iface_status = qwifi_drv_intf_status,
     .channel = qwifi_drv_channel,
