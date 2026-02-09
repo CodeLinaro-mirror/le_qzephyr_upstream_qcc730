@@ -47,7 +47,7 @@ manifest:
       path: modules/hal/qcom
     - name: cmsis_6
       remote: zephyrproject-rtos
-      revision: cmsis.qzephyr.2.0.r1-rel
+      revision: cmsis_6.qzephyr.2.0.r1-rel
       path: modules/hal/cmsis_6
   self:
     west-commands: zephyr/scripts/west-commands.yml
