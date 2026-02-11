@@ -2058,7 +2058,7 @@ static int qwifi_drv_reg_domain(const struct device *dev, struct wifi_reg_domain
             uint16_t step = (start_freq >= 5000) ? 20 : 5;
             for (uint16_t freq = start_freq + EDGE_BAND_10MHz; freq <= end_freq - EDGE_BAND_10MHz && idx < max_out; freq += step) {
                 if ((step == 5 && (freq < 2412 || (freq > 2484 && freq < 5000))) ||
-                    (step == 20 && (freq < 5180 || freq > 5825))) {
+                    (step == 20 && (freq < 5180 || freq > 5895))) {
                     continue;
                 }
                 if (step == 5 && freq > 2472 && freq != 2484)
