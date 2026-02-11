@@ -17,6 +17,7 @@
 #include <zephyr/pm/device.h>
 
 #include <zephyr/drivers/gpio/gpio_utils.h>
+#include <nt_gpio_api.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(gpio_qcc730, CONFIG_GPIO_LOG_LEVEL);
@@ -358,7 +359,7 @@ static int gpio_qcc730_init(const struct device *dev)
 }
 
 #ifdef CONFIG_PM_DEVICE
-static int gpio_730_restore(const struct device *dev)
+static int __maybe_unused gpio_730_restore(const struct device *dev)
 {
 	int ret = 0;
 	const struct gpio_qcc730_cfg *config = dev->config;
@@ -382,7 +383,7 @@ static int gpio_730_restore(const struct device *dev)
 	return 0;
 }
 
-static int gpio_qcc730_deinit(const struct device *dev)
+static int __maybe_unused gpio_qcc730_deinit(const struct device *dev)
 {
 	int ret = 0;
 	const struct gpio_qcc730_cfg *config = dev->config;
