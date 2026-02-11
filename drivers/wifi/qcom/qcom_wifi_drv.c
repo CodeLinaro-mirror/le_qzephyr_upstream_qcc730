@@ -24,11 +24,18 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #include <libwifi.h>
 #include <libwifi/wlan_defs.h>
 #include "inc/qcom_wifi_mgmt.h"
+#include "wlan_drv.h"
+#ifdef CONFIG_WIFI_NM
+#include <zephyr/net/wifi_nm.h>
+#endif
 
 #define SCAN_MODE_BLOCKING 1
 #define SCAN_MODE_UNBLOCKING 2
-#define NT_DEV_STA_ID 1
+#define QCOM_DEV_STA_ID 1
+#define QCOM_DEV_AP_ID  0
+#define QCOM_MAX_DEVICES 2
 #define EDGE_BAND_10MHz 10
+#define CONFIG_WIFI_SAP_PRIORITY 81
 
 struct qwifi_bss_status_t {
     bool connected;
@@ -65,12 +72,10 @@ static struct qwifi_drv_dev_cfg_t g_wifi_dev_cfg = {
     .scan_mode = SCAN_MODE_UNBLOCKING,
 };
 
-
 static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity);
 static TimerHandle_t wifi_activity_timer;
 
 void clear_wifi_busy(void);
-
 
 static uint32_t wifi_activity_interval_ms = 30;
 
@@ -96,6 +101,12 @@ static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity)
     }
 }
 
+static struct qwifi_drv_dev_data_t g_wifi_dev_data_sap;
+static struct qwifi_drv_dev_cfg_t g_wifi_dev_cfg_sap = {
+    .scan_mode = SCAN_MODE_UNBLOCKING,
+};
+
+static const struct device *g_qwifi_dev_by_id[2] = {NULL, NULL};
 
 const struct qcom_wifi_mgmt_ops *const get_qcom_wifi_api(struct net_if *iface)
 {
@@ -107,13 +118,7 @@ const struct qcom_wifi_mgmt_ops *const get_qcom_wifi_api(struct net_if *iface)
 	}
 	struct qwifi_drv_dev_data_t *dev_data = dev->data;
 	off_api = &dev_data->qcom_wifi_cmd;
-#ifdef CONFIG_WIFI_NM
-	struct wifi_nm_instance *nm = wifi_nm_get_instance_iface(iface);
 
-	if (nm) {
-		return nm->ops;
-	}
-#endif /* CONFIG_WIFI_NM */
 	return off_api ? off_api : NULL;
 }
 
@@ -328,15 +333,24 @@ static void qwifi_disconnect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t
 
 static void qwifi_drv_event_handler(uint8_t dev_id, uint32_t event, void *context, void *private, uint32_t length)
 {
+    struct device *target_dev = NULL;
+
+    if (dev_id < 2) {
+        target_dev = (struct device *)g_qwifi_dev_by_id[dev_id];
+    }
+    if (target_dev == NULL) {
+        target_dev = (struct device *)context;
+    }
+
     switch (event) {
     case QAPI_WLAN_SCAN_COMPLETE_CB_E:
-        qwifi_scan_complete_event(context, private);
+        qwifi_scan_complete_event(target_dev, private);
         break;
     case QAPI_WLAN_CONNECT_CB_E:
-        qwifi_connect_event(context, private);
+        qwifi_connect_event(target_dev, private);
         break;
     case QAPI_WLAN_DISCONNECT_CB_E:
-        qwifi_disconnect_event(context, private);
+        qwifi_disconnect_event(target_dev, private);
         break;
     case QAPI_WLAN_CHANNEL_SWITCH_CB_E:
         LOG_INF("CSA Done.");
@@ -377,6 +391,7 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
     qapi_WLAN_Crypt_Type_e e_cipher;
     const uint8_t *psk = NULL;
     uint8_t psk_length = 0;
+    wlan_qapi_cxt_t *p_cxt = gp_wlan_qapi_cxt;
 
 #ifdef CONFIG_PM_DEVICE
     pm_device_busy_set(dev);
@@ -412,12 +427,14 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
         return -EIO;
     }
 
-    qapi_WLAN_DEV_Mode_e mode = DEV_MODE_STATION_E;
-    qapi_Status_t ret = qapi_WLAN_Set_Param(0, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
+    if (p_cxt->conc_mode == DEV_MODE_NO_CONC_E) {
+        qapi_WLAN_DEV_Mode_e mode = DEV_MODE_STATION_E;
+        qapi_Status_t ret = qapi_WLAN_Set_Param(0, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
                                             &mode, sizeof(mode), false);
-    if (ret) {
-        LOG_ERR("set station mode fail");
-        return -EINVAL;
+        if (ret) {
+            LOG_ERR("set station mode fail");
+            return -EINVAL;
+        }
     }
 
     if (params->ssid_length) {
@@ -426,7 +443,7 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
         LOG_DBG("ssid=%s", params->ssid);
     }
 
-    if(deviceId == NT_DEV_STA_ID) {
+    if(deviceId == QCOM_DEV_STA_ID) {
 	if (params->bssid && (params->bssid[0] || params->bssid[1]
 				|| params->bssid[2] || params->bssid[3]
 				|| params->bssid[4] || params->bssid[5])) {
@@ -607,9 +624,9 @@ static int qwifi_drv_get_tx_power(const struct device *dev, struct qcom_wifi_get
 static int ap_enable(const struct device *dev, struct wifi_connect_req_params *params)
 {
     qapi_Status_t ret;
-    const uint8_t dev_id = 0;
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     struct qwifi_ap_status_t *ap_status = &dev_data->ap_status;
+    const uint8_t dev_id = dev_data->active_device;
 
 #ifdef CONFIG_PM_DEVICE
     pm_device_busy_set(dev);
@@ -1606,6 +1623,108 @@ static int qwifi_drv_get_bmiss_threshold(const struct device *dev, struct qcom_w
     }
 
     params->threshold = bmiss_threshold;
+}
+
+int32_t set_op_mode(char *opmode, char *hidden_ssid)
+{
+	int32_t ret = -1;
+    uint8_t hidden_flag = 0;
+    qapi_WLAN_DEV_Mode_e devMode;
+    const uint8_t dev_id = 0;
+
+    if (!opmode || !hidden_ssid) {
+        LOG_ERR("Invalid NULL parameters");
+        return -EINVAL;
+    }
+
+    if(!strcmp(opmode,"ap")) {
+        devMode = DEV_MODE_AP_E;
+        if(strcmp(hidden_ssid,"hidden") == 0) {
+            hidden_flag = 1;
+        }
+        else if(strcmp(hidden_ssid,"0") == 0 || strlen(hidden_ssid) == 0) {
+            hidden_flag = 0;
+        }
+        else {
+            LOG_ERR("Invalid hidden_ssid value: %s", hidden_ssid);
+            return -EINVAL;
+        }
+    }
+	else if(!strcmp(opmode,"station")) {
+		devMode = DEV_MODE_STATION_E;
+	}
+	#ifdef NT_FN_CONCURRENCY
+	else if(!strcmp(opmode,"ap_sta")) {
+		devMode = DEV_MODE_AP_STA_E;
+	}
+	#endif
+	else {
+		LOG_INF("unknown mode %s\n",opmode);
+		return -EINVAL;
+	}
+
+	ret = qapi_WLAN_Set_Param(dev_id,
+							__QAPI_WLAN_PARAM_GROUP_WIRELESS,
+							__QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
+							&devMode,
+							sizeof(devMode),
+							FALSE);
+
+	if(ret != QAPI_OK) {
+		info_printf("set mode %s fail\n", opmode);
+		return -EINVAL;
+	}
+	
+	if(devMode == DEV_MODE_AP_E) {
+		ret = qapi_WLAN_Set_Param(dev_id, 
+								__QAPI_WLAN_PARAM_GROUP_WIRELESS,
+								__QAPI_WLAN_PARAM_GROUP_WIRELESS_AP_ENABLE_HIDDEN_MODE,
+								&hidden_flag,
+								sizeof(hidden_flag),
+								FALSE);
+		if(ret != 0) {
+			LOG_INF("Not able to set hidden mode for AP \r\n");
+			return -EINVAL;
+		}
+	}
+	return ret;
+}
+
+int32_t qwifi_drv_set_active_deviceid(const struct device *dev, uint16_t *deviceId)
+{
+    uint16_t active_device_id = *deviceId;
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+
+    dev_data->active_device = *deviceId;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(0,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_DEVICE_ID,
+                        &active_device_id,
+                        sizeof(active_device_id),
+                        false);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set device id for device");
+        return -EIO;
+    }
+    return 0;
+}
+
+static int qwifi_drv_set_op_mode(const struct device *dev, struct qcom_wifi_set_op_mode_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    char *opmode = params->opmode;
+    char *hidden_ssid = params->hidden_ssid;
+    int ret = 0;
+
+    ret = set_op_mode(opmode, hidden_ssid);
+
+    if (ret < 0) {
+        LOG_ERR("Failed to set operation mode for device %d, ret=%d", deviceId, ret);
+        return ret;
+    }
+
     return 0;
 }
 
@@ -1771,7 +1890,6 @@ static void qwifi_drv_intf_init(struct net_if *iface)
     const struct device *dev = net_if_get_device(iface);
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     struct ethernet_context *eth_ctx = net_if_l2_data(iface);
-
     ethernet_init(iface);
     qwifi_hal_reg_rxcb(iface, qwifi_drv_eth_rx_cb, link_change_handler);
 
@@ -1779,19 +1897,59 @@ static void qwifi_drv_intf_init(struct net_if *iface)
     qapi_WLAN_DEV_Mode_e devMode = DEV_MODE_STATION_E;
     qapi_WLAN_Set_Param(0, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE, &devMode,
                         sizeof(devMode), false);
-    dev_data->active_device = NT_DEV_STA_ID;
+    dev_data->active_device = QCOM_DEV_STA_ID;
 
     eth_ctx->eth_if_type = L2_ETH_IF_TYPE_WIFI;
     dev_data->iface = iface;
 
 #ifdef CONFIG_PM_DEVICE
-
     qapi_WLAN_Activity_Register_CB(wifi_activity_cb);
     qapi_WLAN_Start_Check_Activity();
 
     pm_device_busy_set(dev);
 #endif
-    LOG_DBG("%s", __FUNCTION__);
+
+#ifdef CONFIG_WIFI_NM
+    wifi_nm_register_mgd_type_iface(wifi_nm_get_instance("wifi_sta"),
+		    WIFI_TYPE_STA, iface);
+#endif
+    g_qwifi_dev_by_id[dev_data->active_device] = dev;
+    LOG_DBG("%s, active_device=%d", __FUNCTION__, dev_data->active_device);
+}
+
+static void qwifi_drv_ap_intf_init(struct net_if *iface)
+{
+    const struct device *dev = net_if_get_device(iface);
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    struct ethernet_context *eth_ctx = net_if_l2_data(iface);
+
+    ethernet_init(iface);
+    qwifi_hal_reg_rxcb(iface, qwifi_drv_eth_rx_cb, link_change_handler);
+
+    dev_data->wlan_enabled = 1;
+    dev_data->active_device = QCOM_DEV_AP_ID;
+
+    uint8_t mac[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    link_change_handler(iface, Q_LINKCHANGE_ADD, mac);
+    LOG_INF("Manually assigned MAC for wifi sap");
+
+    eth_ctx->eth_if_type = L2_ETH_IF_TYPE_WIFI;
+    dev_data->iface = iface;
+
+#ifdef CONFIG_PM_DEVICE
+    qapi_WLAN_Activity_Register_CB(wifi_activity_cb);
+    qapi_WLAN_Start_Check_Activity();
+ 
+    pm_device_busy_set(dev);
+ #endif
+
+#ifdef CONFIG_WIFI_NM
+    wifi_nm_register_mgd_type_iface(wifi_nm_get_instance("wifi_sap"),
+		    WIFI_TYPE_SAP, iface);
+#endif
+
+    g_qwifi_dev_by_id[dev_data->active_device] = dev;
+    LOG_DBG("%s, active_device=%d", __FUNCTION__, dev_data->active_device);
 }
 
 static int qwifi_drv_set_rate(const struct device *dev, struct qcom_wifi_set_rate_params *params)
@@ -1836,12 +1994,18 @@ static int qwifi_drv_get_rate(const struct device *dev, struct qcom_wifi_set_rat
 static int qwifi_drv_dev_init(const struct device *dev)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
-
+    if (strcmp(dev->name, "qwifi_sta") == 0) {
+        g_qwifi_dev_by_id[QCOM_DEV_STA_ID] = dev;
+        qwifi_init();
+        qapi_WLAN_Set_Callback(qwifi_drv_event_handler, (void *)dev);
+    } 
+    else if (strcmp(dev->name, "qwifi_sap") == 0) {
+        g_qwifi_dev_by_id[QCOM_DEV_AP_ID] = dev;
+    }
     dev_data->dev = dev;
-    qwifi_init();
-    qapi_WLAN_Set_Callback(qwifi_drv_event_handler, (void *)dev);
+    
     dev_data->e_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
-
+    
     struct qcom_wifi_mgmt_ops qwifi_ops = {
         .set_tx_power = qwifi_drv_set_tx_power,
         .get_tx_power = qwifi_drv_get_tx_power,
@@ -1873,6 +2037,8 @@ static int qwifi_drv_dev_init(const struct device *dev)
         .get_rate           = qwifi_drv_get_rate,
         .set_bmiss_threshold      = qwifi_drv_set_bmiss_threshold,
         .get_bmiss_threshold      = qwifi_drv_get_bmiss_threshold,
+        .set_op_mode = qwifi_drv_set_op_mode,
+        .set_device_id = qwifi_drv_set_active_deviceid,
     };
     dev_data->qcom_wifi_cmd = qwifi_ops;
 
@@ -2148,6 +2314,34 @@ static const struct net_wifi_mgmt_offload qwifi_drv_api = {
     .wifi_mgmt_api = &qwifi_drv_mgmt,
 };
 
+#ifdef CONFIG_WIFI_NM
+DEFINE_WIFI_NM_INSTANCE(wifi_sta, &qwifi_drv_mgmt);
+#endif
+
 NET_DEVICE_INIT_INSTANCE(qwifi_sta, "qwifi_sta", 0, qwifi_drv_dev_init, PM_DEVICE_DT_INST_GET(0), &g_wifi_dev_data, &g_wifi_dev_cfg,
                          CONFIG_WIFI_INIT_PRIORITY, &qwifi_drv_api, ETHERNET_L2, NET_L2_GET_CTX_TYPE(ETHERNET_L2),
+                         NET_ETH_MTU);
+
+static const struct wifi_mgmt_ops qwifi_ap_mgmt = {
+    .ap_enable = ap_enable,
+    .ap_disable = ap_disable,
+    .ap_sta_disconnect = ap_sta_disconnect,
+    .iface_status = qwifi_drv_intf_status,
+    .channel = qwifi_drv_channel,
+    .reg_domain = qwifi_drv_reg_domain,
+};
+
+static const struct net_wifi_mgmt_offload qwifi_ap_api = {
+    .wifi_iface.iface_api.init = qwifi_drv_ap_intf_init,
+    .wifi_iface.send = qwifi_drv_send,
+    .wifi_iface.get_config = get_config,
+    .wifi_mgmt_api = &qwifi_ap_mgmt,
+};
+
+#ifdef CONFIG_WIFI_NM
+DEFINE_WIFI_NM_INSTANCE(wifi_sap, &qwifi_ap_mgmt);
+#endif
+
+NET_DEVICE_INIT_INSTANCE(qwifi_uap, "qwifi_sap", 1, qwifi_drv_dev_init, PM_DEVICE_DT_INST_GET(0), &g_wifi_dev_data_sap, &g_wifi_dev_cfg_sap,
+                         CONFIG_WIFI_SAP_PRIORITY, &qwifi_ap_api, ETHERNET_L2, NET_L2_GET_CTX_TYPE(ETHERNET_L2),
                          NET_ETH_MTU);
