@@ -15,6 +15,9 @@
 #include <zephyr/logging/log.h>
 #include <rtc_utils.h>
 #include <soc.h>
+#ifdef CONFIG_WIFI_TSF_RTC_CORRECTION
+#include <libwifi.h>
+#endif
 
 LOG_MODULE_REGISTER(rtc_qcc730, CONFIG_RTC_LOG_LEVEL);
 
@@ -61,7 +64,7 @@ static void rtc_qcc730_counter_alarm_callback(const struct device *dev, uint8_t 
 {
 	LOG_DBG("RTC received the Qtimer alarm callback.");
 
-	// dev here is counter device
+	/* dev here is counter device */
 	struct device *rtc_dev = (struct device *) user_data;
 	struct rtc_qcc730_data *data = (struct rtc_qcc730_data *)rtc_dev->data;
 
@@ -117,7 +120,7 @@ static int rtc_qcc730_alarm_set_time_shared(const struct device *dev, uint16_t i
 		diff_sec -= 1;
 	}
 
-	// Convert time to ticks
+	/* Convert time to ticks */
 	freq = counter_get_frequency(cfg->qtimer_frame);
 	ticks = diff_sec * (uint64_t)freq;
 	ticks += ((uint64_t)diff_ns * (uint64_t)freq) / NSEC_PER_SEC;
@@ -127,10 +130,10 @@ static int rtc_qcc730_alarm_set_time_shared(const struct device *dev, uint16_t i
 		return -EIO;
 	}
 
-	// Add current ticks to the alarm ticks value
+	/* Add current ticks to the alarm ticks value */
 	ticks += ticks_now;
 
-	// Alarm configuration
+	/* Alarm configuration */
 	alarm_cfg.callback = rtc_qcc730_counter_alarm_callback;
 	alarm_cfg.flags = COUNTER_ALARM_CFG_ABSOLUTE;
 	alarm_cfg.user_data = (void *)dev;
@@ -140,9 +143,9 @@ static int rtc_qcc730_alarm_set_time_shared(const struct device *dev, uint16_t i
 		return -EIO;
 	}
 
-	// Save alarm time and mask in case of new alarm
+	/* Save alarm time and mask in case of new alarm */
 	if (&data->alarm_time != timeptr) {
-		// memcpy is not allowed
+		/* memcpy is not allowed */
 		data->alarm_time.tm_sec = timeptr->tm_sec;
 		data->alarm_time.tm_min = timeptr->tm_min;
 		data->alarm_time.tm_hour = timeptr->tm_hour;
@@ -183,7 +186,7 @@ static int rtc_qcc730_set_time(const struct device *dev, const struct rtc_time *
 	data->set_ns = timeptr->tm_nsec;
 
 #ifdef CONFIG_RTC_ALARM
-	// If there is alarm set - we need to update it
+	/* If there is alarm set - we need to update it */
 	if (data->alarm_mask != 0) {
 		counter_cancel_channel_alarm(cfg->qtimer_frame, 0);
 
@@ -201,6 +204,10 @@ static int rtc_qcc730_set_time(const struct device *dev, const struct rtc_time *
 
 	data->time_set = true;
 
+#ifdef CONFIG_WIFI_TSF_RTC_CORRECTION
+	wlan_hal_set_rtc();
+#endif
+
 	k_spin_unlock(&data->lock, key);
 
 	return 0;
@@ -211,6 +218,11 @@ static int rtc_qcc730_get_time(const struct device *dev, struct rtc_time *timept
 	const struct rtc_qcc730_config *cfg = dev->config;
 	struct rtc_qcc730_data *data = dev->data;
 	uint64_t cnt_now = 0ULL;
+	int64_t rtc_padding_us = 0;
+
+#ifdef CONFIG_WIFI_TSF_RTC_CORRECTION
+	rtc_padding_us = wlan_hal_get_rtc_padding();
+#endif
 
 	if (!data->time_set) {
 		LOG_ERR("RTC time has not been set yet.");
@@ -232,17 +244,17 @@ static int rtc_qcc730_get_time(const struct device *dev, struct rtc_time *timept
 		return -EIO;
 	}
 
-	// Elapsed ticks since the base instant
-	const uint64_t ticks_elapsed = cnt_now - data->set_qtimer_cnt;
+	/* Elapsed ticks since the base instant */
+	const uint64_t ticks_elapsed = cnt_now - data->set_qtimer_cnt + rtc_padding_us*freq/(MSEC_PER_SEC*USEC_PER_MSEC);
 
-	// Split to seconds + fractional nanoseconds
+	/* Split to seconds + fractional nanoseconds */
 	const uint64_t elapsed_sec = ticks_elapsed / freq;
 	const uint64_t rem_ticks = ticks_elapsed - (elapsed_sec * freq);
 
-	// Convert fractional ticks to nanoseconds
+	/* Convert fractional ticks to nanoseconds */
 	const uint64_t frac_ns = (rem_ticks * NSEC_PER_SEC) / freq;
 
-	// Calculate elapsed nanoseconds
+	/* Calculate elapsed nanoseconds */
 	uint64_t now_ns_total = (uint64_t)data->set_ns + frac_ns;
 	uint64_t carry_sec = now_ns_total / NSEC_PER_SEC;
 	uint32_t now_nsec = (uint32_t)(now_ns_total - carry_sec * NSEC_PER_SEC);
@@ -261,7 +273,7 @@ static int rtc_qcc730_get_time(const struct device *dev, struct rtc_time *timept
 	timeptr->tm_wday = tm_now.tm_wday;
 	timeptr->tm_yday = tm_now.tm_yday;
 	timeptr->tm_nsec = now_nsec;
-	// Daylight Saving Time status unknown
+	/* Daylight Saving Time status unknown */
 	timeptr->tm_isdst = -1;
 
 	k_spin_unlock(&data->lock, key);
@@ -403,7 +415,7 @@ static int rtc_qcc730_alarm_set_callback(const struct device *dev, uint16_t id,
 
 	k_spinlock_key_t key = k_spin_lock(&data->lock);
 
-	// Callback can be set to NULL if needed
+	/* Callback can be set to NULL if needed */
 	data->alarm_callback = callback;
 	data->alarm_user_data = user_data;
 

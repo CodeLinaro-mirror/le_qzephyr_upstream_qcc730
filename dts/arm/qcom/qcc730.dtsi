@@ -183,9 +183,9 @@
 
 		rtc: rtc {
 			compatible = "qcom,qcc730-rtc";
-			qtimer-frame = <&frame0>;
+			qtimer-frame = <&frame4>;
 			alarms-count = <1>;
-			status = "disabled";
+			status = "okay";
 		};
 
 		aon_timer0: aon_timer {
