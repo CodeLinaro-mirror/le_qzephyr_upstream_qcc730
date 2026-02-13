@@ -481,6 +481,8 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
                             sizeof(qapi_WLAN_Crypt_Type_e), false);
         qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
                             __QAPI_WLAN_PARAM_GROUP_SECURITY_PASSPHRASE, (void *)psk, psk_length, false);
+    } else {
+        wlan_clear_privacy();
     }
 
     qapi_WLAN_Commit(deviceId);
