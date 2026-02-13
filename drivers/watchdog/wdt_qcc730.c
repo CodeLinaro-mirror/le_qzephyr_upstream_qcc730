@@ -233,7 +233,7 @@ static int wdt_qcc730_suspend(const struct device *dev)
 	return wdt_qcc730_platform(dev, 0U);
 }
 
-static int wdt_qcc730_pm_action(const struct device *dev, enum pm_device_action action)
+static __maybe_unused int wdt_qcc730_pm_action(const struct device *dev, enum pm_device_action action)
 {
 #ifndef CONFIG_QWDT
     return 0;
@@ -257,7 +257,7 @@ static int wdt_qcc730_pm_action(const struct device *dev, enum pm_device_action 
 }
 #endif // CONFIG_PM_DEVICE
 
-static int wdt_qcc730_init(const struct device *dev)
+static __maybe_unused int wdt_qcc730_init(const struct device *dev)
 {
 #ifndef CONFIG_QWDT
     LOG_INF("QWDT disabled by CONFIG_QWDT=n");

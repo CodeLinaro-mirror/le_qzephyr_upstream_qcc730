@@ -25,6 +25,8 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #include <libwifi/wlan_defs.h>
 #include "inc/qcom_wifi_mgmt.h"
 #include "wlan_drv.h"
+#include "wlan_qapi_helper.h"
+
 #ifdef CONFIG_WIFI_NM
 #include <zephyr/net/wifi_nm.h>
 #endif
@@ -73,11 +75,10 @@ static struct qwifi_drv_dev_cfg_t g_wifi_dev_cfg = {
 };
 
 static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity);
-static TimerHandle_t wifi_activity_timer;
-
 void clear_wifi_busy(void);
-
-static uint32_t wifi_activity_interval_ms = 30;
+#ifdef CONFIG_PM_DEVICE
+extern qapi_Status_t qapi_WLAN_Activity_Register_CB(void (*callback)(PM_WLAN_ACTIVITY_STATUS));
+#endif
 
 static const uint32_t rate_index_to_kbps[] = {
     /* RateIndex 0-7, 802.11b rates */
@@ -487,9 +488,8 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
     }
 
     if(deviceId == QCOM_DEV_STA_ID) {
-	if (params->bssid && (params->bssid[0] || params->bssid[1]
-				|| params->bssid[2] || params->bssid[3]
-				|| params->bssid[4] || params->bssid[5])) {
+	if (params->bssid[0] || params->bssid[1] || params->bssid[2] ||
+	    params->bssid[3] || params->bssid[4] || params->bssid[5]) {
 		qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
 				__QAPI_WLAN_PARAM_GROUP_WIRELESS_BSSID,
 				(void *)params->bssid, __QAPI_WLAN_MAC_LEN, false);
@@ -1260,7 +1260,6 @@ static int qwifi_drv_get_boot_reason(const struct device *dev, struct qcom_wifi_
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     uint8_t deviceId = dev_data->active_device;
     qapi_boot_reason_t data = 0;
-    uint32_t length = sizeof(data);
 
     if (QAPI_OK != qapi_core_obtain_boot_reason(&data)) {
         LOG_ERR("get boot reason fail for device %d", deviceId);
@@ -1668,6 +1667,7 @@ static int qwifi_drv_get_bmiss_threshold(const struct device *dev, struct qcom_w
     }
 
     params->threshold = bmiss_threshold;
+    return 0;
 }
 
 int32_t set_op_mode(char *opmode, char *hidden_ssid)
@@ -2331,10 +2331,14 @@ static int qwifi_power_save(const struct device *dev, struct wifi_ps_params *par
             ret = wlan_set_sta_slptime(0 , params->listen_interval , 0);
             break;
 
-        // case WIFI_PS_PARAM_MODE:
-
-        //     break;
-
+        case WIFI_PS_PARAM_WAKEUP_MODE:
+        case WIFI_PS_PARAM_MODE:
+        case WIFI_PS_PARAM_EXIT_STRATEGY:
+        case WIFI_PS_PARAM_TIMEOUT:
+        default:
+            /* Not yet implemented */
+            ret = -ENOTSUP;
+            break;
     }
     return ret;
 }
