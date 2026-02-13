@@ -79,6 +79,49 @@ void clear_wifi_busy(void);
 
 static uint32_t wifi_activity_interval_ms = 30;
 
+static const uint32_t rate_index_to_kbps[] = {
+    /* RateIndex 0-7, 802.11b rates */
+    1000,   /* HAL_RT_IDX_11B_LONG_1_MBPS */
+    2000,   /* HAL_RT_IDX_11B_LONG_2_MBPS */
+    5500,   /* HAL_RT_IDX_11B_LONG_5_5_MBPS */
+    11000,  /* HAL_RT_IDX_11B_LONG_11_MBPS */
+    1000,   /* HAL_RT_IDX_11B_LONG_1_MBPS_DUP */
+    2000,   /* HAL_RT_IDX_11B_SHORT_2_MBPS */
+    5500,   /* HAL_RT_IDX_11B_SHORT_5_5_MBPS */
+    11000,  /* HAL_RT_IDX_11B_SHORT_11_MBPS */
+    
+    /* RateIndex 8-15, 802.11a/g rates */
+    6000,   /* HAL_RT_IDX_11A_6_MBPS */
+    9000,   /* HAL_RT_IDX_11A_9_MBPS */
+    12000,  /* HAL_RT_IDX_11A_12_MBPS */
+    18000,  /* HAL_RT_IDX_11A_18_MBPS */
+    24000,  /* HAL_RT_IDX_11A_24_MBPS */
+    36000,  /* HAL_RT_IDX_11A_36_MBPS */
+    48000,  /* HAL_RT_IDX_11A_48_MBPS */
+    54000,  /* HAL_RT_IDX_11A_54_MBPS */
+    
+    /* RateIndex 16-23, 802.11n HT20 MCS0-7 (Long GI) */
+    6500,   /* HAL_RT_IDX_MCS_1NSS_MM_6_5_MBPS */
+    13000,  /* HAL_RT_IDX_MCS_1NSS_MM_13_MBPS */
+    19500,  /* HAL_RT_IDX_MCS_1NSS_MM_19_5_MBPS */
+    26000,  /* HAL_RT_IDX_MCS_1NSS_MM_26_MBPS */
+    39000,  /* HAL_RT_IDX_MCS_1NSS_MM_39_MBPS */
+    52000,  /* HAL_RT_IDX_MCS_1NSS_MM_52_MBPS */
+    58500,  /* HAL_RT_IDX_MCS_1NSS_MM_58_5_MBPS */
+    65000,  /* HAL_RT_IDX_MCS_1NSS_MM_65_MBPS */
+    
+    /* RateIndex 24-31, 802.11n HT20 MCS0-7 (Short GI) */
+    7200,   /* HAL_RT_IDX_MCS_1NSS_MM_SG_7_2_MBPS */
+    14400,  /* HAL_RT_IDX_MCS_1NSS_MM_SG_14_4_MBPS */
+    21700,  /* HAL_RT_IDX_MCS_1NSS_MM_SG_21_7_MBPS */
+    28900,  /* HAL_RT_IDX_MCS_1NSS_MM_SG_28_9_MBPS */
+    43300,  /* HAL_RT_IDX_MCS_1NSS_MM_SG_43_3_MBPS */
+    57800,  /* HAL_RT_IDX_MCS_1NSS_MM_SG_57_8_MBPS */
+    65000,  /* HAL_RT_IDX_MCS_1NSS_MM_SG_65_MBPS */
+    72200,  /* HAL_RT_IDX_MCS_1NSS_MM_SG_72_2_MBPS */
+};
+#define MAX_RATE_INDEX (sizeof(rate_index_to_kbps) / sizeof(rate_index_to_kbps[0]))
+
 static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity)
 {
     const struct device *wifi_dev = device_get_binding("qwifi_sta");
@@ -1737,6 +1780,7 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
 
     qapi_WLAN_DEV_Mode_e dev_mode = DEV_MODE_STATION_E;
     uint32_t size = sizeof(dev_mode);
+    qapi_WLAN_Set_Rate_Params_t rate_cfg = {0};
 #ifdef CONFIG_PM_DEVICE
     pm_device_busy_set(dev);
 #endif
@@ -1792,8 +1836,14 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
 
     /* security */
     switch (wifi_status.auth_mode) {
+    case QAPI_WLAN_AUTH_WPA3_SAE_E:
+        status->security = WIFI_SECURITY_TYPE_SAE;
+        break;
     case QAPI_WLAN_AUTH_WPA2_PSK_E:
         status->security = WIFI_SECURITY_TYPE_PSK;
+        break;
+    case QAPI_WLAN_AUTH_WPA_PSK_E:
+        status->security = WIFI_SECURITY_TYPE_WPA_PSK;
         break;
     case QAPI_WLAN_AUTH_NONE_E:
         status->security = WIFI_SECURITY_TYPE_NONE;
@@ -1808,6 +1858,20 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
     status->beacon_interval = wifi_status.beacon_interval;
     status->band = wifi_status.band;
     status->channel = wifi_status.channel;
+
+    rate_cfg.rate_staid = dev_id;
+    ret = qapi_WLAN_Get_Rate(&rate_cfg);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to get rate (staid=%u): %d", rate_cfg.rate_staid, ret);
+        return ret;
+    }
+
+    if (rate_cfg.rate_p_rate >= MAX_RATE_INDEX) {
+        LOG_ERR("Invalid rate index: %d", rate_cfg.rate_p_rate);
+        return -EINVAL;
+    }
+
+    status->current_phy_tx_rate = rate_index_to_kbps[rate_cfg.rate_p_rate] / 1000.0;
 
     return 0;
 }
