@@ -322,9 +322,9 @@ static void qwifi_disconnect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t
                         __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
                         &dev_mode, &size);
 
-    if (dev_mode == DEV_MODE_STATION_E) {
+    if (dev_id == QCOM_DEV_STA_ID) {
         station_disconnect_event(dev, info);
-    } else if (dev_mode == DEV_MODE_AP_E) {
+    } else if (dev_id == QCOM_DEV_AP_ID) {
         ap_station_disconnect_event(dev, info);
     } else {
         LOG_ERR("Unknown dev mode %d", dev_mode);
