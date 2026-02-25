@@ -22,6 +22,8 @@ void pm_state_set(enum pm_state state, uint8_t substate_id)
         LOG_INF("enter SUSPEND_TO_RAM, will go s2ram!");
         qapi_enter_suspend2ram();
         break;
+    default:
+	break;
     }
 }
 

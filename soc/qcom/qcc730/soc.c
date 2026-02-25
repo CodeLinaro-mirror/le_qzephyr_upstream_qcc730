@@ -10,6 +10,11 @@
 #include <zephyr/sys/barrier.h>
 #include <zephyr/platform/hooks.h>
 #include <zephyr/arch/cache.h>
+#include <zephyr/arch/common/init.h>
+#include <zephyr/arch/common/xip.h>
+
+#include "nt_socpm_sleep.h"
+#include "nt_sys_monitoring.h"
 
 #if defined(__GNUC__)
 /*
@@ -262,9 +267,8 @@ void rram_boot_early_init(void *sbl_args)
     }
     else
     {
-        int *addr;
-        for(addr=(int *)__bss_start; addr<(int *)__bss_end; addr++)
-            *addr = 0;
+	    size_t bss_size = (size_t)(__bss_end - __bss_start);
+	    memset(__bss_start, 0, bss_size);
     }
 }
 
