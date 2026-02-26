@@ -870,7 +870,8 @@ int flash_qcc730_qspi_nor_erase(const struct device *dev, off_t offset, size_t s
 		(void)drv_qspi_prepare_cmd(&qspi_erase_cmd, opcode, data->flash_ctx_data.config->addr_bytes,
 					   0, QSPI_SDR_1BIT_E, QSPI_SDR_1BIT_E, QSPI_SDR_1BIT_E, false);
 
-		while (align_size > 0) {
+		uint32_t sector_count = (align_size + BLOCK_SIZE_IN_BYTES - 1U) / BLOCK_SIZE_IN_BYTES;
+		while (sector_count > 0U) {
 			ret = drv_flash_write_enable(dev);
 			if (ret != 0) {
 				ret = -ENODEV;
@@ -887,8 +888,12 @@ int flash_qcc730_qspi_nor_erase(const struct device *dev, off_t offset, size_t s
 			}
 
 			address += size_of_chunk;
-			remaining_size -= size_of_chunk;
-			align_size -= size_of_chunk;
+			if (remaining_size >= size_of_chunk) {
+				remaining_size -= size_of_chunk;
+			} else {
+				remaining_size = 0;
+			}
+			sector_count--;
 		}
 	}
 
@@ -938,7 +943,8 @@ int flash_qcc730_qspi_nor_erase(const struct device *dev, off_t offset, size_t s
 		(void)drv_qspi_prepare_cmd(&qspi_erase_cmd, opcode, data->flash_ctx_data.config->addr_bytes,
 					   0, QSPI_SDR_1BIT_E, QSPI_SDR_1BIT_E, QSPI_SDR_1BIT_E, false);
 
-		while (remaining_size > 0) {
+		uint32_t tail_sector_count = (remaining_size + BLOCK_SIZE_IN_BYTES - 1U) / BLOCK_SIZE_IN_BYTES;
+		while (tail_sector_count > 0U) {
 			ret = drv_flash_write_enable(dev);
 			if (ret != 0) {
 				ret = -ENODEV;
@@ -955,7 +961,12 @@ int flash_qcc730_qspi_nor_erase(const struct device *dev, off_t offset, size_t s
 			}
 
 			address += size_of_chunk;
-			remaining_size -= size_of_chunk;
+			if (remaining_size >= size_of_chunk) {
+				remaining_size -= size_of_chunk;
+			} else {
+				remaining_size = 0;
+			}
+			tail_sector_count--;
 		}
 	}
 
