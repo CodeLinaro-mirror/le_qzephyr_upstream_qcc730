@@ -758,7 +758,7 @@ static int ap_sta_disconnect(const struct device *dev, const uint8_t *mac)
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     uint8_t dev_id = dev_data->active_device;
 
-    #ifdef CONFIG_PM_DEVICE
+#ifdef CONFIG_PM_DEVICE
     pm_device_busy_set(dev);
 #endif
 
@@ -1623,6 +1623,7 @@ static int qwifi_drv_get_bmiss_threshold(const struct device *dev, struct qcom_w
     }
 
     params->threshold = bmiss_threshold;
+    return 0;
 }
 
 int32_t set_op_mode(char *opmode, char *hidden_ssid)
@@ -1929,19 +1930,10 @@ static void qwifi_drv_ap_intf_init(struct net_if *iface)
     dev_data->wlan_enabled = 1;
     dev_data->active_device = QCOM_DEV_AP_ID;
 
-    uint8_t mac[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-    link_change_handler(iface, Q_LINKCHANGE_ADD, mac);
-    LOG_INF("Manually assigned MAC for wifi sap");
+    net_if_carrier_off(iface);
 
     eth_ctx->eth_if_type = L2_ETH_IF_TYPE_WIFI;
     dev_data->iface = iface;
-
-#ifdef CONFIG_PM_DEVICE
-    qapi_WLAN_Activity_Register_CB(wifi_activity_cb);
-    qapi_WLAN_Start_Check_Activity();
- 
-    pm_device_busy_set(dev);
- #endif
 
 #ifdef CONFIG_WIFI_NM
     wifi_nm_register_mgd_type_iface(wifi_nm_get_instance("wifi_sap"),
@@ -2342,6 +2334,6 @@ static const struct net_wifi_mgmt_offload qwifi_ap_api = {
 DEFINE_WIFI_NM_INSTANCE(wifi_sap, &qwifi_ap_mgmt);
 #endif
 
-NET_DEVICE_INIT_INSTANCE(qwifi_uap, "qwifi_sap", 1, qwifi_drv_dev_init, PM_DEVICE_DT_INST_GET(0), &g_wifi_dev_data_sap, &g_wifi_dev_cfg_sap,
+NET_DEVICE_INIT_INSTANCE(qwifi_uap, "qwifi_sap", 1, qwifi_drv_dev_init, NULL, &g_wifi_dev_data_sap, &g_wifi_dev_cfg_sap,
                          CONFIG_WIFI_SAP_PRIORITY, &qwifi_ap_api, ETHERNET_L2, NET_L2_GET_CTX_TYPE(ETHERNET_L2),
                          NET_ETH_MTU);
