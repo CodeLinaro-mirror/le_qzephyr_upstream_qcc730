@@ -16,10 +16,14 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #include <zephyr/net/wifi_mgmt.h>
 #include <zephyr/device.h>
 #include <soc.h>
+#include "qapi_lowpower.h"
 #ifdef CONFIG_PM_DEVICE
 #include <zephyr/pm/device.h>
+#include <zephyr/pm/policy.h>
+#include <zephyr/pm/pm.h>
 #endif
 
+#include "qapi_status.h"
 #include <qwifi_api.h>
 #include <libwifi.h>
 #include <libwifi/wlan_defs.h>
@@ -30,6 +34,7 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #ifdef CONFIG_WIFI_NM
 #include <zephyr/net/wifi_nm.h>
 #endif
+#include "wlan_qapi_helper.h"
 
 #define SCAN_MODE_BLOCKING 1
 #define SCAN_MODE_UNBLOCKING 2
@@ -2048,59 +2053,7 @@ static int qwifi_drv_get_rate(const struct device *dev, struct qcom_wifi_set_rat
     return 0;
 }
 
-static int qwifi_drv_dev_init(const struct device *dev)
-{
-    struct qwifi_drv_dev_data_t *dev_data = dev->data;
-    if (strcmp(dev->name, "qwifi_sta") == 0) {
-        g_qwifi_dev_by_id[QCOM_DEV_STA_ID] = dev;
-        qwifi_init();
-        qapi_WLAN_Set_Callback(qwifi_drv_event_handler, (void *)dev);
-    } 
-    else if (strcmp(dev->name, "qwifi_sap") == 0) {
-        g_qwifi_dev_by_id[QCOM_DEV_AP_ID] = dev;
-    }
-    dev_data->dev = dev;
-    
-    dev_data->e_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
-    
-    struct qcom_wifi_mgmt_ops qwifi_ops = {
-        .set_tx_power = qwifi_drv_set_tx_power,
-        .get_tx_power = qwifi_drv_get_tx_power,
-        .unit_test = qwifi_drv_unit_test,
-        .set_rts_cts        = qwifi_drv_set_rts_cts,
-        .set_rts_rate       = qwifi_drv_set_rts_rate,
-        .set_edca_param_cfg = qwifi_drv_set_edca_param_cfg,
-        .set_threshold      = qwifi_drv_set_threshold,
-        .set_ba_win_timing    = qwifi_drv_set_ba_win_timing,
-        .set_slot_time      = qwifi_drv_set_slot_time,
-        .set_phy_mode       = qwifi_drv_set_phy_mode,
-        .set_aggregation    = qwifi_drv_set_aggregation,
-        .set_amsdu_rx       = qwifi_drv_set_amsdu_rx,
-        .set_rate           = qwifi_drv_set_rate,
-        .set_sap_csa        = qwifi_drv_set_sap_csa,
 
-        .get_rts_cts        = qwifi_drv_get_rts_cts,
-        .get_rts_rate       = qwifi_drv_get_rts_rate,
-        .get_edca_param_cfg = qwifi_drv_get_edca_param_cfg,
-        .get_threshold      = qwifi_drv_get_threshold,
-        .get_ba_win_timing    = qwifi_drv_get_ba_win_timing,
-        .get_slot_time      = qwifi_drv_get_slot_time,
-        .get_phy_mode       = qwifi_drv_get_phy_mode,
-        .get_power_mode     = qwifi_drv_get_power_mode,
-        .get_boot_reason    = qwifi_drv_get_boot_reason,
-        .get_mac_address    = qwifi_drv_get_mac_address,
-        .get_concurrency_mode = qwifi_drv_get_concurrency_mode,
-        .get_operation_mode = qwifi_drv_get_operation_mode,
-        .get_rate           = qwifi_drv_get_rate,
-        .set_bmiss_threshold      = qwifi_drv_set_bmiss_threshold,
-        .get_bmiss_threshold      = qwifi_drv_get_bmiss_threshold,
-        .set_op_mode = qwifi_drv_set_op_mode,
-        .set_device_id = qwifi_drv_set_active_deviceid,
-    };
-    dev_data->qcom_wifi_cmd = qwifi_ops;
-
-    return 0;
-}
 
 static int get_config(const struct device *dev, enum ethernet_config_type type,
                       struct ethernet_config *config)
@@ -2303,41 +2256,134 @@ static int qwifi_drv_reg_domain(const struct device *dev, struct wifi_reg_domain
     return -ENOTSUP;
 }
 
+static int qwifi_ps_drv_set_power_optimization_enable_in_bmps(const struct device *dev, struct qcom_wifi_pm_power_optimization_params *param)
+{
+    int err = 0;
+    uint8_t enable = param->enable ? 1 : 0;
+
+    qapi_Status_t ret = qapi_bmps_power_optimization_enable(enable);
+    if(ret != QAPI_OK) {
+        LOG_ERR("fail to set bmps power optimization, ret = %d", ret);
+        err = -EINVAL;
+    }
+
+    return 0;
+}
+
+static int qwifi_ps_drv_set_compress_qos_null_enable_in_bmps(const struct device *dev, struct qcom_wifi_pm_compress_qos_null_params *param)
+{
+    int err = 0;
+    uint8_t enable = param->enable ? 1 : 0;
+
+    qapi_Status_t ret = qapi_bmps_compress_qos_null_enable(enable);
+    if(ret != QAPI_OK) {
+        LOG_ERR("fail to set compress qos null, ret = %d", ret);
+        ret = -EINVAL;
+    }
+
+    return err;
+}
+
+static int qwifi_ps_drv_set_rx_filter_in_bmps(const struct device *dev, struct qcom_wifi_pm_rx_filter_params *param)
+{
+    int err = 0;
+    uint8_t enable = param->enable;
+
+    qapi_bmps_rx_filter_enable(enable);
+
+    if (enable) {
+        qapi_bmps_bcmc_rx_filter_cb_register(param->bmps_rx_filter_cb, NULL);
+    }
+
+    return err;
+}
+
+static int qwifi_ps_drv_set_bmps_enable(const struct device *dev, struct qcom_wifi_pm_bmps_params *param)
+{
+    int err = 0;
+
+    qapi_Status_t ret = qapi_bmps_cfg(param->enable, 0);
+    if (ret) {
+        LOG_ERR("fail to enable bmps. ret %d.", ret);
+        err = -EINVAL;
+    }
+
+    return err;
+}
+
+static int qwifi_ps_drv_ignore_bc_mc_in_bmps(const struct device *dev, struct qcom_wifi_pm_ignore_bc_mc_params *param)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t dev_id = dev_data->active_device;
+
+    qapi_WLAN_ignore_bcmc_in_bmps(dev_id, param->enable);
+
+    return 0;
+}
+
+static int wifi_ps_timeout(uint32_t timeout_ms)
+{
+    int err = 0;
+
+    LOG_INF("Set bmps idle_timeout to %d ms", timeout_ms);
+    qapi_Status_t ret = qapi_bmps_cfg(2, timeout_ms);
+    if (ret) {
+        LOG_ERR("idle timeout set fail. ret %d, timeout = %d", ret, timeout_ms);
+        err = -EINVAL;
+    }
+
+    return err;
+}
+
 static int qwifi_power_save(const struct device *dev, struct wifi_ps_params *params)
 {
-    int ret = -1;
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t dev_id = dev_data->active_device;
+    int ret = 0;
+
 #ifdef CONFIG_PM_DEVICE
     pm_device_busy_set(dev);
 #endif
+
     switch (params->type) {
-        case WIFI_PS_PARAM_LISTEN_INTERVAL:
-		    if ((params->listen_interval <
-		         WIFI_LISTEN_INTERVAL_MIN) ||
-		        (params->listen_interval >
-		         WIFI_LISTEN_INTERVAL_MAX)) {
-		        params->fail_reason =
-                    WIFI_PS_PARAM_LISTEN_INTERVAL_RANGE_INVALID;
-		        return -EINVAL;
-		    }
-            ret = wlan_set_sta_slptime(0 , params->listen_interval , 0);
+    case WIFI_PS_PARAM_TIMEOUT:
+        ret = wifi_ps_timeout(params->timeout_ms);
+        break;
+    case WIFI_PS_PARAM_LISTEN_INTERVAL:
+        if ((params->listen_interval < WIFI_LISTEN_INTERVAL_MIN) ||
+            (params->listen_interval > WIFI_LISTEN_INTERVAL_MAX)) {
+            params->fail_reason = WIFI_PS_PARAM_LISTEN_INTERVAL_RANGE_INVALID;
+            ret = -EINVAL;
             break;
 
-        case WIFI_PS_PARAM_WAKEUP_MODE:
-        case WIFI_PS_PARAM_MODE:
-        case WIFI_PS_PARAM_EXIT_STRATEGY:
-        case WIFI_PS_PARAM_TIMEOUT:
-        default:
-            /* Not yet implemented */
-            ret = -ENOTSUP;
-            break;
+        }
+        qapi_WLAN_Listen_Interval_Params_t listen_interval = {0};
+        listen_interval.time = params->listen_interval;
+        qapi_Status_t err = qapi_WLAN_Set_Param(dev_id, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                                                __QAPI_WLAN_PARAM_GROUP_WIRELESS_STA_LISTEN_INTERVAL_IN_TU,
+                                                &listen_interval, sizeof(listen_interval), FALSE);
+        if (err != QAPI_OK) {
+            LOG_ERR("fail to set listen interval err = %d", err);
+            ret = -EINVAL;
+        }
+        break;
+    case WIFI_PS_PARAM_WAKEUP_MODE:
+    case WIFI_PS_PARAM_MODE:
+    case WIFI_PS_PARAM_STATE:
+    case WIFI_PS_PARAM_EXIT_STRATEGY:
+    default:
+        params->fail_reason = WIFI_PS_PARAM_FAIL_OPERATION_NOT_SUPPORTED;
+        ret = -ENOTSUP;
+        break;
     }
+
     return ret;
 }
 
 int qwifi_get_power_save(const struct device *dev, struct wifi_ps_config *config)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
-    uint8_t deviceId = dev_data->active_device;
+    uint8_t dev_id = dev_data->active_device;
     uint16_t listen_interval;
     uint32_t length = sizeof(listen_interval);
 
@@ -2345,12 +2391,75 @@ int qwifi_get_power_save(const struct device *dev, struct wifi_ps_config *config
     pm_device_busy_set(dev);
 #endif
 
-    qapi_WLAN_Get_Param (deviceId,
+    qapi_WLAN_Get_Param(dev_id,
                          __QAPI_WLAN_PARAM_GROUP_WIRELESS,
                          __QAPI_WLAN_PARAM_GROUP_WIRELESS_STA_LISTEN_INTERVAL_IN_TU,
                          &listen_interval,
                          &length);
+
     config->ps_params.listen_interval = listen_interval;
+    config->ps_params.exit_strategy = WIFI_PS_EXIT_EVERY_TIM;
+    config->ps_params.mode = WIFI_PS_MODE_LEGACY;
+
+    return 0;
+}
+
+static int qwifi_drv_dev_init(const struct device *dev)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    if (strcmp(dev->name, "qwifi_sta") == 0) {
+        g_qwifi_dev_by_id[QCOM_DEV_STA_ID] = dev;
+        qwifi_init();
+        qapi_WLAN_Set_Callback(qwifi_drv_event_handler, (void *)dev);
+    }
+    else if (strcmp(dev->name, "qwifi_sap") == 0) {
+        g_qwifi_dev_by_id[QCOM_DEV_AP_ID] = dev;
+    }
+    dev_data->dev = dev;
+
+    dev_data->e_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
+
+    struct qcom_wifi_mgmt_ops qwifi_ops = {
+        .set_tx_power = qwifi_drv_set_tx_power,
+        .get_tx_power = qwifi_drv_get_tx_power,
+        .unit_test = qwifi_drv_unit_test,
+        .set_rts_cts        = qwifi_drv_set_rts_cts,
+        .set_rts_rate       = qwifi_drv_set_rts_rate,
+        .set_edca_param_cfg = qwifi_drv_set_edca_param_cfg,
+        .set_threshold      = qwifi_drv_set_threshold,
+        .set_ba_win_timing    = qwifi_drv_set_ba_win_timing,
+        .set_slot_time      = qwifi_drv_set_slot_time,
+        .set_phy_mode       = qwifi_drv_set_phy_mode,
+        .set_aggregation    = qwifi_drv_set_aggregation,
+        .set_amsdu_rx       = qwifi_drv_set_amsdu_rx,
+        .set_rate           = qwifi_drv_set_rate,
+        .set_sap_csa        = qwifi_drv_set_sap_csa,
+
+        .get_rts_cts        = qwifi_drv_get_rts_cts,
+        .get_rts_rate       = qwifi_drv_get_rts_rate,
+        .get_edca_param_cfg = qwifi_drv_get_edca_param_cfg,
+        .get_threshold      = qwifi_drv_get_threshold,
+        .get_ba_win_timing    = qwifi_drv_get_ba_win_timing,
+        .get_slot_time      = qwifi_drv_get_slot_time,
+        .get_phy_mode       = qwifi_drv_get_phy_mode,
+        .get_power_mode     = qwifi_drv_get_power_mode,
+        .get_boot_reason    = qwifi_drv_get_boot_reason,
+        .get_mac_address    = qwifi_drv_get_mac_address,
+        .get_concurrency_mode = qwifi_drv_get_concurrency_mode,
+        .get_operation_mode = qwifi_drv_get_operation_mode,
+        .get_rate           = qwifi_drv_get_rate,
+        .set_bmiss_threshold      = qwifi_drv_set_bmiss_threshold,
+        .get_bmiss_threshold      = qwifi_drv_get_bmiss_threshold,
+        .set_op_mode = qwifi_drv_set_op_mode,
+        .set_device_id = qwifi_drv_set_active_deviceid,
+        .set_bmps_enable = qwifi_ps_drv_set_bmps_enable,
+        .set_ignore_bc_mc_in_bmps = qwifi_ps_drv_ignore_bc_mc_in_bmps,
+        .set_power_optimization_enable_in_bmps = qwifi_ps_drv_set_power_optimization_enable_in_bmps,
+        .set_compress_qos_null_enable_in_bmps = qwifi_ps_drv_set_compress_qos_null_enable_in_bmps,
+        .set_rx_filter_in_bmps = qwifi_ps_drv_set_rx_filter_in_bmps
+    };
+    dev_data->qcom_wifi_cmd = qwifi_ops;
+
     return 0;
 }
 
