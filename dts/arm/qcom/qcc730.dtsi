@@ -183,9 +183,9 @@
 
 		rtc: rtc {
 			compatible = "qcom,qcc730-rtc";
-			qtimer-frame = <&frame0>;
+			qtimer-frame = <&frame4>;
 			alarms-count = <1>;
-			status = "disabled";
+			status = "okay";
 		};
 
 		aon_timer0: aon_timer {
@@ -215,6 +215,41 @@
 		qspi_nor_flash3: gt25q32au@0 {
 			compatible = "qcom,qspi-qcc730-nor";
 			device-id = <0x001660c4>;
+			reg = <0 0x400000>;
+			status = "disabled";
+		};
+
+		qspi_nor_flash4: zd25wq32ce@0 {
+			compatible = "qcom,qspi-qcc730-nor";
+			device-id = <0x001660ba>;
+			reg = <0 0x400000>;
+			status = "disabled";
+		};
+
+		qspi_nor_flash5: gd25lq32ee@0 {
+			compatible = "qcom,qspi-qcc730-nor";
+			device-id = <0x001660c8>;
+			reg = <0 0x400000>;
+			status = "disabled";
+		};
+		
+		qspi_nor_flash6: PY25Q32HB@0 {
+			compatible = "qcom,qspi-qcc730-nor";
+			device-id = <0x00162085>;
+			reg = <0 0x400000>;
+			status = "disabled";
+		};
+
+		qspi_nor_flash7: PY25Q64HA@0 {
+			compatible = "qcom,qspi-qcc730-nor";
+			device-id = <0x00172085>;
+			reg = <0 0x400000>;
+			status = "disabled";
+		};
+
+		qspi_nor_flash8: PY25Q32LC@0 {
+			compatible = "qcom,qspi-qcc730-nor";
+			device-id = <0x00166585>;
 			reg = <0 0x400000>;
 			status = "disabled";
 		};

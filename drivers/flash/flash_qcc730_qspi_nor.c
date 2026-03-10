@@ -781,8 +781,8 @@ int flash_qcc730_qspi_nor_erase(const struct device *dev, off_t offset, size_t s
 	uint32_t erase_timeout = ERASE_TIMEOUT;
 	uint32_t erase_polling = ERASE_STATUS_POLLING_MSEC;
 	uint32_t address = offset;
+	uint32_t remaining_size = size;
 	uint32_t size_of_chunk = 0;
-	uint16_t op_cnt = 1;
 	int ret = 0;
 
 	if (!area_is_valid(dev, offset, size)) {
@@ -807,31 +807,9 @@ int flash_qcc730_qspi_nor_erase(const struct device *dev, off_t offset, size_t s
 		drv_qspi_disable_xip_mode();
 	}
 #endif
-	if (size == flash_size) {
-		/* Whole chip erase*/
-		opcode = data->flash_ctx_data.config->chip_erase_opcode;
-		addr_bytes_num = 0;
-		erase_timeout = CHIP_ERASE_TIMEOUT;
-		erase_polling = CHIP_ERASE_STATUS_POLLING_MSEC;
-		size_of_chunk = flash_size;
-		op_cnt = 1;
-	} else if (size % SIZE_64K_BYTES == 0) {
-		/* Block erase (64kB) */
-		opcode = data->flash_ctx_data.config->bulk_erase_opcode;
-		size_of_chunk = SIZE_64K_BYTES;
-		op_cnt = MAX(size / SIZE_64K_BYTES, 1);
-	} else {
-		/* Sector erase (4kB) */
-		opcode = data->flash_ctx_data.config->erase_4kb_opcode;
-		size_of_chunk = BLOCK_SIZE_IN_BYTES;
-		op_cnt = MAX(size / BLOCK_SIZE_IN_BYTES, 1);
-	}
-
-	(void)drv_qspi_prepare_cmd(&qspi_erase_cmd, opcode, addr_bytes_num, 0, QSPI_SDR_1BIT_E,
-				   QSPI_SDR_1BIT_E, QSPI_SDR_1BIT_E, false);
 
 #if CONFIG_FLASH_QCC730_XIP_MODE
-	/* Single the HW write operation is ongoing. Needed for XIP. */
+	/* Signal the HW write operation is ongoing. Needed for XIP. */
 	if (data->flash_ctx_data.config->suspend_program_opcode > 0 &&
 	    data->flash_ctx_data.config->resume_program_opcode > 0) {
 		(void)drv_qspi_xip_set_pe_state(true);
@@ -843,11 +821,21 @@ int flash_qcc730_qspi_nor_erase(const struct device *dev, off_t offset, size_t s
 	}
 #endif
 
-	while (op_cnt) {
+	/* Handle chip erase specially */
+	if (size == flash_size) {
+		/* Whole chip erase */
+		opcode = data->flash_ctx_data.config->chip_erase_opcode;
+		addr_bytes_num = 0;
+		erase_timeout = CHIP_ERASE_TIMEOUT;
+		erase_polling = CHIP_ERASE_STATUS_POLLING_MSEC;
+
+		(void)drv_qspi_prepare_cmd(&qspi_erase_cmd, opcode, addr_bytes_num, 0,
+					   QSPI_SDR_1BIT_E, QSPI_SDR_1BIT_E, QSPI_SDR_1BIT_E, false);
+
 		ret = drv_flash_write_enable(dev);
 		if (ret != 0) {
 			ret = -ENODEV;
-			break;
+			goto cleanup;
 		}
 
 		drv_qspi_run_cmd(&qspi_erase_cmd, address, NULL, 0, QSPI_TRANS_MODE);
@@ -856,13 +844,133 @@ int flash_qcc730_qspi_nor_erase(const struct device *dev, off_t offset, size_t s
 						    ERASE_OPERATION, PROG_ERASE_WRITE_BUSY_BMSK, 0);
 		if (ret != 0) {
 			ret = -ECOMM;
-			break;
 		}
-
-		address += size_of_chunk;
-		op_cnt--;
+		goto cleanup;
 	}
 
+	/* Mixed erase strategy for non-chip erase:
+	 * 1. Use sector erase (4KB) to align to 64KB block boundary
+	 * 2. Use block erase (64KB) for aligned blocks
+	 * 3. Use sector erase (4KB) for remaining unaligned tail
+	 */
+
+	/* Phase 1: Erase sectors until we reach 64KB block alignment */
+	if (address % SIZE_64K_BYTES != 0) {
+		uint32_t align_size = SIZE_64K_BYTES - (address % SIZE_64K_BYTES);
+		if (align_size > remaining_size) {
+			align_size = remaining_size;
+		}
+
+		/* Use sector erase for alignment */
+		opcode = data->flash_ctx_data.config->erase_4kb_opcode;
+		size_of_chunk = BLOCK_SIZE_IN_BYTES;
+		erase_timeout = ERASE_TIMEOUT;
+		erase_polling = ERASE_STATUS_POLLING_MSEC;
+
+		(void)drv_qspi_prepare_cmd(&qspi_erase_cmd, opcode, data->flash_ctx_data.config->addr_bytes,
+					   0, QSPI_SDR_1BIT_E, QSPI_SDR_1BIT_E, QSPI_SDR_1BIT_E, false);
+
+		uint32_t sector_count = (align_size + BLOCK_SIZE_IN_BYTES - 1U) / BLOCK_SIZE_IN_BYTES;
+		while (sector_count > 0U) {
+			ret = drv_flash_write_enable(dev);
+			if (ret != 0) {
+				ret = -ENODEV;
+				goto cleanup;
+			}
+
+			drv_qspi_run_cmd(&qspi_erase_cmd, address, NULL, 0, QSPI_TRANS_MODE);
+
+			ret = drv_flash_wait_operation_done(dev, erase_timeout, erase_polling * 1000,
+							    ERASE_OPERATION, PROG_ERASE_WRITE_BUSY_BMSK, 0);
+			if (ret != 0) {
+				ret = -ECOMM;
+				goto cleanup;
+			}
+
+			address += size_of_chunk;
+			if (remaining_size >= size_of_chunk) {
+				remaining_size -= size_of_chunk;
+			} else {
+				remaining_size = 0;
+			}
+			sector_count--;
+		}
+	}
+
+	/* Phase 2: Erase 64KB blocks for aligned portion */
+	if (remaining_size >= SIZE_64K_BYTES && (address % SIZE_64K_BYTES == 0)) {
+		uint32_t block_count = remaining_size / SIZE_64K_BYTES;
+
+		/* Use block erase for efficiency */
+		opcode = data->flash_ctx_data.config->bulk_erase_opcode;
+		size_of_chunk = SIZE_64K_BYTES;
+		erase_timeout = ERASE_TIMEOUT;
+		erase_polling = ERASE_STATUS_POLLING_MSEC;
+
+		(void)drv_qspi_prepare_cmd(&qspi_erase_cmd, opcode, data->flash_ctx_data.config->addr_bytes,
+					   0, QSPI_SDR_1BIT_E, QSPI_SDR_1BIT_E, QSPI_SDR_1BIT_E, false);
+
+		while (block_count > 0) {
+			ret = drv_flash_write_enable(dev);
+			if (ret != 0) {
+				ret = -ENODEV;
+				goto cleanup;
+			}
+
+			drv_qspi_run_cmd(&qspi_erase_cmd, address, NULL, 0, QSPI_TRANS_MODE);
+
+			ret = drv_flash_wait_operation_done(dev, erase_timeout, erase_polling * 1000,
+							    ERASE_OPERATION, PROG_ERASE_WRITE_BUSY_BMSK, 0);
+			if (ret != 0) {
+				ret = -ECOMM;
+				goto cleanup;
+			}
+
+			address += size_of_chunk;
+			remaining_size -= size_of_chunk;
+			block_count--;
+		}
+	}
+
+	/* Phase 3: Erase remaining sectors (tail) */
+	if (remaining_size > 0) {
+		/* Use sector erase for remaining */
+		opcode = data->flash_ctx_data.config->erase_4kb_opcode;
+		size_of_chunk = BLOCK_SIZE_IN_BYTES;
+		erase_timeout = ERASE_TIMEOUT;
+		erase_polling = ERASE_STATUS_POLLING_MSEC;
+
+		(void)drv_qspi_prepare_cmd(&qspi_erase_cmd, opcode, data->flash_ctx_data.config->addr_bytes,
+					   0, QSPI_SDR_1BIT_E, QSPI_SDR_1BIT_E, QSPI_SDR_1BIT_E, false);
+
+		uint32_t tail_sector_count = (remaining_size + BLOCK_SIZE_IN_BYTES - 1U) / BLOCK_SIZE_IN_BYTES;
+		while (tail_sector_count > 0U) {
+			ret = drv_flash_write_enable(dev);
+			if (ret != 0) {
+				ret = -ENODEV;
+				goto cleanup;
+			}
+
+			drv_qspi_run_cmd(&qspi_erase_cmd, address, NULL, 0, QSPI_TRANS_MODE);
+
+			ret = drv_flash_wait_operation_done(dev, erase_timeout, erase_polling * 1000,
+							    ERASE_OPERATION, PROG_ERASE_WRITE_BUSY_BMSK, 0);
+			if (ret != 0) {
+				ret = -ECOMM;
+				goto cleanup;
+			}
+
+			address += size_of_chunk;
+			if (remaining_size >= size_of_chunk) {
+				remaining_size -= size_of_chunk;
+			} else {
+				remaining_size = 0;
+			}
+			tail_sector_count--;
+		}
+	}
+
+cleanup:
 #if CONFIG_FLASH_QCC730_XIP_MODE
 	(void)drv_qspi_xip_set_pe_state(false);
 	if (QSPI_TRANS_MODE == QSPI_PIO_MODE_E) {
@@ -874,7 +982,7 @@ int flash_qcc730_qspi_nor_erase(const struct device *dev, off_t offset, size_t s
 	k_sem_give(&data->sem);
 #endif
 
-	return 0;
+	return ret;
 }
 
 int flash_qcc730_qspi_nor_write(const struct device *dev, off_t offset, const void *write_buff,

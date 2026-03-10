@@ -358,7 +358,7 @@ static int qtmr_qcc730_init(const struct device *dev)
 
 #ifdef CONFIG_PM_DEVICE
 
-static int qtmr_qcc730_deinit(const struct device *dev)
+static __maybe_unused int qtmr_qcc730_deinit(const struct device *dev)
 {
 	int ret = 0;
 	const struct qtmr_qcc730_cfg *cfg = dev->config;
@@ -380,7 +380,6 @@ static int qtmr_qcc730_deinit(const struct device *dev)
 
 static int qtmr_qcc730_pm_action(const struct device *dev, enum pm_device_action action)
 {
-	const struct qtmr_qcc730_cfg *cfg = dev->config;
 	// LOG_ERR("qtmr_qcc730_pm_action frame %d", cfg->frame_id);
 	switch (action) {
 	case PM_DEVICE_ACTION_SUSPEND:

@@ -10,6 +10,11 @@
 #include <zephyr/sys/barrier.h>
 #include <zephyr/platform/hooks.h>
 #include <zephyr/arch/cache.h>
+#include <zephyr/arch/common/init.h>
+#include <zephyr/arch/common/xip.h>
+
+#include "nt_socpm_sleep.h"
+#include "nt_sys_monitoring.h"
 
 #if defined(__GNUC__)
 /*
@@ -82,6 +87,13 @@ void __weak relocate_vector_table(void)
 #include <kernel_internal.h>
 
 #include <zephyr/linker/linker-defs.h>
+#include <zephyr/arch/common/init.h>
+
+/* Function declarations to avoid implicit declaration warnings */
+extern uint64_t nt_socpm_get_slp_tmr_us(void);
+extern void nt_system_sw_reset(void);
+extern void arch_bss_zero(void);
+extern void arch_data_copy(void);
 
 typedef struct {
     uint64_t bootup_slp_us;
@@ -226,9 +238,6 @@ typedef struct boot_sbl_share_s{
 #define BOOT_MODE_RAM_LOAD   0x2
 #define SBL_SHARE_MAGIC      0x55aa55aa
 
-static uint32_t g_boot_mode = BOOT_MODE_FULL_LOAD;
-static boot_sbl_share *g_sbl_share = NULL;
-
 #define APP_ARGS_MAGIC	(0x55aa55aa)
 enum ota_image_format {
     OTA_IMG_FORMAT_ELF,
@@ -258,9 +267,8 @@ void rram_boot_early_init(void *sbl_args)
     }
     else
     {
-        int *addr;
-        for(addr=__bss_start; addr<__bss_end; addr++)
-            *addr = 0;
+	    size_t bss_size = (size_t)(__bss_end - __bss_start);
+	    memset(__bss_start, 0, bss_size);
     }
 }
 

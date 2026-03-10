@@ -16,19 +16,33 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #include <zephyr/net/wifi_mgmt.h>
 #include <zephyr/device.h>
 #include <soc.h>
+#include "qapi_lowpower.h"
 #ifdef CONFIG_PM_DEVICE
 #include <zephyr/pm/device.h>
+#include <zephyr/pm/policy.h>
+#include <zephyr/pm/pm.h>
 #endif
 
+#include "qapi_status.h"
 #include <qwifi_api.h>
 #include <libwifi.h>
 #include <libwifi/wlan_defs.h>
 #include "inc/qcom_wifi_mgmt.h"
+#include "wlan_drv.h"
+#include "wlan_qapi_helper.h"
+
+#ifdef CONFIG_WIFI_NM
+#include <zephyr/net/wifi_nm.h>
+#endif
+#include "wlan_qapi_helper.h"
 
 #define SCAN_MODE_BLOCKING 1
 #define SCAN_MODE_UNBLOCKING 2
-#define NT_DEV_STA_ID 1
+#define QCOM_DEV_STA_ID 1
+#define QCOM_DEV_AP_ID  0
+#define QCOM_MAX_DEVICES 2
 #define EDGE_BAND_10MHz 10
+#define CONFIG_WIFI_SAP_PRIORITY 81
 
 struct qwifi_bss_status_t {
     bool connected;
@@ -65,14 +79,54 @@ static struct qwifi_drv_dev_cfg_t g_wifi_dev_cfg = {
     .scan_mode = SCAN_MODE_UNBLOCKING,
 };
 
-
 static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity);
-static TimerHandle_t wifi_activity_timer;
-
 void clear_wifi_busy(void);
+#ifdef CONFIG_PM_DEVICE
+extern qapi_Status_t qapi_WLAN_Activity_Register_CB(void (*callback)(PM_WLAN_ACTIVITY_STATUS));
+#endif
 
-
-static uint32_t wifi_activity_interval_ms = 30;
+static const uint32_t rate_index_to_kbps[] = {
+    /* RateIndex 0-7, 802.11b rates */
+    1000,   /* HAL_RT_IDX_11B_LONG_1_MBPS */
+    2000,   /* HAL_RT_IDX_11B_LONG_2_MBPS */
+    5500,   /* HAL_RT_IDX_11B_LONG_5_5_MBPS */
+    11000,  /* HAL_RT_IDX_11B_LONG_11_MBPS */
+    1000,   /* HAL_RT_IDX_11B_LONG_1_MBPS_DUP */
+    2000,   /* HAL_RT_IDX_11B_SHORT_2_MBPS */
+    5500,   /* HAL_RT_IDX_11B_SHORT_5_5_MBPS */
+    11000,  /* HAL_RT_IDX_11B_SHORT_11_MBPS */
+    
+    /* RateIndex 8-15, 802.11a/g rates */
+    6000,   /* HAL_RT_IDX_11A_6_MBPS */
+    9000,   /* HAL_RT_IDX_11A_9_MBPS */
+    12000,  /* HAL_RT_IDX_11A_12_MBPS */
+    18000,  /* HAL_RT_IDX_11A_18_MBPS */
+    24000,  /* HAL_RT_IDX_11A_24_MBPS */
+    36000,  /* HAL_RT_IDX_11A_36_MBPS */
+    48000,  /* HAL_RT_IDX_11A_48_MBPS */
+    54000,  /* HAL_RT_IDX_11A_54_MBPS */
+    
+    /* RateIndex 16-23, 802.11n HT20 MCS0-7 (Long GI) */
+    6500,   /* HAL_RT_IDX_MCS_1NSS_MM_6_5_MBPS */
+    13000,  /* HAL_RT_IDX_MCS_1NSS_MM_13_MBPS */
+    19500,  /* HAL_RT_IDX_MCS_1NSS_MM_19_5_MBPS */
+    26000,  /* HAL_RT_IDX_MCS_1NSS_MM_26_MBPS */
+    39000,  /* HAL_RT_IDX_MCS_1NSS_MM_39_MBPS */
+    52000,  /* HAL_RT_IDX_MCS_1NSS_MM_52_MBPS */
+    58500,  /* HAL_RT_IDX_MCS_1NSS_MM_58_5_MBPS */
+    65000,  /* HAL_RT_IDX_MCS_1NSS_MM_65_MBPS */
+    
+    /* RateIndex 24-31, 802.11n HT20 MCS0-7 (Short GI) */
+    7200,   /* HAL_RT_IDX_MCS_1NSS_MM_SG_7_2_MBPS */
+    14400,  /* HAL_RT_IDX_MCS_1NSS_MM_SG_14_4_MBPS */
+    21700,  /* HAL_RT_IDX_MCS_1NSS_MM_SG_21_7_MBPS */
+    28900,  /* HAL_RT_IDX_MCS_1NSS_MM_SG_28_9_MBPS */
+    43300,  /* HAL_RT_IDX_MCS_1NSS_MM_SG_43_3_MBPS */
+    57800,  /* HAL_RT_IDX_MCS_1NSS_MM_SG_57_8_MBPS */
+    65000,  /* HAL_RT_IDX_MCS_1NSS_MM_SG_65_MBPS */
+    72200,  /* HAL_RT_IDX_MCS_1NSS_MM_SG_72_2_MBPS */
+};
+#define MAX_RATE_INDEX (sizeof(rate_index_to_kbps) / sizeof(rate_index_to_kbps[0]))
 
 static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity)
 {
@@ -89,7 +143,6 @@ static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity)
     //if wifi do not busy in check period, clear it
     if (activity == PM_WLAN_ACTIVITY_IDLE) {
         if(pm_device_is_busy(wifi_dev)) {
-            LOG_DBG("wifi busy clear\r\n");
             pm_device_busy_clear(wifi_dev);
         }
     } else {
@@ -97,6 +150,12 @@ static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity)
     }
 }
 
+static struct qwifi_drv_dev_data_t g_wifi_dev_data_sap;
+static struct qwifi_drv_dev_cfg_t g_wifi_dev_cfg_sap = {
+    .scan_mode = SCAN_MODE_UNBLOCKING,
+};
+
+static const struct device *g_qwifi_dev_by_id[2] = {NULL, NULL};
 
 const struct qcom_wifi_mgmt_ops *const get_qcom_wifi_api(struct net_if *iface)
 {
@@ -108,13 +167,7 @@ const struct qcom_wifi_mgmt_ops *const get_qcom_wifi_api(struct net_if *iface)
 	}
 	struct qwifi_drv_dev_data_t *dev_data = dev->data;
 	off_api = &dev_data->qcom_wifi_cmd;
-#ifdef CONFIG_WIFI_NM
-	struct wifi_nm_instance *nm = wifi_nm_get_instance_iface(iface);
 
-	if (nm) {
-		return nm->ops;
-	}
-#endif /* CONFIG_WIFI_NM */
 	return off_api ? off_api : NULL;
 }
 
@@ -318,9 +371,9 @@ static void qwifi_disconnect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t
                         __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
                         &dev_mode, &size);
 
-    if (dev_mode == DEV_MODE_STATION_E) {
+    if (dev_id == QCOM_DEV_STA_ID) {
         station_disconnect_event(dev, info);
-    } else if (dev_mode == DEV_MODE_AP_E) {
+    } else if (dev_id == QCOM_DEV_AP_ID) {
         ap_station_disconnect_event(dev, info);
     } else {
         LOG_ERR("Unknown dev mode %d", dev_mode);
@@ -329,15 +382,27 @@ static void qwifi_disconnect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t
 
 static void qwifi_drv_event_handler(uint8_t dev_id, uint32_t event, void *context, void *private, uint32_t length)
 {
+    struct device *target_dev = NULL;
+
+    if (dev_id < 2) {
+        target_dev = (struct device *)g_qwifi_dev_by_id[dev_id];
+    }
+    if (target_dev == NULL) {
+        target_dev = (struct device *)context;
+    }
+
     switch (event) {
     case QAPI_WLAN_SCAN_COMPLETE_CB_E:
-        qwifi_scan_complete_event(context, private);
+        qwifi_scan_complete_event(target_dev, private);
         break;
     case QAPI_WLAN_CONNECT_CB_E:
-        qwifi_connect_event(context, private);
+        qwifi_connect_event(target_dev, private);
         break;
     case QAPI_WLAN_DISCONNECT_CB_E:
-        qwifi_disconnect_event(context, private);
+        qwifi_disconnect_event(target_dev, private);
+        break;
+    case QAPI_WLAN_CHANNEL_SWITCH_CB_E:
+        LOG_INF("CSA Done.");
         break;
     default:
         LOG_WRN("%s:%d event: %d, ignored.", __FUNCTION__, __LINE__, event);
@@ -375,6 +440,7 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
     qapi_WLAN_Crypt_Type_e e_cipher;
     const uint8_t *psk = NULL;
     uint8_t psk_length = 0;
+    wlan_qapi_cxt_t *p_cxt = gp_wlan_qapi_cxt;
 
 #ifdef CONFIG_PM_DEVICE
     pm_device_busy_set(dev);
@@ -410,12 +476,14 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
         return -EIO;
     }
 
-    qapi_WLAN_DEV_Mode_e mode = DEV_MODE_STATION_E;
-    qapi_Status_t ret = qapi_WLAN_Set_Param(0, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
+    if (p_cxt->conc_mode == DEV_MODE_NO_CONC_E) {
+        qapi_WLAN_DEV_Mode_e mode = DEV_MODE_STATION_E;
+        qapi_Status_t ret = qapi_WLAN_Set_Param(0, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
                                             &mode, sizeof(mode), false);
-    if (ret) {
-        LOG_ERR("set station mode fail");
-        return -EINVAL;
+        if (ret) {
+            LOG_ERR("set station mode fail");
+            return -EINVAL;
+        }
     }
 
     if (params->ssid_length) {
@@ -424,10 +492,9 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
         LOG_DBG("ssid=%s", params->ssid);
     }
 
-    if(deviceId == NT_DEV_STA_ID) {
-	if (params->bssid && (params->bssid[0] || params->bssid[1]
-				|| params->bssid[2] || params->bssid[3]
-				|| params->bssid[4] || params->bssid[5])) {
+    if(deviceId == QCOM_DEV_STA_ID) {
+	if (params->bssid[0] || params->bssid[1] || params->bssid[2] ||
+	    params->bssid[3] || params->bssid[4] || params->bssid[5]) {
 		qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
 				__QAPI_WLAN_PARAM_GROUP_WIRELESS_BSSID,
 				(void *)params->bssid, __QAPI_WLAN_MAC_LEN, false);
@@ -462,6 +529,8 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
                             sizeof(qapi_WLAN_Crypt_Type_e), false);
         qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
                             __QAPI_WLAN_PARAM_GROUP_SECURITY_PASSPHRASE, (void *)psk, psk_length, false);
+    } else {
+        wlan_clear_privacy();
     }
 
     qapi_WLAN_Commit(deviceId);
@@ -605,9 +674,9 @@ static int qwifi_drv_get_tx_power(const struct device *dev, struct qcom_wifi_get
 static int ap_enable(const struct device *dev, struct wifi_connect_req_params *params)
 {
     qapi_Status_t ret;
-    const uint8_t dev_id = 0;
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     struct qwifi_ap_status_t *ap_status = &dev_data->ap_status;
+    const uint8_t dev_id = dev_data->active_device;
 
 #ifdef CONFIG_PM_DEVICE
     pm_device_busy_set(dev);
@@ -739,7 +808,7 @@ static int ap_sta_disconnect(const struct device *dev, const uint8_t *mac)
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     uint8_t dev_id = dev_data->active_device;
 
-    #ifdef CONFIG_PM_DEVICE
+#ifdef CONFIG_PM_DEVICE
     pm_device_busy_set(dev);
 #endif
 
@@ -747,6 +816,28 @@ static int ap_sta_disconnect(const struct device *dev, const uint8_t *mac)
 
     return 0;
 }
+
+static int ap_config_params(const struct device *dev, struct wifi_ap_config_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t dev_id = dev_data->active_device;
+
+    if (params->type != WIFI_AP_CONFIG_PARAM_MAX_INACTIVITY) {
+        return -EINVAL;
+    }
+
+    uint32_t inactive_time = params->max_inactivity;
+    qapi_Status_t ret = qapi_WLAN_Set_Param(dev_id, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_AP_INACTIVITY_TIME_IN_SECONDS,
+                        &inactive_time, sizeof(inactive_time), false);
+    if (ret) {
+        LOG_ERR("Fail to set AP inactivity time %u. %d", inactive_time, ret);
+        return -EIO;
+    }
+
+    return 0;
+}
+
 static int qwifi_drv_unit_test(const struct device *dev, struct qcom_wifi_unit_test_params *params)
 {
     qapi_Status_t ret = QAPI_WLAN_ERROR;
@@ -1196,7 +1287,6 @@ static int qwifi_drv_get_boot_reason(const struct device *dev, struct qcom_wifi_
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     uint8_t deviceId = dev_data->active_device;
     qapi_boot_reason_t data = 0;
-    uint32_t length = sizeof(data);
 
     if (QAPI_OK != qapi_core_obtain_boot_reason(&data)) {
         LOG_ERR("get boot reason fail for device %d", deviceId);
@@ -1349,6 +1439,22 @@ static int qwifi_drv_set_bmiss_threshold(const struct device *dev, struct qcom_w
         return -EIO;
     }
     return 0;
+}
+
+static int qwifi_drv_set_sap_csa(const struct device *dev, struct qcom_wifi_csa_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t dev_id = dev_data->active_device;
+
+    /* not support 6G, default is false */
+    qapi_Status_t ret = qapi_WLAN_Sap_Csa(dev_id, params->switch_mode, params->new_channel, false, params->switch_count);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to CSA, ret %d, switch mode %d, switch channel number %d, channel switch count %d",
+                ret, params->switch_mode, params->new_channel, params->switch_count);
+        return -EINVAL;
+    }
+
+    return ret;
 }
 
 /**
@@ -1591,6 +1697,109 @@ static int qwifi_drv_get_bmiss_threshold(const struct device *dev, struct qcom_w
     return 0;
 }
 
+int32_t set_op_mode(char *opmode, char *hidden_ssid)
+{
+	int32_t ret = -1;
+    uint8_t hidden_flag = 0;
+    qapi_WLAN_DEV_Mode_e devMode;
+    const uint8_t dev_id = 0;
+
+    if (!opmode || !hidden_ssid) {
+        LOG_ERR("Invalid NULL parameters");
+        return -EINVAL;
+    }
+
+    if(!strcmp(opmode,"ap")) {
+        devMode = DEV_MODE_AP_E;
+        if(strcmp(hidden_ssid,"hidden") == 0) {
+            hidden_flag = 1;
+        }
+        else if(strcmp(hidden_ssid,"0") == 0 || strlen(hidden_ssid) == 0) {
+            hidden_flag = 0;
+        }
+        else {
+            LOG_ERR("Invalid hidden_ssid value: %s", hidden_ssid);
+            return -EINVAL;
+        }
+    }
+	else if(!strcmp(opmode,"station")) {
+		devMode = DEV_MODE_STATION_E;
+	}
+	#ifdef NT_FN_CONCURRENCY
+	else if(!strcmp(opmode,"ap_sta")) {
+		devMode = DEV_MODE_AP_STA_E;
+	}
+	#endif
+	else {
+		LOG_INF("unknown mode %s\n",opmode);
+		return -EINVAL;
+	}
+
+	ret = qapi_WLAN_Set_Param(dev_id,
+							__QAPI_WLAN_PARAM_GROUP_WIRELESS,
+							__QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
+							&devMode,
+							sizeof(devMode),
+							FALSE);
+
+	if(ret != QAPI_OK) {
+		info_printf("set mode %s fail\n", opmode);
+		return -EINVAL;
+	}
+	
+	if(devMode == DEV_MODE_AP_E) {
+		ret = qapi_WLAN_Set_Param(dev_id, 
+								__QAPI_WLAN_PARAM_GROUP_WIRELESS,
+								__QAPI_WLAN_PARAM_GROUP_WIRELESS_AP_ENABLE_HIDDEN_MODE,
+								&hidden_flag,
+								sizeof(hidden_flag),
+								FALSE);
+		if(ret != 0) {
+			LOG_INF("Not able to set hidden mode for AP \r\n");
+			return -EINVAL;
+		}
+	}
+	return ret;
+}
+
+int32_t qwifi_drv_set_active_deviceid(const struct device *dev, uint16_t *deviceId)
+{
+    uint16_t active_device_id = *deviceId;
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+
+    dev_data->active_device = *deviceId;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(0,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_DEVICE_ID,
+                        &active_device_id,
+                        sizeof(active_device_id),
+                        false);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set device id for device");
+        return -EIO;
+    }
+    return 0;
+}
+
+static int qwifi_drv_set_op_mode(const struct device *dev, struct qcom_wifi_set_op_mode_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    char *opmode = params->opmode;
+    char *hidden_ssid = params->hidden_ssid;
+    int ret = 0;
+
+    ret = set_op_mode(opmode, hidden_ssid);
+
+    if (ret < 0) {
+        LOG_ERR("Failed to set operation mode for device %d, ret=%d", deviceId, ret);
+        return ret;
+    }
+
+    return 0;
+}
+
 static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_status *status)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
@@ -1600,6 +1809,7 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
 
     qapi_WLAN_DEV_Mode_e dev_mode = DEV_MODE_STATION_E;
     uint32_t size = sizeof(dev_mode);
+    qapi_WLAN_Set_Rate_Params_t rate_cfg = {0};
 #ifdef CONFIG_PM_DEVICE
     pm_device_busy_set(dev);
 #endif
@@ -1655,8 +1865,14 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
 
     /* security */
     switch (wifi_status.auth_mode) {
+    case QAPI_WLAN_AUTH_WPA3_SAE_E:
+        status->security = WIFI_SECURITY_TYPE_SAE;
+        break;
     case QAPI_WLAN_AUTH_WPA2_PSK_E:
         status->security = WIFI_SECURITY_TYPE_PSK;
+        break;
+    case QAPI_WLAN_AUTH_WPA_PSK_E:
+        status->security = WIFI_SECURITY_TYPE_WPA_PSK;
         break;
     case QAPI_WLAN_AUTH_NONE_E:
         status->security = WIFI_SECURITY_TYPE_NONE;
@@ -1671,6 +1887,20 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
     status->beacon_interval = wifi_status.beacon_interval;
     status->band = wifi_status.band;
     status->channel = wifi_status.channel;
+
+    rate_cfg.rate_staid = dev_id;
+    ret = qapi_WLAN_Get_Rate(&rate_cfg);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to get rate (staid=%u): %d", rate_cfg.rate_staid, ret);
+        return ret;
+    }
+
+    if (rate_cfg.rate_p_rate >= MAX_RATE_INDEX) {
+        LOG_ERR("Invalid rate index: %d", rate_cfg.rate_p_rate);
+        return -EINVAL;
+    }
+
+    status->current_phy_tx_rate = rate_index_to_kbps[rate_cfg.rate_p_rate] / 1000.0;
 
     return 0;
 }
@@ -1753,7 +1983,6 @@ static void qwifi_drv_intf_init(struct net_if *iface)
     const struct device *dev = net_if_get_device(iface);
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     struct ethernet_context *eth_ctx = net_if_l2_data(iface);
-
     ethernet_init(iface);
     qwifi_hal_reg_rxcb(iface, qwifi_drv_eth_rx_cb, link_change_handler);
 
@@ -1761,19 +1990,50 @@ static void qwifi_drv_intf_init(struct net_if *iface)
     qapi_WLAN_DEV_Mode_e devMode = DEV_MODE_STATION_E;
     qapi_WLAN_Set_Param(0, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE, &devMode,
                         sizeof(devMode), false);
-    dev_data->active_device = NT_DEV_STA_ID;
+    dev_data->active_device = QCOM_DEV_STA_ID;
 
     eth_ctx->eth_if_type = L2_ETH_IF_TYPE_WIFI;
     dev_data->iface = iface;
 
 #ifdef CONFIG_PM_DEVICE
-
     qapi_WLAN_Activity_Register_CB(wifi_activity_cb);
     qapi_WLAN_Start_Check_Activity();
 
     pm_device_busy_set(dev);
 #endif
-    LOG_DBG("%s", __FUNCTION__);
+
+#ifdef CONFIG_WIFI_NM
+    wifi_nm_register_mgd_type_iface(wifi_nm_get_instance("wifi_sta"),
+		    WIFI_TYPE_STA, iface);
+#endif
+    g_qwifi_dev_by_id[dev_data->active_device] = dev;
+    LOG_DBG("%s, active_device=%d", __FUNCTION__, dev_data->active_device);
+}
+
+static void qwifi_drv_ap_intf_init(struct net_if *iface)
+{
+    const struct device *dev = net_if_get_device(iface);
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    struct ethernet_context *eth_ctx = net_if_l2_data(iface);
+
+    ethernet_init(iface);
+    qwifi_hal_reg_rxcb(iface, qwifi_drv_eth_rx_cb, link_change_handler);
+
+    dev_data->wlan_enabled = 1;
+    dev_data->active_device = QCOM_DEV_AP_ID;
+
+    net_if_carrier_off(iface);
+
+    eth_ctx->eth_if_type = L2_ETH_IF_TYPE_WIFI;
+    dev_data->iface = iface;
+
+#ifdef CONFIG_WIFI_NM
+    wifi_nm_register_mgd_type_iface(wifi_nm_get_instance("wifi_sap"),
+		    WIFI_TYPE_SAP, iface);
+#endif
+
+    g_qwifi_dev_by_id[dev_data->active_device] = dev;
+    LOG_DBG("%s, active_device=%d", __FUNCTION__, dev_data->active_device);
 }
 
 static int qwifi_drv_set_rate(const struct device *dev, struct qcom_wifi_set_rate_params *params)
@@ -1815,50 +2075,7 @@ static int qwifi_drv_get_rate(const struct device *dev, struct qcom_wifi_set_rat
     return 0;
 }
 
-static int qwifi_drv_dev_init(const struct device *dev)
-{
-    struct qwifi_drv_dev_data_t *dev_data = dev->data;
 
-    dev_data->dev = dev;
-    qwifi_init();
-    qapi_WLAN_Set_Callback(qwifi_drv_event_handler, (void *)dev);
-    dev_data->e_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
-
-    struct qcom_wifi_mgmt_ops qwifi_ops = {
-        .set_tx_power = qwifi_drv_set_tx_power,
-        .get_tx_power = qwifi_drv_get_tx_power,
-        .unit_test = qwifi_drv_unit_test,
-        .set_rts_cts        = qwifi_drv_set_rts_cts,
-        .set_rts_rate       = qwifi_drv_set_rts_rate,
-        .set_edca_param_cfg = qwifi_drv_set_edca_param_cfg,
-        .set_threshold      = qwifi_drv_set_threshold,
-        .set_ba_win_timing    = qwifi_drv_set_ba_win_timing,
-        .set_slot_time      = qwifi_drv_set_slot_time,
-        .set_phy_mode       = qwifi_drv_set_phy_mode,
-        .set_aggregation    = qwifi_drv_set_aggregation,
-        .set_amsdu_rx       = qwifi_drv_set_amsdu_rx,
-        .set_rate           = qwifi_drv_set_rate,
-
-        .get_rts_cts        = qwifi_drv_get_rts_cts,
-        .get_rts_rate       = qwifi_drv_get_rts_rate,
-        .get_edca_param_cfg = qwifi_drv_get_edca_param_cfg,
-        .get_threshold      = qwifi_drv_get_threshold,
-        .get_ba_win_timing    = qwifi_drv_get_ba_win_timing,
-        .get_slot_time      = qwifi_drv_get_slot_time,
-        .get_phy_mode       = qwifi_drv_get_phy_mode,
-        .get_power_mode     = qwifi_drv_get_power_mode,
-        .get_boot_reason    = qwifi_drv_get_boot_reason,
-        .get_mac_address    = qwifi_drv_get_mac_address,
-        .get_concurrency_mode = qwifi_drv_get_concurrency_mode,
-        .get_operation_mode = qwifi_drv_get_operation_mode,
-        .get_rate           = qwifi_drv_get_rate,
-        .set_bmiss_threshold      = qwifi_drv_set_bmiss_threshold,
-        .get_bmiss_threshold      = qwifi_drv_get_bmiss_threshold,
-    };
-    dev_data->qcom_wifi_cmd = qwifi_ops;
-
-    return 0;
-}
 
 static int get_config(const struct device *dev, enum ethernet_config_type type,
                       struct ethernet_config *config)
@@ -2039,7 +2256,7 @@ static int qwifi_drv_reg_domain(const struct device *dev, struct wifi_reg_domain
             uint16_t step = (start_freq >= 5000) ? 20 : 5;
             for (uint16_t freq = start_freq + EDGE_BAND_10MHz; freq <= end_freq - EDGE_BAND_10MHz && idx < max_out; freq += step) {
                 if ((step == 5 && (freq < 2412 || (freq > 2484 && freq < 5000))) ||
-                    (step == 20 && (freq < 5180 || freq > 5825))) {
+                    (step == 20 && (freq < 5180 || freq > 5895))) {
                     continue;
                 }
                 if (step == 5 && freq > 2472 && freq != 2484)
@@ -2061,37 +2278,134 @@ static int qwifi_drv_reg_domain(const struct device *dev, struct wifi_reg_domain
     return -ENOTSUP;
 }
 
+static int qwifi_ps_drv_set_power_optimization_enable_in_bmps(const struct device *dev, struct qcom_wifi_pm_power_optimization_params *param)
+{
+    int err = 0;
+    uint8_t enable = param->enable ? 1 : 0;
+
+    qapi_Status_t ret = qapi_bmps_power_optimization_enable(enable);
+    if(ret != QAPI_OK) {
+        LOG_ERR("fail to set bmps power optimization, ret = %d", ret);
+        err = -EINVAL;
+    }
+
+    return 0;
+}
+
+static int qwifi_ps_drv_set_compress_qos_null_enable_in_bmps(const struct device *dev, struct qcom_wifi_pm_compress_qos_null_params *param)
+{
+    int err = 0;
+    uint8_t enable = param->enable ? 1 : 0;
+
+    qapi_Status_t ret = qapi_bmps_compress_qos_null_enable(enable);
+    if(ret != QAPI_OK) {
+        LOG_ERR("fail to set compress qos null, ret = %d", ret);
+        ret = -EINVAL;
+    }
+
+    return err;
+}
+
+static int qwifi_ps_drv_set_rx_filter_in_bmps(const struct device *dev, struct qcom_wifi_pm_rx_filter_params *param)
+{
+    int err = 0;
+    uint8_t enable = param->enable;
+
+    qapi_bmps_rx_filter_enable(enable);
+
+    if (enable) {
+        qapi_bmps_bcmc_rx_filter_cb_register(param->bmps_rx_filter_cb, NULL);
+    }
+
+    return err;
+}
+
+static int qwifi_ps_drv_set_bmps_enable(const struct device *dev, struct qcom_wifi_pm_bmps_params *param)
+{
+    int err = 0;
+
+    qapi_Status_t ret = qapi_bmps_cfg(param->enable, 0);
+    if (ret) {
+        LOG_ERR("fail to enable bmps. ret %d.", ret);
+        err = -EINVAL;
+    }
+
+    return err;
+}
+
+static int qwifi_ps_drv_ignore_bc_mc_in_bmps(const struct device *dev, struct qcom_wifi_pm_ignore_bc_mc_params *param)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t dev_id = dev_data->active_device;
+
+    qapi_WLAN_ignore_bcmc_in_bmps(dev_id, param->enable);
+
+    return 0;
+}
+
+static int wifi_ps_timeout(uint32_t timeout_ms)
+{
+    int err = 0;
+
+    LOG_INF("Set bmps idle_timeout to %d ms", timeout_ms);
+    qapi_Status_t ret = qapi_bmps_cfg(2, timeout_ms);
+    if (ret) {
+        LOG_ERR("idle timeout set fail. ret %d, timeout = %d", ret, timeout_ms);
+        err = -EINVAL;
+    }
+
+    return err;
+}
+
 static int qwifi_power_save(const struct device *dev, struct wifi_ps_params *params)
 {
-    int ret = -1;
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t dev_id = dev_data->active_device;
+    int ret = 0;
+
 #ifdef CONFIG_PM_DEVICE
     pm_device_busy_set(dev);
 #endif
+
     switch (params->type) {
-        case WIFI_PS_PARAM_LISTEN_INTERVAL:
-		    if ((params->listen_interval <
-		         WIFI_LISTEN_INTERVAL_MIN) ||
-		        (params->listen_interval >
-		         WIFI_LISTEN_INTERVAL_MAX)) {
-		        params->fail_reason =
-                    WIFI_PS_PARAM_LISTEN_INTERVAL_RANGE_INVALID;
-		        return -EINVAL;
-		    }
-            ret = wlan_set_sta_slptime(0 , params->listen_interval , 0);
+    case WIFI_PS_PARAM_TIMEOUT:
+        ret = wifi_ps_timeout(params->timeout_ms);
+        break;
+    case WIFI_PS_PARAM_LISTEN_INTERVAL:
+        if ((params->listen_interval < WIFI_LISTEN_INTERVAL_MIN) ||
+            (params->listen_interval > WIFI_LISTEN_INTERVAL_MAX)) {
+            params->fail_reason = WIFI_PS_PARAM_LISTEN_INTERVAL_RANGE_INVALID;
+            ret = -EINVAL;
             break;
 
-        // case WIFI_PS_PARAM_MODE:
-
-        //     break;
-
+        }
+        qapi_WLAN_Listen_Interval_Params_t listen_interval = {0};
+        listen_interval.time = params->listen_interval;
+        qapi_Status_t err = qapi_WLAN_Set_Param(dev_id, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                                                __QAPI_WLAN_PARAM_GROUP_WIRELESS_STA_LISTEN_INTERVAL_IN_TU,
+                                                &listen_interval, sizeof(listen_interval), FALSE);
+        if (err != QAPI_OK) {
+            LOG_ERR("fail to set listen interval err = %d", err);
+            ret = -EINVAL;
+        }
+        break;
+    case WIFI_PS_PARAM_WAKEUP_MODE:
+    case WIFI_PS_PARAM_MODE:
+    case WIFI_PS_PARAM_STATE:
+    case WIFI_PS_PARAM_EXIT_STRATEGY:
+    default:
+        params->fail_reason = WIFI_PS_PARAM_FAIL_OPERATION_NOT_SUPPORTED;
+        ret = -ENOTSUP;
+        break;
     }
+
     return ret;
 }
 
 int qwifi_get_power_save(const struct device *dev, struct wifi_ps_config *config)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
-    uint8_t deviceId = dev_data->active_device;
+    uint8_t dev_id = dev_data->active_device;
     uint16_t listen_interval;
     uint32_t length = sizeof(listen_interval);
 
@@ -2099,12 +2413,75 @@ int qwifi_get_power_save(const struct device *dev, struct wifi_ps_config *config
     pm_device_busy_set(dev);
 #endif
 
-    qapi_WLAN_Get_Param (deviceId,
+    qapi_WLAN_Get_Param(dev_id,
                          __QAPI_WLAN_PARAM_GROUP_WIRELESS,
                          __QAPI_WLAN_PARAM_GROUP_WIRELESS_STA_LISTEN_INTERVAL_IN_TU,
                          &listen_interval,
                          &length);
+
     config->ps_params.listen_interval = listen_interval;
+    config->ps_params.exit_strategy = WIFI_PS_EXIT_EVERY_TIM;
+    config->ps_params.mode = WIFI_PS_MODE_LEGACY;
+
+    return 0;
+}
+
+static int qwifi_drv_dev_init(const struct device *dev)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    if (strcmp(dev->name, "qwifi_sta") == 0) {
+        g_qwifi_dev_by_id[QCOM_DEV_STA_ID] = dev;
+        qwifi_init();
+        qapi_WLAN_Set_Callback(qwifi_drv_event_handler, (void *)dev);
+    }
+    else if (strcmp(dev->name, "qwifi_sap") == 0) {
+        g_qwifi_dev_by_id[QCOM_DEV_AP_ID] = dev;
+    }
+    dev_data->dev = dev;
+
+    dev_data->e_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
+
+    struct qcom_wifi_mgmt_ops qwifi_ops = {
+        .set_tx_power = qwifi_drv_set_tx_power,
+        .get_tx_power = qwifi_drv_get_tx_power,
+        .unit_test = qwifi_drv_unit_test,
+        .set_rts_cts        = qwifi_drv_set_rts_cts,
+        .set_rts_rate       = qwifi_drv_set_rts_rate,
+        .set_edca_param_cfg = qwifi_drv_set_edca_param_cfg,
+        .set_threshold      = qwifi_drv_set_threshold,
+        .set_ba_win_timing    = qwifi_drv_set_ba_win_timing,
+        .set_slot_time      = qwifi_drv_set_slot_time,
+        .set_phy_mode       = qwifi_drv_set_phy_mode,
+        .set_aggregation    = qwifi_drv_set_aggregation,
+        .set_amsdu_rx       = qwifi_drv_set_amsdu_rx,
+        .set_rate           = qwifi_drv_set_rate,
+        .set_sap_csa        = qwifi_drv_set_sap_csa,
+
+        .get_rts_cts        = qwifi_drv_get_rts_cts,
+        .get_rts_rate       = qwifi_drv_get_rts_rate,
+        .get_edca_param_cfg = qwifi_drv_get_edca_param_cfg,
+        .get_threshold      = qwifi_drv_get_threshold,
+        .get_ba_win_timing    = qwifi_drv_get_ba_win_timing,
+        .get_slot_time      = qwifi_drv_get_slot_time,
+        .get_phy_mode       = qwifi_drv_get_phy_mode,
+        .get_power_mode     = qwifi_drv_get_power_mode,
+        .get_boot_reason    = qwifi_drv_get_boot_reason,
+        .get_mac_address    = qwifi_drv_get_mac_address,
+        .get_concurrency_mode = qwifi_drv_get_concurrency_mode,
+        .get_operation_mode = qwifi_drv_get_operation_mode,
+        .get_rate           = qwifi_drv_get_rate,
+        .set_bmiss_threshold      = qwifi_drv_set_bmiss_threshold,
+        .get_bmiss_threshold      = qwifi_drv_get_bmiss_threshold,
+        .set_op_mode = qwifi_drv_set_op_mode,
+        .set_device_id = qwifi_drv_set_active_deviceid,
+        .set_bmps_enable = qwifi_ps_drv_set_bmps_enable,
+        .set_ignore_bc_mc_in_bmps = qwifi_ps_drv_ignore_bc_mc_in_bmps,
+        .set_power_optimization_enable_in_bmps = qwifi_ps_drv_set_power_optimization_enable_in_bmps,
+        .set_compress_qos_null_enable_in_bmps = qwifi_ps_drv_set_compress_qos_null_enable_in_bmps,
+        .set_rx_filter_in_bmps = qwifi_ps_drv_set_rx_filter_in_bmps
+    };
+    dev_data->qcom_wifi_cmd = qwifi_ops;
+
     return 0;
 }
 
@@ -2118,6 +2495,7 @@ static const struct wifi_mgmt_ops qwifi_drv_mgmt = {
     .ap_enable = ap_enable,
     .ap_disable = ap_disable,
     .ap_sta_disconnect = ap_sta_disconnect,
+    .ap_config_params = ap_config_params,
     .set_power_save = qwifi_power_save,
     .get_power_save_config = qwifi_get_power_save,
 };
@@ -2129,6 +2507,35 @@ static const struct net_wifi_mgmt_offload qwifi_drv_api = {
     .wifi_mgmt_api = &qwifi_drv_mgmt,
 };
 
+#ifdef CONFIG_WIFI_NM
+DEFINE_WIFI_NM_INSTANCE(wifi_sta, &qwifi_drv_mgmt);
+#endif
+
 NET_DEVICE_INIT_INSTANCE(qwifi_sta, "qwifi_sta", 0, qwifi_drv_dev_init, PM_DEVICE_DT_INST_GET(0), &g_wifi_dev_data, &g_wifi_dev_cfg,
                          CONFIG_WIFI_INIT_PRIORITY, &qwifi_drv_api, ETHERNET_L2, NET_L2_GET_CTX_TYPE(ETHERNET_L2),
+                         NET_ETH_MTU);
+
+static const struct wifi_mgmt_ops qwifi_ap_mgmt = {
+    .ap_enable = ap_enable,
+    .ap_disable = ap_disable,
+    .ap_config_params = ap_config_params,
+    .ap_sta_disconnect = ap_sta_disconnect,
+    .iface_status = qwifi_drv_intf_status,
+    .channel = qwifi_drv_channel,
+    .reg_domain = qwifi_drv_reg_domain,
+};
+
+static const struct net_wifi_mgmt_offload qwifi_ap_api = {
+    .wifi_iface.iface_api.init = qwifi_drv_ap_intf_init,
+    .wifi_iface.send = qwifi_drv_send,
+    .wifi_iface.get_config = get_config,
+    .wifi_mgmt_api = &qwifi_ap_mgmt,
+};
+
+#ifdef CONFIG_WIFI_NM
+DEFINE_WIFI_NM_INSTANCE(wifi_sap, &qwifi_ap_mgmt);
+#endif
+
+NET_DEVICE_INIT_INSTANCE(qwifi_uap, "qwifi_sap", 1, qwifi_drv_dev_init, NULL, &g_wifi_dev_data_sap, &g_wifi_dev_cfg_sap,
+                         CONFIG_WIFI_SAP_PRIORITY, &qwifi_ap_api, ETHERNET_L2, NET_L2_GET_CTX_TYPE(ETHERNET_L2),
                          NET_ETH_MTU);

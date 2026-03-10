@@ -74,6 +74,22 @@ enum qcom_net_request_wifi_cmd {
 	NET_REQUEST_WIFI_CMD_QCOM_GET_OPERATION_MODE,
 	/** Get boot reason */
 	NET_REQUEST_WIFI_CMD_QCOM_GET_BOOT_REASON,
+	/** Channel Switch Announcement */
+	NET_REQUEST_WIFI_CMD_QCOM_SET_SAP_CSA,
+	/** Set Operation Mode for Wi-Fi networks */
+	NET_REQUEST_WIFI_CMD_QCOM_SET_OPERATION_MODE,
+	/** Set device id for Wi-Fi networks */
+	NET_REQUEST_WIFI_CMD_QCOM_SET_DEVICE_ID,
+	/** Enable BMPS */
+	NET_REQUEST_WIFI_PM_CMD_QCOM_SET_BMPS_ENABLE,
+	/** Set ignore BC/MC traffic in BMPS */
+	NET_REQUEST_WIFI_PM_CMD_QCOM_IGNORE_BC_MC_IN_BMPS,
+	/** Set power optimization in BMPS */
+	NET_REQUEST_WIFI_PM_CMD_QCOM_POWER_OPTIMIZATION_ENABLE_IN_BMPS,
+	/** Compress QoS NULL frame in BMPS */
+	NET_REQUEST_WIFI_PM_CMD_QCOM_SET_COMPRESS_QOS_NULL_ENABLE_IN_BMPS,
+	/** Set Rx filter in BMPS */
+	NET_REQUEST_WIFI_PM_CMD_QCOM_SET_RX_FILTER_IN_BMPS,
 	NET_REQUEST_WIFI_CMD_QCOM_MAX,
 };
 
@@ -218,6 +234,47 @@ NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_CONCURRENCY_MODE);
 #define NET_REQUEST_WIFI_QCOM_GET_OPERATION_MODE					\
 	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_GET_OPERATION_MODE)
 NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_GET_OPERATION_MODE);
+
+/* Channel Switch Announcement */
+#define NET_REQUEST_WIFI_QCOM_SET_SAP_CSA					\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_SET_SAP_CSA)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_SAP_CSA);
+
+/** Request a Wi-Fi set operation mode */
+#define NET_REQUEST_WIFI_QCOM_SET_OPERATION_MODE					\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_SET_OPERATION_MODE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_OPERATION_MODE);
+
+/** Request a Wi-Fi set device id */
+#define NET_REQUEST_WIFI_QCOM_SET_DEVICE_ID					\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_SET_DEVICE_ID)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_DEVICE_ID);
+
+/** Eable BMPS */
+#define NET_REQUEST_WIFI_PM_QCOM_SET_BMPS_ENABLE					\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_PM_CMD_QCOM_SET_BMPS_ENABLE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_PM_QCOM_SET_BMPS_ENABLE);
+
+/** Set ignore BC/MC traffic in BMPS */
+#define NET_REQUEST_WIFI_PM_QCOM_IGNORE_BC_MC_IN_BMPS					\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_PM_CMD_QCOM_IGNORE_BC_MC_IN_BMPS)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_PM_QCOM_IGNORE_BC_MC_IN_BMPS);
+
+/** Set power optimization in BMPS */
+#define NET_REQUEST_WIFI_PM_QCOM_SET_POWER_OPTIMIZATION_ENABLE_IN_BMPS			\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_PM_CMD_QCOM_POWER_OPTIMIZATION_ENABLE_IN_BMPS)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_PM_QCOM_SET_POWER_OPTIMIZATION_ENABLE_IN_BMPS);
+
+/** Compress QoS NULL frame in BMPS */
+#define NET_REQUEST_WIFI_PM_QCOM_SET_COMPRESS_QOS_NULL_ENABLE_IN_BMPS			\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_PM_CMD_QCOM_SET_COMPRESS_QOS_NULL_ENABLE_IN_BMPS)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_PM_QCOM_SET_COMPRESS_QOS_NULL_ENABLE_IN_BMPS);
+
+/** Set Rx filter in BMPS */
+#define NET_REQUEST_WIFI_PM_QCOM_SET_RX_FILTER_IN_BMPS					\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_PM_CMD_QCOM_SET_RX_FILTER_IN_BMPS)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_PM_QCOM_SET_RX_FILTER_IN_BMPS);
+
 
 /** Set TX Power parameters */
 struct qcom_wifi_set_tx_power_params{
@@ -419,6 +476,54 @@ struct qcom_wifi_unit_test_params {
 	uint8_t module_id;
 	uint16_t num_args;
 	uint32_t args[16];
+};
+
+/** channel switch announcement */
+struct qcom_wifi_csa_params {
+	/** Channel Switch Mode */
+	uint8_t switch_mode;
+	/** Channel Switch Count */
+	uint8_t switch_count;
+	/** New Channel Number */
+	uint16_t new_channel;
+};
+/**
+ * @brief Set Operation Mode parameters
+ *
+ * Structure used to configure the Wi-Fi operation mode (station, AP, or concurrent)
+ * and AP-specific settings like hidden SSID.
+ */
+struct qcom_wifi_set_op_mode_params{
+    /** Operation mode string: "station", "ap", or "ap_sta" for concurrent mode */
+    char *opmode;
+    /** Hidden SSID configuration for AP mode: "hidden", "0", or "" (empty string for visible) */
+    char *hidden_ssid;
+};
+
+/** BMPS enable parameters */
+struct qcom_wifi_pm_bmps_params {
+	uint8_t enable;
+};
+
+/** Ignore BC/MC traffic in BMPS */
+struct qcom_wifi_pm_ignore_bc_mc_params {
+	uint8_t enable;
+};
+
+/** Power optimization in BMPS */
+struct qcom_wifi_pm_power_optimization_params {
+	uint8_t enable;
+};
+
+/** Compress QoS NULL frame in BMPS */
+struct qcom_wifi_pm_compress_qos_null_params {
+	uint8_t enable;
+};
+
+/** Receive filter in BMPS */
+struct qcom_wifi_pm_rx_filter_params {
+	uint8_t enable;
+	bool (*bmps_rx_filter_cb)(uint16_t type, bool bm_cast, void *wifi_frame, uint16_t len);
 };
 
 /** Wi-Fi management API */
@@ -888,6 +993,80 @@ struct qcom_wifi_mgmt_ops {
 	 */
 	int (*get_rate)(const struct device *dev,
 			struct qcom_wifi_set_rate_params *params);
+
+	/**
+	 * @brief Channel switch announcement for a Soft AP.
+	 *
+	 * Calls qapi_WLAN_Sap_Csa for channel switch announcement.
+	 *
+	 * @param dev Pointer to the driver device instance.
+	 * @param params Pointer to qapi_WLAN_Set_Rate_Params_t; send channel switch
+	 * announcement frame to swtich new channel.
+	 * @return 0 if ok, < 0 if error.
+	 */
+	int (*set_sap_csa)(const struct device *dev, struct qcom_wifi_csa_params *params);
+	/** Set Operation Mode for Wi-Fi networks
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param params Set Operation Mode parameters
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*set_op_mode)(const struct device *dev,
+		    struct qcom_wifi_set_op_mode_params *params);
+
+	int (*set_device_id)(const struct device *dev,
+		    uint16_t *device_id);
+
+	/** Enable BMPS mode.
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param params BMPS enable parameters
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*set_bmps_enable)(const struct device *dev,
+		    struct qcom_wifi_pm_bmps_params *params);
+
+	/** Enable ignore BC/MC traffic in BMPS
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param params Set ignore BC/MC traffic parameters
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*set_ignore_bc_mc_in_bmps)(const struct device *dev,
+		    struct qcom_wifi_pm_ignore_bc_mc_params *params);
+
+	/** Set power optimization in BMPS
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param params Set power optimization parameters
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*set_power_optimization_enable_in_bmps)(const struct device *dev,
+		struct qcom_wifi_pm_power_optimization_params *param);
+
+	/** Compress QoS NULL frame in BMPS
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param params Compress QoS NULL frame parameters
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*set_compress_qos_null_enable_in_bmps)(const struct device *dev,
+		struct qcom_wifi_pm_compress_qos_null_params *param);
+
+	/** Set Rx filter in BMPS
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param params Rx filter parameters
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*set_rx_filter_in_bmps)(const struct device *dev,
+		struct qcom_wifi_pm_rx_filter_params *param);
 };
 
 #endif

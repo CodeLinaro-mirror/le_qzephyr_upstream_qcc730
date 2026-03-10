@@ -45,3 +45,6 @@
 	status = "okay";
 };
 
+&watchdog0 {
+    status = "disabled";
+};

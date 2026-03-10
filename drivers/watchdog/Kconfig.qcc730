@@ -8,4 +8,22 @@ config WATCHDOG_QCC730
 	depends on WATCHDOG
 	depends on DT_HAS_QCOM_QCC730_WATCHDOG_ENABLED
 	help
-	  Enable support for the Qualcomm QCC730 Watchdog controller.
+	  Enable QCC730 watchdog driver support.
+	  Always ensures all watchdog code is compiled.
+
+config QWDT
+	bool "Enable QWDT functionality"
+	help
+	  Enable actual QWDT (Qualcomm Watchdog) functionality.
+	  
+	  If enabled (y):
+	    - Watchdog will be initialized and started
+	    - Automatic feeding will be enabled
+	    - PM callbacks will feed the watchdog
+	    - All watchdog features are functional
+	  
+	  If disabled (n):
+	    - Watchdog code is compiled but not functional
+	    - All watchdog operations become no-ops
+	    - Zero runtime overhead
+

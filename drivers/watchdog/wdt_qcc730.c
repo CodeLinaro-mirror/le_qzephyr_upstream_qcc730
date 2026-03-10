@@ -34,6 +34,9 @@ struct wdt_qcc730_data {
 
 static int wdt_qcc730_setup(const struct device *dev, uint8_t options)
 {
+#ifndef CONFIG_QWDT
+    return 0;
+#endif
 	const struct wdt_qcc730_cfg *wdt_cfg = dev->config;
 	struct wdt_qcc730_data *data = dev->data;
 	PMU_BASE_pmu_Type *pmu_regs = wdt_cfg->pmu;
@@ -72,6 +75,9 @@ static int wdt_qcc730_setup(const struct device *dev, uint8_t options)
 
 static int wdt_qcc730_disable(const struct device *dev)
 {
+#ifndef CONFIG_QWDT
+    return 0;
+#endif
 	const struct wdt_qcc730_cfg *wdt_cfg = dev->config;
 	struct wdt_qcc730_data *data = dev->data;
 	PMU_BASE_pmu_Type *pmu_regs = wdt_cfg->pmu;
@@ -90,6 +96,9 @@ static int wdt_qcc730_disable(const struct device *dev)
 
 static int wdt_qcc730_install_timeout(const struct device *dev, const struct wdt_timeout_cfg *cfg)
 {
+#ifndef CONFIG_QWDT
+    return 0;
+#endif
 	const struct wdt_qcc730_cfg *wdt_cfg = dev->config;
 	struct wdt_qcc730_data *data = dev->data;
 	PMU_BASE_pmu_Type *pmu_regs = wdt_cfg->pmu;
@@ -150,6 +159,9 @@ static int wdt_qcc730_install_timeout(const struct device *dev, const struct wdt
 
 static int wdt_qcc730_feed(const struct device *dev, int channel_id)
 {
+#ifndef CONFIG_QWDT
+    return 0;
+#endif
 	ARG_UNUSED(channel_id);
 	const struct wdt_qcc730_cfg *wdt_cfg = dev->config;
 	struct wdt_qcc730_data *data = dev->data;
@@ -177,6 +189,9 @@ static DEVICE_API(wdt, wdt_qcc730_api) = {
 /* Platform enable/disable, used by PM functions. */
 static int wdt_qcc730_platform(const struct device *dev, uint8_t enable)
 {
+#ifndef CONFIG_QWDT
+    return 0;
+#endif
 	const struct wdt_qcc730_cfg *wdt_cfg = dev->config;
 	struct wdt_qcc730_data *data = dev->data;
 	int ret = 0;
@@ -218,12 +233,23 @@ static int wdt_qcc730_suspend(const struct device *dev)
 	return wdt_qcc730_platform(dev, 0U);
 }
 
-static int wdt_qcc730_pm_action(const struct device *dev, enum pm_device_action action)
+static __maybe_unused int wdt_qcc730_pm_action(const struct device *dev, enum pm_device_action action)
 {
+#ifndef CONFIG_QWDT
+    return 0;
+#endif
+	int ret;
 	switch (action) {
 	case PM_DEVICE_ACTION_RESUME:
-		return wdt_qcc730_enable(dev);
+		ret = wdt_qcc730_enable(dev);
+		if (ret == 0) {
+			wdt_qcc730_feed(dev, 0);
+			LOG_INF("Watchdog fed after PM resume");
+		}
+		return ret;
 	case PM_DEVICE_ACTION_SUSPEND:
+		wdt_qcc730_feed(dev, 0);
+		LOG_INF("Watchdog fed before PM suspend");
 		return wdt_qcc730_suspend(dev);
 	default:
 		return -ENOTSUP;
@@ -231,8 +257,12 @@ static int wdt_qcc730_pm_action(const struct device *dev, enum pm_device_action 
 }
 #endif // CONFIG_PM_DEVICE
 
-static int wdt_qcc730_init(const struct device *dev)
+static __maybe_unused int wdt_qcc730_init(const struct device *dev)
 {
+#ifndef CONFIG_QWDT
+    LOG_INF("QWDT disabled by CONFIG_QWDT=n");
+    return 0;
+#endif
 	const struct wdt_qcc730_cfg *wdt_cfg = dev->config;
 	struct wdt_qcc730_data *data = dev->data;
 	int ret = 0;

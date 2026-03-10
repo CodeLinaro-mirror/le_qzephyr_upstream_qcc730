@@ -16,3 +16,10 @@ config RTC_QCC730_INIT_PRIORITY
 	help
 	  The priority of QCC730 RTC driver initialization.
 	  Must be greater (later) than the qtimer/counter init priority.
+
+config WIFI_TSF_RTC_CORRECTION
+	bool "RTC correction with TSF of wlan beacon"
+	default n
+	depends on RTC_QCC730
+	help
+	  enable RTC correction with TSF of wlan beacon.
