@@ -424,14 +424,17 @@ static int __maybe_unused gpio_qcc730_deinit(const struct device *dev)
 static int gpio_qcc730_pm_action(const struct device *dev, enum pm_device_action action)
 {
 	int ret = 0;
+	struct gpio_qcc730_data *const data = (struct gpio_qcc730_data *)dev->data;
 
 	switch (action) {
 	case PM_DEVICE_ACTION_SUSPEND:
 		/*ret = gpio_qcc730_deinit(dev); */
+		data->gpio_initialized = false;
 		break;
 	case PM_DEVICE_ACTION_RESUME:
 		/* ret = gpio_qcc730_init(dev);
 		ret = gpio_730_restore(dev);*/
+		data->gpio_initialized = true;
 
 		break;
 	default:
