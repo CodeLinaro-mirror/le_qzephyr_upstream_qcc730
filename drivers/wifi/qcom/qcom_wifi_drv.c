@@ -38,8 +38,6 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 
 #define SCAN_MODE_BLOCKING 1
 #define SCAN_MODE_UNBLOCKING 2
-#define QCOM_DEV_STA_ID 1
-#define QCOM_DEV_AP_ID  0
 #define QCOM_MAX_DEVICES 2
 #define EDGE_BAND_10MHz 10
 #define CONFIG_WIFI_SAP_PRIORITY 81
@@ -478,7 +476,7 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
 
     if (p_cxt->conc_mode == DEV_MODE_NO_CONC_E) {
         qapi_WLAN_DEV_Mode_e mode = DEV_MODE_STATION_E;
-        qapi_Status_t ret = qapi_WLAN_Set_Param(0, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
+        qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
                                             &mode, sizeof(mode), false);
         if (ret) {
             LOG_ERR("set station mode fail");
@@ -1697,12 +1695,14 @@ static int qwifi_drv_get_bmiss_threshold(const struct device *dev, struct qcom_w
     return 0;
 }
 
-int32_t set_op_mode(char *opmode, char *hidden_ssid)
+int32_t set_op_mode(struct device *dev, char *opmode, char *hidden_ssid)
 {
-	int32_t ret = -1;
+    int32_t ret = -1;
     uint8_t hidden_flag = 0;
     qapi_WLAN_DEV_Mode_e devMode;
-    const uint8_t dev_id = 0;
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t dev_id = dev_data->active_device;
+    uint32_t size = sizeof(devMode);
 
     if (!opmode || !hidden_ssid) {
         LOG_ERR("Invalid NULL parameters");
@@ -1727,6 +1727,13 @@ int32_t set_op_mode(char *opmode, char *hidden_ssid)
 	}
 	#ifdef NT_FN_CONCURRENCY
 	else if(!strcmp(opmode,"ap_sta")) {
+        qapi_WLAN_Get_Param(dev_id, __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE,
+                        &devMode, &size);
+        if(devMode != DEV_MODE_AP_E) {
+            LOG_INF("ap+sta can only be set from sap mode %u devid: %d\n",devMode, dev_id);
+		    return -EINVAL;
+        }
 		devMode = DEV_MODE_AP_STA_E;
 	}
 	#endif
@@ -1790,7 +1797,7 @@ static int qwifi_drv_set_op_mode(const struct device *dev, struct qcom_wifi_set_
     char *hidden_ssid = params->hidden_ssid;
     int ret = 0;
 
-    ret = set_op_mode(opmode, hidden_ssid);
+    ret = set_op_mode(dev, opmode, hidden_ssid);
 
     if (ret < 0) {
         LOG_ERR("Failed to set operation mode for device %d, ret=%d", deviceId, ret);
@@ -1988,7 +1995,7 @@ static void qwifi_drv_intf_init(struct net_if *iface)
 
     dev_data->wlan_enabled = qapi_WLAN_Enable(true);
     qapi_WLAN_DEV_Mode_e devMode = DEV_MODE_STATION_E;
-    qapi_WLAN_Set_Param(0, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE, &devMode,
+    qapi_WLAN_Set_Param(QCOM_DEV_STA_ID, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE, &devMode,
                         sizeof(devMode), false);
     dev_data->active_device = QCOM_DEV_STA_ID;
 
