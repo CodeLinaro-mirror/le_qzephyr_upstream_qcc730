@@ -87,7 +87,7 @@ class qccsdkRunner(ZephyrBinaryRunner):
     def do_add_parser(cls, parser):
         parser.add_argument("-m", "--memory-type", choices=["rram", "flash"], action="store", help="Memory type: rram or flash", default="rram")
         parser.add_argument("-j", "--jtag", choices=["ch347", "jlink"], action="store", help="Jtag: ch347 or jlink", default="ch347")
-        parser.add_argument("-e", "--chip-erase", action="store_true", help="Erase chip")
+        parser.add_argument("-e", "--chip-erase", action="store_true", help="Erase the external chip")
         parser.add_argument("-a", "--all", action="store_true", help="Write ftd, SBL, regdb and Zephyr app image")
         parser.add_argument("--sign", action="store_true", help="Use signed ELF files instead of HASHED ELF files")
         parser.add_argument("--bdf", action="store_true", help="Write bdf [WARNING: may affect WiFi RF performance]")
