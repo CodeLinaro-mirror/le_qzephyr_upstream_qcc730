@@ -51,7 +51,7 @@ static int qcc730_counter_get_value(const struct device *dev, uint32_t *ticks)
 static int qcc730_counter_get_value_64(const struct device *dev, uint64_t *ticks)
 {
 	/* TODO: change to uint64_t format*/
-	*ticks = counter_us_to_ticks(dev,hres_timer_curr_time_us());
+	*ticks = counter_us_to_ticks_64(dev,hres_timer_curr_time_us());
 	return 0;
 }
 
