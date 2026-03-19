@@ -25,14 +25,7 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(uart_qcc730, CONFIG_UART_LOG_LEVEL);
 
-/*
- * Timeout for uart_qcc730_putchar() waiting for THRE (TX FIFO has space).
- * At 60 MHz with ~5 cycles/iteration, 3000 iterations ≈ 250 µs, which is
- * well above the ~87 µs required to transmit one byte at 115200 baud.
- * Previously 1000 iterations (≈83 µs) was shorter than one byte-time and
- * caused silent byte drops during high-throughput poll_out loops.
- */
-#define UART_TRANS_TIME_OUT   3000
+#define UART_TRANS_TIME_OUT   1000
 #define DIVISOR_DLL(divisor)  (divisor & 0xff)
 #define DIVISOR_DLH(divisor)  ((divisor >> 8) & 0xff)
 #define BAUDRATE_NUM_MAX      9
@@ -314,18 +307,13 @@ static int uart_qcc730_putchar(const struct device *dev, uint8_t ch)
 		return -EBUSY;
 	}
 
-	/*
-	 * Wait for THRE (Transmitter Holding Register Empty, bit 5) — TX FIFO
-	 * has space for a new byte. Using THRE instead of TEMPT (bit 6, full
-	 * TX path empty) is correct for poll_out: we only need room to write
-	 * one byte, not for the shift register to finish transmitting.
-	 */
-	while (uart_hal_regs->UART_UART_LSR.bit.THRE == 0 && timeout--)
+	// checks loops until TEMPT==1 or timeout hits
+	while (uart_hal_regs->UART_UART_LSR.bit.TEMPT == 0 && timeout--)
 		;
 
-	// write to RBR only when THRE==1; otherwise quit with error
-	if (uart_hal_regs->UART_UART_LSR.bit.THRE == 0) {
-		// Timeout occurred, TX FIFO still full
+	// write to RBR only when TEMPT==1; otherwise quit with error
+	if (uart_hal_regs->UART_UART_LSR.bit.TEMPT == 0) {
+		// Timeout occurred, transmitter is still not empty
 		ret = -ETIMEDOUT; // Return timeout error code
 	} else {
 		uart_hal_regs->UART_UART_RBR.reg = (uint32_t)ch;
@@ -370,11 +358,7 @@ int uart_qcc730_poll_in(const struct device *dev, unsigned char *p_char)
  */
 void uart_qcc730_poll_out(const struct device *dev, unsigned char out_char)
 {
-	int ret = uart_qcc730_putchar(dev, out_char);
-
-	if (ret != 0) {
-		LOG_ERR("poll_out: byte 0x%02x dropped (err %d)", out_char, ret);
-	}
+	uart_qcc730_putchar(dev, out_char);
 }
 
 /**
