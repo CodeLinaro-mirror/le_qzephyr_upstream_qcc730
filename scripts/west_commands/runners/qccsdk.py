@@ -61,7 +61,7 @@ else:
 class qccsdkRunner(ZephyrBinaryRunner):
     """qccsdk runner for flashing QCC730 with nvm_programmer.py."""
     def __init__(self, cfg, memory_type, jtag, chip_erase=False, all=False, reset=False, bdf=False, 
-                 read_rram=False, read_addr=None, read_len=None, read_file=None, sign=False):
+                 read_rram=False, read_addr=None, read_len=None, read_file=None, sign=False, golden=False):
         super().__init__(cfg)
         self.m = memory_type
         self.j = jtag
@@ -74,6 +74,7 @@ class qccsdkRunner(ZephyrBinaryRunner):
         self.read_len = read_len
         self.read_file = read_file
         self.sign = sign
+        self.golden = golden
 
     @classmethod
     def name(cls):
@@ -90,6 +91,7 @@ class qccsdkRunner(ZephyrBinaryRunner):
         parser.add_argument("-e", "--chip-erase", action="store_true", help="Erase the external chip")
         parser.add_argument("-a", "--all", action="store_true", help="Write ftd, SBL, regdb and Zephyr app image")
         parser.add_argument("--sign", action="store_true", help="Use signed ELF files instead of HASHED ELF files")
+        parser.add_argument("--golden", action="store_true", help="Use 3-partition FDT with GOLDEN backup (Trial/Current/Golden)")
         parser.add_argument("--bdf", action="store_true", help="Write bdf [WARNING: may affect WiFi RF performance]")
         parser.add_argument("--read-rram", action="store_true", help="Read RRAM instead of flashing (requires --read-addr, --read-len, --read-file)")
         parser.add_argument("--read-addr", type=str, help="Start address for reading RRAM (hex format, e.g., 0x208000)")
@@ -102,7 +104,7 @@ class qccsdkRunner(ZephyrBinaryRunner):
         return qccsdkRunner(cfg, memory_type=args.memory_type, jtag=args.jtag, 
                           chip_erase=args.chip_erase, all=args.all, reset=args.reset, bdf=args.bdf,
                           read_rram=args.read_rram, read_addr=args.read_addr, 
-                          read_len=args.read_len, read_file=args.read_file, sign=args.sign)
+                          read_len=args.read_len, read_file=args.read_file, sign=args.sign, golden=args.golden)
     
     def do_run(self, command: str, **kwargs):
         if command == "flash" or command == "debug":
@@ -143,6 +145,7 @@ class qccsdkRunner(ZephyrBinaryRunner):
         sbl_path = Path(blobs_path, sbl_filename)
         fdt_bin_name = Path(blobs_path, "frn_curr_age_with_app_bin.bin")
         fdt_default_name = Path(blobs_path, "frn_curr_age_default.bin")
+        fdt_gold_default_name = Path(blobs_path, "frn_curr_gold_age_default.bin")
         fdt_flash_name = Path(blobs_path, "firmware_table.bin")
         #build_root = os.getcwd()
         bin_name = Path(self.cfg.bin_file).as_posix()
@@ -159,10 +162,17 @@ class qccsdkRunner(ZephyrBinaryRunner):
         
         # If --sign flag is set, use signed ELF files instead of HASHED ELF files
         if self.sign:
-            # Path to signed application ELF
-            signed_app_elf = Path(bin_name).parent / "zephyr_sec_app" / "qcc730" / "app" / "zephyr.elf"
+            # Path to signed application ELF - select based on --golden flag
+            if self.golden:
+                # Use app_golden directory when --golden flag is set
+                signed_app_elf = Path(bin_name).parent / "zephyr_sec_app" / "qcc730" / "app_golden" / "zephyr.elf"
+            else:
+                # Use app directory by default
+                signed_app_elf = Path(bin_name).parent / "zephyr_sec_app" / "qcc730" / "app" / "zephyr.elf"
+            
             # Path to signed SBL ELF (use dynamic board name)
             build_dir = Path(bin_name).parent.parent
+            signed_sbl_golden_elf = build_dir / "modules" / "hal_qcom" / "qboot" / "zephyr_sec_sbl" / "qcc730" / "sbl_golden" / f"{board_name}_sbl.elf"
             signed_sbl_elf = build_dir / "modules" / "hal_qcom" / "qboot" / "zephyr_sec_sbl" / "qcc730" / "sbl" / f"{board_name}_sbl.elf"
             
             # Check if signed files exist
@@ -174,11 +184,18 @@ class qccsdkRunner(ZephyrBinaryRunner):
             # Use signed ELF files
             hashed_elf_name = signed_app_elf
             if self.all:
-                sbl_path = signed_sbl_elf
+                # Select SBL based on --golden flag
+                if self.golden:
+                    sbl_path = signed_sbl_golden_elf
+                    self.logger.info(f"Using signed GOLDEN SBL ELF: {signed_sbl_golden_elf}")
+                else:
+                    sbl_path = signed_sbl_elf
+                    self.logger.info(f"Using signed SBL ELF: {signed_sbl_elf}")
             
-            self.logger.info(f"Using signed application ELF: {signed_app_elf}")
-            if self.all:
-                self.logger.info(f"Using signed SBL ELF: {signed_sbl_elf}")
+            if self.golden:
+                self.logger.info(f"Using signed GOLDEN application ELF: {signed_app_elf}")
+            else:
+                self.logger.info(f"Using signed application ELF: {signed_app_elf}")
         
         #wifi related
         regdb_path = Path(blobs_path, "regdb.bin")
@@ -197,29 +214,46 @@ class qccsdkRunner(ZephyrBinaryRunner):
                     self.logger.info(f'Flashing firmware description table: {fdt_bin_name}')
                     os.system('%s -b 0x208000 -f %s'%(cmd_pre, str(fdt_bin_name)))
                 if self.m == "flash":
-                    # Copy existing FDT file to OUTPUT_DIR if it exists
-                    fdt_source = Path(blobs_path, "frn_curr_age_with_app_bin.bin")
-                    
-                    # Update download_config.xml with correct SBL path and FDT path
+                    # Select FDT file based on --golden command line parameter only
                     download_config_path = Path(module_path, "qfdt/download_config.xml")
+                    
+                    if self.golden:
+                        # Use 3-partition FDT with GOLDEN backup
+                        selected_fdt_name = fdt_gold_default_name
+                        rank_value = 0
+                        self.logger.info(f'--golden flag set, using 3-partition FDT: {fdt_gold_default_name}')
+                    else:
+                        # Use default 2-partition FDT
+                        selected_fdt_name = fdt_default_name
+                        rank_value = 1
+                        self.logger.info(f'Using default 2-partition FDT: {fdt_default_name}')
+                    
+                    # Update download_config.xml with selected configuration
                     if download_config_path.exists():
                         try:
                             tree = ET.parse(download_config_path)
                             root = tree.getroot()
+                            
+                            # Update RANK value
+                            config_elem = root.find(".//config[@location='flash']")
+                            if config_elem is not None:
+                                config_elem.set('RANK', str(rank_value))
+                                self.logger.info(f'Set RANK in download_config.xml to: {rank_value}')
+                            
                             # Update all FERMION_SBL entries with the actual sbl_path
                             for flash_elem in root.findall(".//flash[@image='FERMION_SBL']"):
                                 flash_elem.set('file', str(sbl_path))
-                            # Update FDT entry to use OUTPUT_DIR
+                            # Update FDT entry to use selected FDT file
                             for flash_elem in root.findall(".//flash[@image='FDT']"):
-                                flash_elem.set('file', str(fdt_default_name))
-                            # Save updated config to OUTPUT_DIR
+                                flash_elem.set('file', str(selected_fdt_name))
+                            # Save updated config
                             updated_config_path = Path(blobs_path / "download_config.xml")
                             tree.write(str(updated_config_path))
-                            self.logger.info(f'Updated download_config.xml with path: {blobs_path}')
+                            self.logger.info(f'Updated download_config.xml with FDT: {selected_fdt_name}')
                         except Exception as e:
                             self.logger.warning(f'Failed to update download_config.xml: {e}')
                     
-                    self.logger.info(f'generating firmware description table: {fdt_default_name}')
+                    self.logger.info(f'generating firmware description table: {selected_fdt_name}')
                     # Generate FDT using gen_download_table.py with updated config
                     gen_download_table_script = Path(module_path, "qfdt/gen_download_table.py")
                     if gen_download_table_script.exists():
@@ -232,9 +266,9 @@ class qccsdkRunner(ZephyrBinaryRunner):
                         self.logger.info(f'With ZEPHYR_HAL_QCOM_MODULE_DIR={module_path}')
                         subprocess.run(cmd_gen_fdt, shell=True, env=env)
                     
-                    # Use FDT from OUTPUT_DIR
-                    self.logger.info(f'Flashing firmware description table: {fdt_default_name}')
-                    os.system('%s -b 0x208000 -f %s'%(cmd_pre, str(fdt_default_name)))
+                    # Use selected FDT from OUTPUT_DIR
+                    self.logger.info(f'Flashing firmware description table: {selected_fdt_name}')
+                    os.system('%s -b 0x208000 -f %s'%(cmd_pre, str(selected_fdt_name)))
                 self.logger.info(f'Flashing SBL: {sbl_path}')
                 os.system('%s -b 0x20a400 -f %s'%(cmd_pre, str(sbl_path)))
                 self.logger.info(f'Flashing regdb: {regdb_path}')
