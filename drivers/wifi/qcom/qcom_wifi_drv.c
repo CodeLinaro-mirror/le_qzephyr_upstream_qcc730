@@ -1971,6 +1971,9 @@ qapi_Status_t qwifi_drv_eth_rx_cb(void *drv_intf_data, void *bufp, uint16_t len,
 static void link_change_handler(void *drv_iface, uint32_t event, uint8_t* mac_addr)
 {
     struct net_if *iface = (struct net_if *)drv_iface;
+    struct device *dev = net_if_get_device(iface);
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
 
     switch (event) {
     case Q_LINKCHANGE_ADD:
@@ -1979,6 +1982,8 @@ static void link_change_handler(void *drv_iface, uint32_t event, uint8_t* mac_ad
         break;
     case Q_LINKCHANGE_REMOVE:
         net_eth_carrier_off(iface);
+        wlan_vdev_cxt_t *vdev = WLAN_VDEV_CXT(deviceId);
+        vdev->opmode = DEV_MODE_INVALID_E;
         break;
     default:
         LOG_WRN("%s:%d event: %d, ignored.", __FUNCTION__, __LINE__, event);
