@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "zephyr/kernel.h"
 #define DT_DRV_COMPAT qcom_qwifi_drv
 
 #include <zephyr/logging/log.h>
@@ -1956,7 +1957,7 @@ qapi_Status_t qwifi_drv_eth_rx_cb(void *drv_intf_data, void *bufp, uint16_t len,
     pm_device_busy_set(dev);
 #endif
 
-    pkt = net_pkt_rx_alloc_with_buffer(iface, len, AF_UNSPEC, 0, K_MSEC(100));
+    pkt = net_pkt_rx_alloc_with_buffer(iface, len, AF_UNSPEC, 0, K_NO_WAIT);
     if (!pkt) {
         return QAPI_ERR_NO_MEMORY;
     }
