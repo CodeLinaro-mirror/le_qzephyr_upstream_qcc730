@@ -5,6 +5,7 @@
  */
 
 #include "zephyr/kernel.h"
+#include "zephyr/sys/clock.h"
 #define DT_DRV_COMPAT qcom_qwifi_drv
 
 #include <zephyr/logging/log.h>
@@ -42,6 +43,7 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #define QCOM_MAX_DEVICES 2
 #define EDGE_BAND_10MHz 10
 #define CONFIG_WIFI_SAP_PRIORITY 81
+#define WAIT_TIME_FOR_ALLOC_RX_BUF_MS 100
 
 struct qwifi_bss_status_t {
     bool connected;
@@ -66,6 +68,7 @@ struct qwifi_drv_dev_data_t {
     struct net_if *iface;
     const struct device *dev;
     struct qcom_wifi_mgmt_ops qcom_wifi_cmd;
+    k_timeout_t timeout;
 };
 
 struct qwifi_drv_dev_cfg_t {
@@ -1952,12 +1955,12 @@ qapi_Status_t qwifi_drv_eth_rx_cb(void *drv_intf_data, void *bufp, uint16_t len,
 
     ARG_UNUSED(hal_data);
     const struct device *dev = net_if_get_device(iface);
-    
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
 #ifdef CONFIG_PM_DEVICE
     pm_device_busy_set(dev);
 #endif
 
-    pkt = net_pkt_rx_alloc_with_buffer(iface, len, AF_UNSPEC, 0, K_NO_WAIT);
+pkt = net_pkt_rx_alloc_with_buffer(iface, len, AF_UNSPEC, 0, dev_data->timeout);
     if (!pkt) {
         return QAPI_ERR_NO_MEMORY;
     }
@@ -2113,18 +2116,23 @@ static int device_wlan_pm_action(const struct device *dev, enum pm_device_action
 {
 
     int ret = 0;
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
 
     switch (pm_action) {
         case PM_DEVICE_ACTION_SUSPEND:
+            /*Switch to K_NO_WAIT for net_pkt_rx_alloc_with_buffer when WLAN suspending or datapath task may be suspended and switch back to idle task*/
+            dev_data->timeout = K_NO_WAIT;  
             ret = qapi_WLAN_Suspend();
             if(ret != QAPI_OK)
             {
+                dev_data->timeout = K_MSEC(WAIT_TIME_FOR_ALLOC_RX_BUF_MS);
                 pm_device_busy_set(dev);
                 LOG_ERR("%s: qapi_WLAN_Suspend return:%d", __FUNCTION__, ret);
                 ret = -ret;
             }
             break;
         case PM_DEVICE_ACTION_RESUME:
+            dev_data->timeout = K_MSEC(WAIT_TIME_FOR_ALLOC_RX_BUF_MS);
             qapi_WLAN_Resume();
             pm_device_busy_set(dev);
             break;
@@ -2495,6 +2503,7 @@ static int qwifi_drv_dev_init(const struct device *dev)
     };
     dev_data->qcom_wifi_cmd = qwifi_ops;
 
+    dev_data->timeout = K_MSEC(WAIT_TIME_FOR_ALLOC_RX_BUF_MS);
     return 0;
 }
 
