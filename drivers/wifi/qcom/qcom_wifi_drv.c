@@ -230,20 +230,19 @@ static int station_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *
     struct qwifi_bss_status_t *bss = &dev_data->bss_status;
     uint8_t *mac = info->bssid;
 
-    LOG_DBG("connect event report:");
-    LOG_DBG("ssid: %s", dev_data->cfg_connect.ssid);
+    bss->ssid_length = info->ssid_Length;
+    memcpy(bss->bssid, info->bssid, NET_ETH_ADDR_LEN);
+
+    LOG_DBG("Connection result:");
+    if (bss->ssid_length) {
+        strlcpy(bss->ssid, info->ssid, WIFI_SSID_MAX_LEN);
+        LOG_DBG("ssid: %s", bss->ssid);
+    }
     LOG_DBG("mac addr: %02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     LOG_DBG("security: %d", dev_data->cfg_connect.security);
     LOG_DBG("connection status: %d", info->bss_Connection_Status);
     LOG_DBG("status: %d", info->evt_hdr.status);
     LOG_DBG("reason code: %d", info->reason_code);
-
-    if (info->ssid_Length) {
-        strlcpy(bss->ssid, info->ssid, WIFI_SSID_MAX_LEN);
-        bss->ssid_length = info->ssid_Length;
-    }
-
-    memcpy(bss->bssid, info->bssid, NET_ETH_ADDR_LEN);
 
     if (info->evt_hdr.status == QAPI_OK) {
         connect_status = WIFI_STATUS_CONN_SUCCESS;
