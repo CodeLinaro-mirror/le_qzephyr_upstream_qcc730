@@ -43,7 +43,8 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #define QCOM_MAX_DEVICES 2
 #define EDGE_BAND_10MHz 10
 #define CONFIG_WIFI_SAP_PRIORITY 81
-#define WAIT_TIME_FOR_ALLOC_RX_BUF_MS 100
+/* Make sure the waiting time is less than 30ms to make zephyr policy block the suspending process when slab is exhausted.*/
+#define WAIT_TIME_FOR_ALLOC_RX_BUF_MS 20
 
 struct qwifi_bss_status_t {
     bool connected;
