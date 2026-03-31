@@ -6,6 +6,8 @@ manifest:
       url-base: ssh://review-android.quicinc.com:29418/qzephyr/upstream
     - name: qoss
       url-base: ssh://review-android.quicinc.com:29418/qzephyr/qoss
+    - name: 3rdparty
+      url-base: ssh://review-android.quicinc.com:29418/qzephyr/3rdparty
     - name: prop
       url-base: ssh://review-android.quicinc.com:29418/qzephyr/prop
     - name: zephyrproject-rtos
@@ -26,6 +28,10 @@ manifest:
       remote: zephyrproject-rtos
       revision: cmsis_6.qzephyr.2.0
       path: modules/hal/cmsis_6
+    - name: cAT
+      remote: 3rdparty
+      revision: 3rdparty.qzephyr.1.0
+      path: modules/lib/cAT
     - name: mbedtls
       remote: zephyrproject-rtos
       revision: mbedtls.qzephyr.2.0
