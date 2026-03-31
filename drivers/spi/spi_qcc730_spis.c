@@ -47,6 +47,9 @@ QCSPI_CONFIG_SPI_ACC_CTRL is unset
 
 const struct device *gpio_dev = DEVICE_DT_GET(DT_NODELABEL(gpioa));
 
+/* External wakeup flag - used to track if wakeup was triggered by external pin */
+static bool ext_wakeup_flag = false;
+
 struct spi_qcc730_data {
 	struct spi_context ctx;
 };
@@ -218,6 +221,24 @@ static int spi_qcc730_spis_init(const struct device *dev)
 }
 
 #ifdef CONFIG_PM_DEVICE
+
+void spi_set_ext_wakeup_flag(void)
+{
+	ext_wakeup_flag = true;
+	LOG_DBG("External wakeup flag set");
+}
+
+bool spi_is_ext_wakeup(void)
+{
+	return ext_wakeup_flag;
+}
+
+void spi_clear_ext_wakeup_flag(void)
+{
+	ext_wakeup_flag = false;
+	LOG_DBG("External wakeup flag cleared");
+}
+
 static int spi_qcc730_spis_deinit(const struct device *dev)
 {
 	const struct spi_qcc730_cfg *cfg = dev->config;
