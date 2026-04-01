@@ -43,15 +43,18 @@ struct qcc730_counter_data {
 static int qcc730_counter_get_value(const struct device *dev, uint32_t *ticks)
 {
 
-	*ticks = counter_us_to_ticks(dev,hres_timer_curr_time_us());
+	uint64_t freq = counter_get_frequency(dev);
+	uint64_t tick64 = (hres_timer_curr_time_us() * freq + (USEC_PER_SEC / 2U)) / USEC_PER_SEC;
+	*ticks = (tick64 > UINT32_MAX) ? UINT32_MAX : (uint32_t)tick64;
 
 	return 0;
 }
 
 static int qcc730_counter_get_value_64(const struct device *dev, uint64_t *ticks)
 {
-	/* TODO: change to uint64_t format*/
-	*ticks = counter_us_to_ticks_64(dev,hres_timer_curr_time_us());
+
+	uint64_t freq = counter_get_frequency(dev);
+	*ticks = (hres_timer_curr_time_us() * freq + (USEC_PER_SEC / 2U)) / USEC_PER_SEC;
 	return 0;
 }
 
@@ -90,7 +93,8 @@ static inline int set_alarm(const struct device *dev, uint8_t chan_id,
 	data->chan_id = chan_id;
 	data->alarm_cfg = *alarm_cfg;
 	
-	uint64_t tick_us = counter_ticks_to_us(dev,alarm_cfg->ticks);
+	uint64_t freq = counter_get_frequency(dev);
+	uint64_t tick_us = ((uint64_t)alarm_cfg->ticks * USEC_PER_SEC + (freq - 1U)) / freq;
 
 	extern aon_sleep_info_t last_sleep_info;	
 	aon_timer_set(AON_CLIENT_OS,(uint64_t)tick_us);
