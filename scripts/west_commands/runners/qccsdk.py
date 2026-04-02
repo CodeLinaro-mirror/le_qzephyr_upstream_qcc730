@@ -61,7 +61,7 @@ else:
 class qccsdkRunner(ZephyrBinaryRunner):
     """qccsdk runner for flashing QCC730 with nvm_programmer.py."""
     def __init__(self, cfg, memory_type, jtag, chip_erase=False, all=False, reset=False, bdf=False, 
-                 read_rram=False, read_addr=None, read_len=None, read_file=None, sign=False, golden=False):
+                 read_rram=False, read_addr=None, read_len=None, read_file=None, sign=False, golden=False, caldb=False):
         super().__init__(cfg)
         self.m = memory_type
         self.j = jtag
@@ -75,6 +75,7 @@ class qccsdkRunner(ZephyrBinaryRunner):
         self.read_file = read_file
         self.sign = sign
         self.golden = golden
+        self.caldb = caldb
 
     @classmethod
     def name(cls):
@@ -97,6 +98,7 @@ class qccsdkRunner(ZephyrBinaryRunner):
         parser.add_argument("--read-addr", type=str, help="Start address for reading RRAM (hex format, e.g., 0x208000)")
         parser.add_argument("--read-len", type=str, help="Length to read from RRAM (hex or decimal, e.g., 0x1000 or 4096)")
         parser.add_argument("--read-file", type=str, help="Output file path to save read data")
+        parser.add_argument("--caldb", action="store_true", help="Clear caldb only (erase 0x3000 bytes at 0x00377000, no flashing)")
         parser.set_defaults(reset=True)
 
     @classmethod
@@ -104,7 +106,7 @@ class qccsdkRunner(ZephyrBinaryRunner):
         return qccsdkRunner(cfg, memory_type=args.memory_type, jtag=args.jtag, 
                           chip_erase=args.chip_erase, all=args.all, reset=args.reset, bdf=args.bdf,
                           read_rram=args.read_rram, read_addr=args.read_addr, 
-                          read_len=args.read_len, read_file=args.read_file, sign=args.sign, golden=args.golden)
+                          read_len=args.read_len, read_file=args.read_file, sign=args.sign, golden=args.golden, caldb=args.caldb)
     
     def do_run(self, command: str, **kwargs):
         if command == "flash" or command == "debug":
@@ -113,6 +115,11 @@ class qccsdkRunner(ZephyrBinaryRunner):
             self.debug(**kwargs)
 
     def flash(self, **kwargs):
+        # If caldb flag is set, only clear caldb without flashing
+        if self.caldb:
+            self.do_clear_caldb_only(**kwargs)
+            return
+        
         # If read_rram flag is set, perform read operation instead of flash
         if self.read_rram:
             self.do_read_rram(**kwargs)
@@ -312,6 +319,143 @@ class qccsdkRunner(ZephyrBinaryRunner):
         print(cmd)
         os.system(cmd)
 
+    def do_clear_caldb_only(self, **kwargs):
+        """Only clear caldb without flashing - entry point when --caldb is used alone."""
+        if self.j == "jlink":
+            cfgpath = Path(self.cfg.board_dir) / ".." / "common" / "qcc730.JLinkScript"
+        elif self.j == "ch347":
+            cfgpath = Path(self.cfg.board_dir) / ".." / "common" / "qcc730_openocd_ch347.cfg"
+        if not cfgpath.exists():
+            raise FileNotFoundError(f"config file not found: {cfgpath}")
+
+        module_path = (
+            Path(getenv("ZEPHYR_BASE")).absolute()
+            / r".."
+            / "modules"
+            / "hal"
+            / "qcom"
+        )
+        nvmprogrammerpath = Path(module_path, "tools/qprgc")
+        blobs_path = Path(module_path, "zephyr/blobs")
+        prg_filename = self.build_conf.get("CONFIG_QCC730_PRG_FILE")
+        prg_path = Path(blobs_path, prg_filename)
+        
+        # Call the actual clear_caldb method
+        self.clear_caldb(module_path, nvmprogrammerpath, prg_path, cfgpath)
+    
+    def clear_caldb(self, module_path, nvmprogrammerpath, prg_path, cfgpath):
+        """Clear caldb by erasing 0x3000 bytes at address 0x00377000."""
+        self.logger.info('='*60)
+        self.logger.info('Starting caldb clear operation')
+        self.logger.info('='*60)
+        
+        try:
+            # Step 1: Copy qcc730mi_prg.elf from blobs to qprgc
+            blobs_path = Path(module_path, "zephyr/blobs")
+            prg_filename = self.build_conf.get("CONFIG_QCC730_PRG_FILE")
+            src_prg = Path(blobs_path, prg_filename)
+            dst_prg = Path(nvmprogrammerpath, prg_filename)
+            
+            self.logger.info(f'Step 1: Copying {prg_filename}')
+            self.logger.info(f'  From: {src_prg}')
+            self.logger.info(f'  To:   {dst_prg}')
+            
+            if not src_prg.exists():
+                raise FileNotFoundError(f"Source file not found: {src_prg}")
+            
+            import shutil
+            shutil.copy2(src_prg, dst_prg)
+            self.logger.info(f'  Successfully copied {prg_filename}')
+            
+            # Step 2: Copy config files from boards/qcom/common to qprgc
+            common_dir = Path(self.cfg.board_dir) / ".." / "common"
+            
+            if self.j == "ch347":
+                cfg_file = "qcc730_openocd_ch347.cfg"
+            else:  # jlink
+                cfg_file = "qcc730.JLinkScript"
+            
+            src_cfg = Path(common_dir, cfg_file)
+            dst_cfg = Path(nvmprogrammerpath, cfg_file)
+            
+            self.logger.info(f'Step 2: Copying configuration files')
+            self.logger.info(f'  Copying {cfg_file}')
+            self.logger.info(f'  From: {src_cfg}')
+            self.logger.info(f'  To:   {dst_cfg}')
+            
+            if not src_cfg.exists():
+                raise FileNotFoundError(f"Config file not found: {src_cfg}")
+            
+            shutil.copy2(src_cfg, dst_cfg)
+            self.logger.info(f'  Successfully copied {cfg_file}')
+            
+            # Also copy the other config file for completeness
+            if self.j == "ch347":
+                other_cfg = "qcc730.JLinkScript"
+            else:
+                other_cfg = "qcc730_openocd_ch347.cfg"
+            
+            src_other = Path(common_dir, other_cfg)
+            dst_other = Path(nvmprogrammerpath, other_cfg)
+            
+            if src_other.exists():
+                self.logger.info(f'  Copying {other_cfg}')
+                shutil.copy2(src_other, dst_other)
+                self.logger.info(f'  Successfully copied {other_cfg}')
+            
+            # Step 3: Run nvm_programmer.py to erase caldb
+            self.logger.info(f'Step 3: Erasing caldb region')
+            self.logger.info(f'  Address: 0x00377000')
+            self.logger.info(f'  Size:    0x3000 (12288 bytes)')
+            
+            nvm_programmer = Path(nvmprogrammerpath, "nvm_programmer.py")
+            
+            # Build the erase command
+            # -s: server type (ch347 or jlink)
+            # -i: programmer elf file
+            # -n: nvm name (rram)
+            # --server-script: config script
+            # -b: base address
+            # -e: erase flag
+            # -S: size to erase
+            # --reset: reset after operation
+            cmd = (
+                f'python "{nvm_programmer}" '
+                f'-s {self.j} '
+                f'-i "{dst_prg}" '
+                f'-n rram '
+                f'--server-script "{dst_cfg}" '
+                f'-b 0x00377000 '
+                f'-e '
+                f'-S 0x3000 '
+                f'--reset'
+            )
+            
+            self.logger.info(f'  Executing command:')
+            self.logger.info(f'  {cmd}')
+            
+            # Change to qprgc directory to run the command
+            original_dir = os.getcwd()
+            os.chdir(nvmprogrammerpath)
+            
+            try:
+                result = os.system(cmd)
+                
+                if result == 0:
+                    self.logger.info('='*60)
+                    self.logger.info('Caldb clear operation completed successfully!')
+                    self.logger.info('='*60)
+                else:
+                    self.logger.error(f'Caldb clear operation failed with exit code: {result}')
+                    raise RuntimeError(f'Caldb clear operation failed with exit code {result}')
+            finally:
+                # Change back to original directory
+                os.chdir(original_dir)
+                
+        except Exception as e:
+            self.logger.error(f'Error during caldb clear operation: {e}')
+            raise
+    
     def do_read_rram(self, **kwargs):
         """Read RRAM from specified address and length, save to file."""
         if not self.read_addr or not self.read_len or not self.read_file:
