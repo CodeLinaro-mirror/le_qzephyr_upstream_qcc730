@@ -278,7 +278,7 @@ class qccsdkRunner(ZephyrBinaryRunner):
                 os.system('%s -b 0x37a000 -f %s'%(cmd_pre, str(bdf_path)))
             self.logger.info(f'Flashing file: {bin_name}')
             if self.m == "rram":
-                cmd = '%s -b 0x21a400 -f %s '%(cmd_pre, bin_name)
+                cmd = '%s -b 0x222400 -f %s '%(cmd_pre, bin_name)
             if self.m == "flash" :
                 self.logger.info(f'Flashing firmware description table in flash: {fdt_flash_name}')
                 os.system('%s -b 0x0 -f %s'%(cmd_flash_pre, str(fdt_flash_name)))
