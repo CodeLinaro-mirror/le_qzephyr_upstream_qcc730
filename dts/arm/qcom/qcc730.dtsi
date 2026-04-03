@@ -58,9 +58,9 @@
 	};
 
 	soc {
-		rram: rram@21a400 {
+		rram: rram@222400 {
 			compatible = "zephyr,memory-region";
-			reg = <0x0021A400 0x00165C00>;
+			reg = <0x00222400 0x0015Dc00>;
 			zephyr,memory-region = "RRAM";
 			label = "RRAM";
 		};
