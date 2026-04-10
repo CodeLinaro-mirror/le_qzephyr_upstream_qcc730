@@ -91,8 +91,26 @@ static int spi_qcc730_spis_release(const struct device *dev, const struct spi_co
 /* Forward declaration for ring service handler */
 #ifdef CONFIG_RING_SERVICE
 extern void ring_rx_handler(void);
+extern bool ring_all_tx_consumed(void);
 #endif
+#ifdef CONFIG_PM_DEVICE
+void spi_set_ext_wakeup_flag(void)
+{
+	ext_wakeup_flag = true;
+	LOG_DBG("External wakeup flag set");
+}
 
+bool spi_is_ext_wakeup(void)
+{
+	return ext_wakeup_flag;
+}
+
+void spi_clear_ext_wakeup_flag(void)
+{
+	ext_wakeup_flag = false;
+	LOG_DBG("External wakeup flag cleared");
+}
+#endif
 /**
  * @brief QCSPI interrupt handler
  *
@@ -120,9 +138,20 @@ static void spi_qcc730_spis_isr(const struct device *dev)
 #ifdef CONFIG_RING_SERVICE
 	/* Notify ring service if enabled */
 	ring_rx_handler();
-#endif	
+#endif
 	}
-	
+
+	/* HOST_INT1: host has read data from ring, check if pm_device_busy can be cleared */
+	if (int_status & QCSPI_SLAVE_HOST_INT1_MASK) {
+		regs->QCSPI_SLAVE_R_SPI_SLAVE_IRQ_CLR.bit.HOST_INT1_IRQ_CLR = 1U;
+#ifdef CONFIG_RING_SERVICE
+		if (!spi_is_ext_wakeup()) {
+			if (ring_all_tx_consumed()) {
+				pm_device_busy_clear(dev);
+			}
+		}
+#endif
+	}
 	if (regs->QCSPI_SLAVE_R_SPI_SLAVE_SW_RST_IRQ.bit.SW_RST_REQ_IRQ) {
 		regs->QCSPI_SLAVE_R_SPI_SLAVE_SW_RESET.bit.SW_RESET = QCSPI_SLAVE_ENABLE;
 		LOG_ERR("SPI RESET Interrupt triggered!");
@@ -210,6 +239,9 @@ static int spi_qcc730_spis_init(const struct device *dev)
 	/* Enable HOST_INT0 interrupt */
 	regs->QCSPI_SLAVE_R_SPI_SLAVE_IRQ_EN.bit.HOST_INT0_IRQ_EN = 1U;
 
+	/* Enable HOST_INT1 interrupt (used for host-read-complete notification) */
+	regs->QCSPI_SLAVE_R_SPI_SLAVE_IRQ_EN.bit.HOST_INT1_IRQ_EN = 1U;
+
 	/* Enable SW_RESET_IRQ_EN interrupt */
 	regs->QCSPI_SLAVE_R_SPI_SLAVE_IRQ_EN.bit.SW_RESET_IRQ_EN = 1U;
 
@@ -221,23 +253,6 @@ static int spi_qcc730_spis_init(const struct device *dev)
 }
 
 #ifdef CONFIG_PM_DEVICE
-
-void spi_set_ext_wakeup_flag(void)
-{
-	ext_wakeup_flag = true;
-	LOG_DBG("External wakeup flag set");
-}
-
-bool spi_is_ext_wakeup(void)
-{
-	return ext_wakeup_flag;
-}
-
-void spi_clear_ext_wakeup_flag(void)
-{
-	ext_wakeup_flag = false;
-	LOG_DBG("External wakeup flag cleared");
-}
 
 static int spi_qcc730_spis_deinit(const struct device *dev)
 {
