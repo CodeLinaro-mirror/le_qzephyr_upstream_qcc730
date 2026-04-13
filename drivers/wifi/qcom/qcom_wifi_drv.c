@@ -1877,7 +1877,13 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
     /* security */
     switch (wifi_status.auth_mode) {
     case QAPI_WLAN_AUTH_WPA3_SAE_E:
-        status->security = WIFI_SECURITY_TYPE_SAE;
+        if (dev_data->cfg_connect.security == WIFI_SECURITY_TYPE_SAE_H2E ||
+                dev_data->cfg_connect.security == WIFI_SECURITY_TYPE_SAE_HNP ||
+                dev_data->cfg_connect.security == WIFI_SECURITY_TYPE_SAE_AUTO) {
+            status->security = dev_data->cfg_connect.security;
+        } else {
+            status->security = WIFI_SECURITY_TYPE_SAE;
+        }
         break;
     case QAPI_WLAN_AUTH_WPA2_PSK_E:
         status->security = WIFI_SECURITY_TYPE_PSK;
