@@ -50,26 +50,26 @@ manifest:
       path: modules/debug/segger
     - name: qapp
       remote: qoss
-      revision: qapp.qzephyr.1.0
+      revision: qcc730.qzephyr.2.0
     - name: qhal
       remote: upstream
-      revision: hal.qhal.1.0
+      revision: qcc730.qzephyr.2.0
       path: modules/hal/qcom
     - name: libpowerqcc730
       remote: prop
-      revision: libpowerqcc730.qhal.1.0
+      revision: qcc730.qzephyr.2.0
       path: prop/libpowerqcc730
     - name: libwifiqcc730
       remote: prop
-      revision: libwifiqcc730.qhal.1.0
+      revision: qcc730.qzephyr.2.0
       path: prop/libwifiqcc730
     - name: libsensorqcc730
       remote: prop
-      revision: libsensorqcc730.qhal.1.0
+      revision: qcc730.qzephyr.2.0
       path: prop/libsensorqcc730
     - name: libcryptoqcc730
       remote: prop
-      revision: libcryptoqcc730.qhal.1.0
+      revision: qcc730.qzephyr.2.0
       path: prop/libcryptoqcc730
   self:
     west-commands: zephyr/scripts/west-commands.yml
