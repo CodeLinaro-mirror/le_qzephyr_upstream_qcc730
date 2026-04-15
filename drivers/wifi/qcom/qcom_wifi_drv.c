@@ -201,7 +201,8 @@ static void qwifi_scan_complete_event(struct device *dev, qapi_WLAN_Scan_Comp_Ev
             } else if (bss->rsn_Auth & __QAPI_WLAN_SECURITY_AUTH_PSK) {
                 res.security = WIFI_SECURITY_TYPE_PSK;
             } else if (bss->rsn_Auth & __QAPI_WLAN_SECURITY_AUTH_SAE) {
-                res.security = WIFI_SECURITY_TYPE_SAE;
+                res.security = bss->sae_h2e ? WIFI_SECURITY_TYPE_SAE_H2E
+                                            : WIFI_SECURITY_TYPE_SAE_HNP;
             } else if (bss->wpa_Auth & __QAPI_WLAN_SECURITY_AUTH_PSK) {
                 res.security = WIFI_SECURITY_TYPE_WPA_PSK;
             } else {
