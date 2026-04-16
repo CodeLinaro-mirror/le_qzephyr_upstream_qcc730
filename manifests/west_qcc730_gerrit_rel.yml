@@ -6,6 +6,8 @@ manifest:
       url-base: ssh://review-android.quicinc.com:29418/qzephyr/upstream
     - name: qoss
       url-base: ssh://review-android.quicinc.com:29418/qzephyr/qoss
+    - name: 3rdparty
+      url-base: ssh://review-android.quicinc.com:29418/qzephyr/3rdparty
     - name: prop
       url-base: ssh://review-android.quicinc.com:29418/qzephyr/prop
     - name: zephyrproject-rtos
@@ -26,6 +28,10 @@ manifest:
       remote: zephyrproject-rtos
       revision: cmsis_6.qzephyr.2.0.r1-rel
       path: modules/hal/cmsis_6
+    - name: cAT
+      remote: 3rdparty
+      revision: 3rdparty.qzephyr.1.0.r1-rel
+      path: modules/lib/cAT
     - name: mbedtls
       remote: zephyrproject-rtos
       revision: mbedtls.qzephyr.2.0.r1-rel
@@ -44,26 +50,26 @@ manifest:
       path: modules/debug/segger
     - name: qapp
       remote: qoss
-      revision: qapp.qzephyr.1.0.r1-rel
+      revision: qcc730.qzephyr.2.0.r1-rel
     - name: qhal
       remote: upstream
-      revision: hal.qhal.1.0.r1-rel
+      revision: qcc730.qzephyr.2.0.r1-rel
       path: modules/hal/qcom
     - name: libpowerqcc730
       remote: prop
-      revision: libpowerqcc730.qhal.1.0.r1-rel
+      revision: qcc730.qzephyr.2.0.r1-rel
       path: prop/libpowerqcc730
     - name: libwifiqcc730
       remote: prop
-      revision: libwifiqcc730.qhal.1.0.r1-rel
+      revision: qcc730.qzephyr.2.0.r1-rel
       path: prop/libwifiqcc730
     - name: libsensorqcc730
       remote: prop
-      revision: libsensorqcc730.qhal.1.0.r1-rel
+      revision: qcc730.qzephyr.2.0.r1-rel
       path: prop/libsensorqcc730
     - name: libcryptoqcc730
       remote: prop
-      revision: libcryptoqcc730.qhal.1.0.r1-rel
+      revision: qcc730.qzephyr.2.0.r1-rel
       path: prop/libcryptoqcc730
   self:
     west-commands: zephyr/scripts/west-commands.yml
