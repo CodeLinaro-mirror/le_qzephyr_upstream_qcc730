@@ -15,6 +15,7 @@
 
 #include "nt_socpm_sleep.h"
 #include "nt_sys_monitoring.h"
+#include "qapi_rram.h"
 
 #if defined(__GNUC__)
 /*
@@ -231,7 +232,7 @@ typedef struct boot_sbl_share_s{
     uint8_t rsv1;
     uint8_t rsv2;
     uint32_t bdf_addr;
-    /* others ... */
+    IDAddr fdt_part[RRAM_MAX_PART_NUMBER];
 } boot_sbl_share;
 
 #define BOOT_MODE_FULL_LOAD  0x1
@@ -245,6 +246,8 @@ enum ota_image_format {
 };
 
 #define SBL_SHARE_VER 1
+
+IDAddr fdt_part[RRAM_MAX_PART_NUMBER];
 
 void rram_boot_early_init(void *sbl_args)
 {
@@ -270,6 +273,8 @@ void rram_boot_early_init(void *sbl_args)
 	    size_t bss_size = (size_t)(__bss_end - __bss_start);
 	    memset(__bss_start, 0, bss_size);
     }
+
+    memcpy(fdt_part, sbl_share.fdt_part, sizeof(fdt_part));
 }
 
 // Here interrupt is not enabled yet
