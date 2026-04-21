@@ -82,6 +82,55 @@ static struct qwifi_drv_dev_cfg_t g_wifi_dev_cfg = {
     .scan_mode = SCAN_MODE_UNBLOCKING,
 };
 
+#ifdef CONFIG_WIFI_QCOM_AUTO_DHCPV4
+/*
+ * DHCP work contexts.
+ *
+ * net_dhcpv4_start() / net_dhcpv4_stop() must NOT be called directly from
+ * the WiFi driver event callbacks because those run in a context where the
+ * net_mgmt callback lock may already be held, which would cause a deadlock.
+ * Offload the calls to the system work queue instead.
+ *
+ * Each context embeds the target iface so that start and stop always
+ * operate on the same interface.
+ */
+struct dhcp_start_work_ctx {
+    struct k_work_delayable work;
+    struct net_if *iface;
+};
+
+struct dhcp_stop_work_ctx {
+    struct k_work work;
+    struct net_if *iface;
+};
+
+static struct dhcp_start_work_ctx g_dhcp_start_ctx;
+static struct dhcp_stop_work_ctx  g_dhcp_stop_ctx;
+
+static void dhcp_start_work_handler(struct k_work *work)
+{
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    struct dhcp_start_work_ctx *ctx =
+        CONTAINER_OF(dwork, struct dhcp_start_work_ctx, work);
+
+    if (ctx->iface) {
+        LOG_INF("Starting DHCP client on iface %p", ctx->iface);
+        net_dhcpv4_start(ctx->iface);
+    }
+}
+
+static void dhcp_stop_work_handler(struct k_work *work)
+{
+    struct dhcp_stop_work_ctx *ctx =
+        CONTAINER_OF(work, struct dhcp_stop_work_ctx, work);
+
+    if (ctx->iface) {
+        LOG_INF("Stopping DHCP client on iface %p", ctx->iface);
+        net_dhcpv4_stop(ctx->iface);
+    }
+}
+#endif /* CONFIG_WIFI_QCOM_AUTO_DHCPV4 */
+
 static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity);
 void clear_wifi_busy(void);
 #ifdef CONFIG_PM_DEVICE
@@ -257,7 +306,9 @@ static int station_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *
     wifi_mgmt_raise_connect_result_event(iface, connect_status);
     if (bss->connected) {
 #if defined(CONFIG_WIFI_QCOM_AUTO_DHCPV4)
-        net_dhcpv4_start(iface);
+        /* Schedule DHCP start via work queue to avoid potential deadlock */
+        g_dhcp_start_ctx.iface = iface;
+        k_work_schedule(&g_dhcp_start_ctx.work, K_MSEC(1));
 #endif
     }
 
@@ -337,7 +388,9 @@ static void station_disconnect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt
 
     if (dev_mode == DEV_MODE_STATION_E) {
 #if defined(CONFIG_WIFI_QCOM_AUTO_DHCPV4)
-        net_dhcpv4_stop(dev_data->iface);
+        /* Schedule DHCP stop via work queue to avoid potential deadlock */
+        g_dhcp_stop_ctx.iface = dev_data->iface;
+        k_work_submit(&g_dhcp_stop_ctx.work);
 #endif
     }
 }
@@ -2461,6 +2514,10 @@ static int qwifi_drv_dev_init(const struct device *dev)
         g_qwifi_dev_by_id[QCOM_DEV_STA_ID] = dev;
         qwifi_init();
         qapi_WLAN_Set_Callback(qwifi_drv_event_handler, (void *)dev);
+#ifdef CONFIG_WIFI_QCOM_AUTO_DHCPV4
+        k_work_init_delayable(&g_dhcp_start_ctx.work, dhcp_start_work_handler);
+        k_work_init(&g_dhcp_stop_ctx.work, dhcp_stop_work_handler);
+#endif
     }
     else if (strcmp(dev->name, "qwifi_sap") == 0) {
         g_qwifi_dev_by_id[QCOM_DEV_AP_ID] = dev;
