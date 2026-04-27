@@ -9,6 +9,17 @@ config WIFI_QCOM
 	#default y
 	default n
 
+config WIFI_QCOM_ENTERPRISE
+	bool "QCC730 WPA2-Enterprise (802.1X/EAP) support"
+	depends on WIFI_QCOM
+	depends on WIFI_NM_WPA_SUPPLICANT
+	depends on WIFI_NM_WPA_SUPPLICANT_CRYPTO_ENTERPRISE
+	help
+	  Enables WPA2-Enterprise (802.1X EAP-TLS/PEAP/TTLS) for QCC730.
+	  The host wpa_supplicant EAP state machine runs after firmware
+	  completes 802.11 authentication and association.
+	  Non-enterprise paths (open/PSK/SAE) are not affected.
+
 config WIFI_QCOM_AUTO_DHCPV4
 	bool "Automatically starts DHCP4 negotiation"
 	depends on WIFI_QCOM
