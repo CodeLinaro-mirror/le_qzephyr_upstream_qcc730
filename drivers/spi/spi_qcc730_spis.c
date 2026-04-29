@@ -144,7 +144,7 @@ static void spi_qcc730_spis_isr(const struct device *dev)
 	/* HOST_INT1: host has read data from ring, check if pm_device_busy can be cleared */
 	if (int_status & QCSPI_SLAVE_HOST_INT1_MASK) {
 		regs->QCSPI_SLAVE_R_SPI_SLAVE_IRQ_CLR.bit.HOST_INT1_IRQ_CLR = 1U;
-#ifdef CONFIG_RING_SERVICE
+#if defined(CONFIG_PM_DEVICE) && defined(CONFIG_RING_SERVICE)
 		if (!spi_is_ext_wakeup()) {
 			if (ring_all_tx_consumed()) {
 				pm_device_busy_clear(dev);
