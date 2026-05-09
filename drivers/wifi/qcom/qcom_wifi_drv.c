@@ -2124,8 +2124,12 @@ static int qwifi_drv_set_rate(const struct device *dev, struct qcom_wifi_set_rat
 
     qapi_Status_t ret = qapi_WLAN_Set_Rate(&cfg);
     if (ret != QAPI_OK) {
-        LOG_ERR("Failed to set rate (staid=%u, p=%u, s=%u, t=%u): %d",
-                cfg.rate_staid, cfg.rate_p_rate, cfg.rate_s_rate, cfg.rate_t_rate, ret);
+		if(cfg.ra_ON == QAPI_WLAN_RA_OFF) {
+            LOG_ERR("Failed to set rate (staid=%u, p=%u, s=%u, t=%u): %d",
+                    cfg.rate_staid, cfg.rate_p_rate, cfg.rate_s_rate, cfg.rate_t_rate, ret);
+		} else if(cfg.ra_ON == QAPI_WLAN_RA_HT_ONLY_ENABLE || cfg.ra_ON == QAPI_WLAN_RA_HT_ONLY_DISABLE) {
+			LOG_ERR("Failed to set rate ht Only option");
+		}
         return -EIO;
     }
     return 0;
@@ -2507,6 +2511,110 @@ int qwifi_get_power_save(const struct device *dev, struct wifi_ps_config *config
     return 0;
 }
 
+/**
+ * @brief Configure Block Ack (BA) window size on the active WLAN device.
+ *
+ * Programs the BA window size via qapi_WLAN_Set_Param
+ * for the currently active interface. 
+ *
+ * @param tx_size   TX BA Window size, Typically constrained to less than 64.
+ * @param rx_szie   RX BA Window size, Typically constrained to less than 64.
+ *
+ * @return 0 on success; -1 on failure.
+ *
+ * Notes:
+ * - Operates on the active device.
+ * - The firmware enforces valid ranges; invalid values are rejected by qapi_WLAN_Set_Param.
+ */
+static int qwifi_drv_set_ba_win_size(const struct device *dev, struct qcom_wifi_set_ba_win_size_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    qapi_WLAN_BA_Window_Size_t ba_win_size;
+
+    ba_win_size.tx_size = params->tx_size;
+    ba_win_size.rx_size = params->rx_size;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_BA_WINDOW_SIZE,
+                        &ba_win_size,
+                        sizeof(ba_win_size),
+                        false);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set BA window size for device %d: %d", deviceId, ret);
+        return -EIO;
+    }
+    return 0;
+}
+
+/**
+ * @brief Enable or disable CTS to SELF on the active WLAN device.
+ *
+ * Controls CTS to SELF via qapi_WLAN_Set_Param for the currently active
+ * WLAN interface. 
+ *
+ * @param dev Pointer to the driver device instance.
+ * @param params CTS to SELF control flag:
+ *        - 1: enable
+ *        - 0: disable
+ *
+ * @return 0 on success; -1 on failure.
+ */
+
+static int qwifi_drv_set_cts_to_self(const struct device *dev, struct qcom_wifi_set_cts_to_self_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint32_t enable = params->enable;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_PROTECTION_MODE,
+                        &enable,
+                        sizeof(enable),
+                        FALSE);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set CTS to SELF (enable=%u) for device %d: %d", enable, deviceId, ret);
+        return -EIO;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Set Rsp rate to 6Mbps on the active WLAN device.
+ *
+ * Set Rsp rate to 6Mbps via qapi_WLAN_Set_Param for the currently active
+ * WLAN interface. 
+ *
+ * @param dev Pointer to the driver device instance.
+ * @param params Rsp rate index:
+ *        - 8: 6Mbps
+ *
+ * @return 0 on success; -1 on failure.
+ */
+
+static int qwifi_drv_set_rsp_rate(const struct device *dev, struct qcom_wifi_set_rsp_rate_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint8_t rate_idx = params->rate_idx;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_RSP_RATE,
+                        &rate_idx,
+                        sizeof(rate_idx),
+                        FALSE);
+    if (ret != QAPI_OK) {
+        LOG_ERR("set RspRate fail, check the wlan connection or data validation");
+        return -EIO;
+    }
+
+    return 0;
+}
+
 static int qwifi_drv_dev_init(const struct device *dev)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
@@ -2563,7 +2671,10 @@ static int qwifi_drv_dev_init(const struct device *dev)
         .set_ignore_bc_mc_in_bmps = qwifi_ps_drv_ignore_bc_mc_in_bmps,
         .set_power_optimization_enable_in_bmps = qwifi_ps_drv_set_power_optimization_enable_in_bmps,
         .set_compress_qos_null_enable_in_bmps = qwifi_ps_drv_set_compress_qos_null_enable_in_bmps,
-        .set_rx_filter_in_bmps = qwifi_ps_drv_set_rx_filter_in_bmps
+        .set_rx_filter_in_bmps = qwifi_ps_drv_set_rx_filter_in_bmps,
+        .set_ba_win_size    = qwifi_drv_set_ba_win_size,
+        .set_cts_to_self	= qwifi_drv_set_cts_to_self,
+        .set_rsp_rate	= qwifi_drv_set_rsp_rate,
     };
     dev_data->qcom_wifi_cmd = qwifi_ops;
 
