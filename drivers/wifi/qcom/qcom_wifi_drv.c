@@ -2077,68 +2077,7 @@ static int qwifi_drv_send(const struct device *dev, struct net_pkt *pkt)
         return -EFAULT;
     }
 
-    /* DIAGNOSTIC B26/B30: log outbound EAPOL, DHCP, and ARP frames.
-     * Ethernet header layout (14 bytes):
-     *   b[12:13] = EtherType; b[23]=IPv4 proto; b[34:35]=UDP sport; b[36:37]=UDP dport
-     * EAPOL (0x888E): b[15]=pkt_type, b[18]=EAP code, b[22]=EAP type
-     * DHCP DISCOVER/REQUEST: etype=0x0800, proto=UDP(0x11), sport=68, dport=67
-     *   b[46:49]=xid, b[30:33]=dst IP
-     * ARP (0x0806): b[20:21]=op (1=req,2=reply), b[28:33]=sender IP, b[38:43]=target IP
-     * B30: confirms whether DHCP DISCOVERs reach qwifi_hal_tx after 4WHS. */
-    bool is_eapol = false;
-    bool is_dhcp_tx = false;
-    bool is_arp_tx = false;
-    uint8_t eapol_pkt_type = 0, eap_code = 0, eap_type = 0;
-    uint32_t dhcp_xid = 0;
-    uint32_t dhcp_dst_ip = 0;
-    uint16_t arp_op = 0;
-    if (pkt_len >= 16) {
-        const uint8_t *b = (const uint8_t *)pkt_buf;
-        uint16_t etype = (uint16_t)(((uint16_t)b[12] << 8) | b[13]);
-        if (etype == 0x888E) {
-            is_eapol = true;
-            eapol_pkt_type = b[15];
-            if (eapol_pkt_type == 0x00 && pkt_len >= 23) {
-                eap_code = b[18];
-                eap_type = b[22];
-            }
-        } else if (etype == 0x0800 && pkt_len >= 50 && b[23] == 0x11) {
-            /* IPv4/UDP: check for DHCP client→server (sport=68, dport=67) */
-            uint16_t sp = (uint16_t)(((uint16_t)b[34] << 8) | b[35]);
-            uint16_t dp = (uint16_t)(((uint16_t)b[36] << 8) | b[37]);
-            if (sp == 68 && dp == 67) {
-                is_dhcp_tx = true;
-                /* xid at DHCP payload offset 4 (= b[42+4] = b[46]) */
-                dhcp_xid = ((uint32_t)b[46] << 24) | ((uint32_t)b[47] << 16) |
-                           ((uint32_t)b[48] << 8) | b[49];
-                dhcp_dst_ip = ((uint32_t)b[30] << 24) | ((uint32_t)b[31] << 16) |
-                              ((uint32_t)b[32] << 8) | b[33];
-            }
-        } else if (etype == 0x0806 && pkt_len >= 42) {
-            is_arp_tx = true;
-            arp_op = (uint16_t)(((uint16_t)b[20] << 8) | b[21]);
-        }
-    }
-
     ret = qwifi_hal_tx(deviceId, pkt_buf, pkt_len);
-
-    if (is_eapol) {
-        if (eapol_pkt_type == 0x00) {
-            LOG_INF("wifi_tx: EAPOL EAP code=%u eaptype=%u len=%u hal_ret=%d",
-                    eap_code, eap_type, (unsigned)pkt_len, (int)ret);
-        } else {
-            LOG_INF("wifi_tx: EAPOL type=0x%02x len=%u hal_ret=%d",
-                    eapol_pkt_type, (unsigned)pkt_len, (int)ret);
-        }
-    } else if (is_dhcp_tx) {
-        LOG_INF("wifi_tx: DHCP xid=0x%08x dstip=%u.%u.%u.%u len=%u hal_ret=%d",
-                dhcp_xid,
-                (dhcp_dst_ip >> 24) & 0xff, (dhcp_dst_ip >> 16) & 0xff,
-                (dhcp_dst_ip >> 8) & 0xff, dhcp_dst_ip & 0xff,
-                (unsigned)pkt_len, (int)ret);
-    } else if (is_arp_tx) {
-        LOG_INF("wifi_tx: ARP op=%u len=%u hal_ret=%d", arp_op, (unsigned)pkt_len, (int)ret);
-    }
 
     if (ret != NT_OK) {
         nt_dpm_free_buffer_ext(pkt_buf);
@@ -2157,37 +2096,12 @@ qapi_Status_t qwifi_drv_eth_rx_cb(void *drv_intf_data, void *bufp, uint16_t len,
     const struct device *dev = net_if_get_device(iface);
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
 
-    /* DIAGNOSTIC B23: log ALL received frames to trace DHCP RX path.
-     * B21 only logged ARP + UDP, which were never seen.  Now log every frame by
-     * EtherType so we know if ANYTHING is arriving after 4WHS.
-     * DHCP OFFER = IPv4(0x0800) UDP sport=67 dport=68.
-     * If nothing appears after 4WHS, the problem is in DPM/firmware (before this cb).
-     * If EtherType=0x0800 appears but no sport=67/dport=68, DHCP OFFER is being
-     * dropped inside the Zephyr IPv4/DHCP stack. */
-    if (len >= 14) {
-        const uint8_t *b = (const uint8_t *)bufp;
-        uint16_t etype = (uint16_t)(((uint16_t)b[12] << 8) | b[13]);
-        if (etype == 0x0800 && len >= 42) {
-            uint8_t proto = b[23];
-            if (proto == 17 /* UDP */) {
-                uint16_t sp = (uint16_t)(((uint16_t)b[34] << 8) | b[35]);
-                uint16_t dp = (uint16_t)(((uint16_t)b[36] << 8) | b[37]);
-                LOG_INF("wifi_rx: UDP sport=%u dport=%u len=%u", sp, dp, len);
-            } else {
-                LOG_INF("wifi_rx: IPv4 proto=%u len=%u", proto, len);
-            }
-        } else {
-            LOG_INF("wifi_rx: etype=0x%04x len=%u", etype, len);
-        }
-    }
-
 #ifdef CONFIG_PM_DEVICE
     pm_device_busy_set(dev);
 #endif
 
     pkt = net_pkt_rx_alloc_with_buffer(iface, len, AF_UNSPEC, 0, dev_data->timeout);
     if (!pkt) {
-        LOG_WRN("wifi_rx: pkt alloc failed len=%u", len);
         return QAPI_ERR_NO_MEMORY;
     }
 
