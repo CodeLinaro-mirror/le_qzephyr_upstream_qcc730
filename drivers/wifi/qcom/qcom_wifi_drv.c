@@ -583,16 +583,21 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
         break;
     case WIFI_SECURITY_TYPE_EAP_WPA3_ENT_PEAP_MSCHAPV2:
         /*
-         * WPA3-Enterprise Phase 1: 802.1X + WPA-EAP-SHA256 (AKM 0x000FAC05) + PMF required.
-         * Use QAPI_WLAN_AUTH_WPA2_E_SHA256_E which maps to WMI_WPA2_AUTH|WMI_WPA3_SHA256_AUTH,
-         * so the firmware cipher-match accepts APs advertising AKM 0x000FAC05 while
-         * AUTH_IS_8021X() remains true (EAP state machine runs on host).
+         * AKM5 (WPA-EAP-SHA256) enterprise connection — two sub-modes:
+         *   -w 2 (MFP Required): WPA3-Enterprise Only.
+         *     QAPI_WLAN_AUTH_WPA3_ENT_ONLY_E → WMI_WPA3_ENTERPRISE_ONLY_AUTH (0x200)
+         *     wlan_wmi.c sets dev->rsn_cap |= (MFPC|MFPR); AssocReq RSN IE has MFPR=1.
+         *     AP must have ieee80211w=2 (MFPR=1).
+         *   no -w (or -w 1): WPA3 Transition mode.
+         *     QAPI_WLAN_AUTH_WPA2_E_SHA256_E → WMI_WPA2_SHA256_AUTH (0x100)
+         *     MFPC=1, MFPR=0; compatible with transition AP (ieee80211w=1).
          */
-        params->mfp = WIFI_MFP_REQUIRED;
         if (qcom_ent_setup_supplicant(dev, params)) {
             return -EINVAL;
         }
-        e_wpa_ver = QAPI_WLAN_AUTH_WPA2_E_SHA256_E;
+        e_wpa_ver = (params->mfp == WIFI_MFP_REQUIRED)
+                    ? QAPI_WLAN_AUTH_WPA3_ENT_ONLY_E
+                    : QAPI_WLAN_AUTH_WPA2_E_SHA256_E;
         e_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
         is_eap = true;
         break;
