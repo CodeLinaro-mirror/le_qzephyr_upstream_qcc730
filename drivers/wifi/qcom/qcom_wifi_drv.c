@@ -272,7 +272,8 @@ static void qwifi_scan_complete_event(struct device *dev, qapi_WLAN_Scan_Comp_Ev
         memset(&res, 0, sizeof(struct wifi_scan_result));
         qapi_WLAN_BSS_Scan_Info_t *bss = &scan_result->scan_bss_info[k];
 
-        res.rssi = bss->rssi;
+        /* Firmware reports RSSI as a positive magnitude; real dBm = value - 100 */
+        res.rssi = (int)bss->rssi - 100;
         res.channel = bss->channel;
         res.ssid_length = bss->ssid_Length;
         strlcpy(res.ssid, bss->ssid, WIFI_SSID_MAX_LEN);
@@ -415,6 +416,9 @@ static int ap_station_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_
     if (!memcmp(link_addr->addr, mac_addr, link_addr->len)) {
         if (success) {
             dev_data->ap_status.status = WIFI_SAP_IFACE_ENABLED;
+            /* Bring the SoftAP iface up so downlink TX is not rejected with
+             * -ENETDOWN; AP path has no Q_LINKCHANGE_ADD to set carrier. */
+            net_eth_carrier_on(iface);
             wifi_mgmt_raise_ap_enable_result_event(iface, WIFI_STATUS_AP_SUCCESS);
         } else {
             dev_data->ap_status.status = WIFI_SAP_IFACE_DISABLED;
@@ -493,6 +497,7 @@ static void ap_station_disconnect_event(struct device *dev, qapi_WLAN_Join_Comp_
     /* filter ap itself connection event. */
     struct net_linkaddr * link_addr = net_if_get_link_addr(iface);
     if (!memcmp(link_addr->addr, sta_mac, link_addr->len)) {
+        net_eth_carrier_off(iface);
         wifi_mgmt_raise_ap_disable_result_event(iface, WIFI_STATUS_AP_SUCCESS);
         dev_data->ap_status.status = WIFI_SAP_IFACE_DISABLED;
         return ;
@@ -925,6 +930,19 @@ static int qwifi_drv_get_tx_power(const struct device *dev, struct qcom_wifi_get
                         &length)) {
         LOG_ERR("get tx power fail for device %d",deviceId);
         return -EIO;
+    }
+
+    /* real_power is only valid once a TX power has been set; until then the
+     * firmware leaves it at the RESTORE_DEFAULT sentinel (100). In that case
+     * the effective TX power is the minimum of the regulatory, CTL and target
+     * limits, so report that instead. */
+    if (power.real_power == 100) {
+        uint16_t eff = power.reg_power;
+        if (power.ctl_power < eff)
+            eff = power.ctl_power;
+        if (power.target_power < eff)
+            eff = power.target_power;
+        power.real_power = eff;
     }
 
     LOG_INF("get real_power: %d dbm", power.real_power);
@@ -2176,7 +2194,8 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
         break;
     }
 
-    status->rssi = wifi_status.rssi;
+    /* Firmware reports RSSI as a positive magnitude; real dBm = value - 100 */
+    status->rssi = (int)wifi_status.rssi - 100;
     status->dtim_period = wifi_status.dtim_period;
     status->beacon_interval = wifi_status.beacon_interval;
     status->band = wifi_status.band;
@@ -2232,18 +2251,39 @@ static int qwifi_drv_send(const struct device *dev, struct net_pkt *pkt)
     return 0;
 }
 
+#if defined(CONFIG_QCC730_RCP_BUS_QCSPI)
+/* RX DIRECT: implemented by the RCP data proxy (which owns the RCP buffer /
+ * link_send API the BSP can't see). Bypasses net_pkt alloc + net_recv_data +
+ * L2 + AF_PACKET socket match. Mirror of the TX DIRECT path. iface_idx: 1=STA,
+ * 2=AP. */
+#define QWIFI_RX_DIRECT_IFACE_STA 1U
+#define QWIFI_RX_DIRECT_IFACE_AP  2U
+extern int proxy_wifi_data_rx_direct(uint8_t iface_idx, const uint8_t *frame, uint16_t len);
+#endif
+
 qapi_Status_t qwifi_drv_eth_rx_cb(void *drv_intf_data, void *bufp, uint16_t len, void *hal_data)
 {
-    struct net_pkt *pkt;
     struct net_if *iface = (struct net_if *)drv_intf_data;
 
     ARG_UNUSED(hal_data);
     const struct device *dev = net_if_get_device(iface);
-    struct qwifi_drv_dev_data_t *dev_data = dev->data;
 
 #ifdef CONFIG_PM_DEVICE
     pm_device_busy_set(dev);
 #endif
+
+#if defined(CONFIG_QCC730_RCP_BUS_QCSPI)
+    /* The frame buffer is freed by the HAL right after we return, so the proxy
+     * copies it out synchronously. */
+    uint8_t iface_idx = (iface == net_if_get_wifi_sap())
+                ? QWIFI_RX_DIRECT_IFACE_AP
+                : QWIFI_RX_DIRECT_IFACE_STA;
+
+    (void)proxy_wifi_data_rx_direct(iface_idx, (const uint8_t *)bufp, len);
+    return 0;
+#else
+    struct net_pkt *pkt;
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
 
     pkt = net_pkt_rx_alloc_with_buffer(iface, len, AF_UNSPEC, 0, dev_data->timeout);
     if (!pkt) {
@@ -2254,6 +2294,7 @@ qapi_Status_t qwifi_drv_eth_rx_cb(void *drv_intf_data, void *bufp, uint16_t len,
     net_recv_data(iface, pkt);
 
     return 0;
+#endif
 }
 
 static void link_change_handler(void *drv_iface, uint32_t event, uint8_t* mac_addr)
