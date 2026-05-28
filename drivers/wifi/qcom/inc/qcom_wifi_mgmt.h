@@ -14,6 +14,7 @@
 #include <zephyr/net/ethernet.h>
 #include <zephyr/net/offloaded_netdev.h>
 #include "qapi_wlan_misc.h"
+#include "qcom_wifi_p2p.h"
 
 /** @brief Qcom Wi-Fi management commands */
 enum qcom_net_request_wifi_cmd {
@@ -104,6 +105,7 @@ enum qcom_net_request_wifi_cmd {
 	NET_REQUEST_WIFI_CMD_QCOM_WNM_SET_ENABLE,
 	/** Set BSS Max Idle Period (seconds) */
 	NET_REQUEST_WIFI_CMD_QCOM_WNM_SET_BSS_MAX_IDLE,
+	NET_REQUEST_WIFI_CMD_QCOM_P2P,
 	NET_REQUEST_WIFI_CMD_QCOM_MAX,
 };
 
@@ -323,6 +325,10 @@ NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_WNM_SET_ENABLE);
 #define NET_REQUEST_WIFI_QCOM_WNM_SET_BSS_MAX_IDLE			\
 	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_WNM_SET_BSS_MAX_IDLE)
 NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_WNM_SET_BSS_MAX_IDLE);
+
+#define NET_REQUEST_WIFI_QCOM_P2P						\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_P2P)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_P2P);
 
 /** Set TX Power parameters */
 struct qcom_wifi_set_tx_power_params{
@@ -619,6 +625,80 @@ struct wifi_wnm_status {
 	uint32_t wakeup_sta_data;
 	uint32_t wakeup_tim;
 	uint32_t wakeup_bss_idle_timer;
+};
+
+enum qcom_p2p_subcmd {
+	P2P_SUBCMD_ENABLE,
+	P2P_SUBCMD_DISABLE,
+	P2P_SUBCMD_APPLY_CFG,
+	P2P_SUBCMD_APPLY_DISC_INT,
+	P2P_SUBCMD_FIND,
+	P2P_SUBCMD_STOP_FIND,
+	P2P_SUBCMD_LISTEN,
+	P2P_SUBCMD_CANCEL,
+	P2P_SUBCMD_FLUSH,
+	P2P_SUBCMD_PEERS_DUMP,
+	P2P_SUBCMD_PEER_DUMP,
+	P2P_SUBCMD_CONNECT,
+	P2P_SUBCMD_REJECT,
+	P2P_SUBCMD_AUTH_INVITE,
+	P2P_SUBCMD_INVITE,
+};
+
+struct qcom_wifi_p2p_params {
+	enum qcom_p2p_subcmd subcmd;
+	union {
+		struct {
+			struct qcom_p2p_params cfg;
+		} enable;
+		struct {
+			struct qcom_p2p_params cfg;
+		} apply_cfg;
+		struct {
+			int min_disc_int;
+			int max_disc_int;
+			int max_disc_tu;
+		} apply_disc_int;
+		struct {
+			unsigned int timeout;
+		} find;
+		struct {
+			unsigned int timeout;
+		} listen;
+		struct {
+			qcom_p2p_print_cb cb;
+			void *cb_ctx;
+			int n;
+		} peers_dump;
+		struct {
+			uint8_t mac[QCOM_P2P_MAC_LEN];
+			qcom_p2p_print_cb cb;
+			void *cb_ctx;
+		} peer_dump;
+		struct {
+			uint8_t mac[QCOM_P2P_MAC_LEN];
+			enum qcom_p2p_wps_method wps_method;
+			int go_intent;
+			int persistent;
+			int auth;
+		} connect;
+		struct {
+			uint8_t mac[QCOM_P2P_MAC_LEN];
+		} reject;
+		struct {
+			uint8_t mac[QCOM_P2P_MAC_LEN];
+			bool clear;
+		} auth_invite;
+		struct {
+			uint8_t mac[QCOM_P2P_MAC_LEN];
+			enum qcom_p2p_invite_role role;
+			const uint8_t *bssid;
+			const uint8_t *ssid;
+			size_t ssid_len;
+			unsigned int freq;
+			int persistent_group;
+		} invite;
+	};
 };
 
 /** Wi-Fi management API */
@@ -1245,6 +1325,10 @@ struct qcom_wifi_mgmt_ops {
 	 * @return 0 if ok, < 0 if error
 	 */
 	int (*wnm_set_bss_max_idle)(const struct device *dev, uint32_t seconds);
+
+#ifdef CONFIG_WIFI_QCOM_P2P
+	int (*p2p)(const struct device *dev, struct qcom_wifi_p2p_params *params);
+#endif
 };
 
 #endif

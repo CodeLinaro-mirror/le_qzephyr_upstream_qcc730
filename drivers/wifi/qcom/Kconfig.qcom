@@ -42,15 +42,16 @@ config WIFI_QCOM_HOSTAP_ELOOP
 	select ZVFS_EVENTFD
 	help
 	  Compiles qcom_hostap_eloop.c and starts a Zephyr thread that runs
-	  hostap's eloop_run(), so registered timeouts (nan_de_timer, EAPOL
-	  retransmits, etc.) actually fire when supp_main is not linked.
+	  hostap's eloop_run(), so registered timeouts (p2p_state_timeout,
+	  nan_de_timer, EAPOL retransmits, etc.) actually fire when supp_main
+	  is not linked.
 
 	  Only meaningful with WIFI_NM_WPA_SUPPLICANT_MINIMAL=y — in a full
 	  supplicant build supp_main already runs eloop_run() in its own
 	  thread, and this helper would be a duplicate. Enable this when
-	  application code uses hostap state machines directly (e.g. NAN
-	  USD via nan_de.c) and posts work to the eloop via
-	  qcom_hostap_post().
+	  application code uses hostap state machines directly (e.g. P2P,
+	  NAN USD via nan_de.c) and posts work to the eloop via
+	  qcom_hostap_post(). Auto-selected by WIFI_QCOM_P2P.
 
 	  ZVFS_EVENTFD is the wake mechanism between WMI event handlers and
 	  the eloop thread — same model supp_main.c uses with the full
@@ -104,6 +105,38 @@ config WPS_DEVICE_NAME
 	default "IOT-NT"
 	help
 	  Device name string included in WPS IE and M1 message.
+
+config WIFI_NM_WPA_SUPPLICANT_P2P_EXT
+	bool "P2P state machine on top of MINIMAL (external supplicant)"
+	depends on WIFI_NM_WPA_SUPPLICANT_MINIMAL
+	help
+	  Link the hostap P2P state machine (p2p.c and friends) on top of the
+	  MINIMAL utility layer. Used by the QCC730 P2P build where group
+	  formation, provisioning and key management are handled outside the
+	  in-tree supplicant.
+
+config WIFI_NM_WPA_SUPPLICANT_P2P_NO_DEBUG
+	bool "Stub out P2P internal p2p_dbg/p2p_info/p2p_err format strings"
+	depends on WIFI_NM_WPA_SUPPLICANT_P2P_EXT
+	help
+	  hostap's P2P core uses its own p2p_dbg/p2p_info/p2p_err functions.
+	  This option compile-time stubs them to ((void)0), which lets the
+	  linker garbage-collect ~30 KB of P2P format-string literals from
+	  .rodata. Functional impact: lose all p2p_dbg/info/err output; the
+	  wpa_msg/wpa_printf path is unaffected.
+
+config WIFI_QCOM_P2P
+	bool "QCC730 P2P (Wi-Fi Direct) device discovery support"
+	depends on WIFI_QCOM
+	depends on WIFI_NM_WPA_SUPPLICANT
+	depends on WIFI_NM_WPA_SUPPLICANT_P2P_EXT
+	select WIFI_QCOM_HOSTAP_ELOOP
+	help
+	  Enable P2P find / discovery for QCC730. The host hostap p2p core
+	  drives state, while qapi_WLAN_P2P_Find() forwards WMI commands to
+	  firmware which performs the social/full channel scan. Group
+	  formation, provisioning and service discovery are not implemented
+	  in this minimal flavor.
 
 config WIFI_QCOM_AUTO_DHCPV4
 	bool "Automatically starts DHCP4 negotiation"
