@@ -20,6 +20,40 @@ config WIFI_QCOM_ENTERPRISE
 	  completes 802.11 authentication and association.
 	  Non-enterprise paths (open/PSK/SAE) are not affected.
 
+	  Requires the full supplicant build (WIFI_NM_WPA_SUPPLICANT_MINIMAL=n)
+	  so supp_main creates the wpa_supplicant context and runs eloop_run()
+	  in its own thread, and driver_zephyr.c provides
+	  wpa_supplicant_event_wrapper used by qcom_wifi_enterprise_glue.
+
+config WIFI_NM_WPA_SUPPLICANT_MINIMAL
+	bool "Minimal hostap build (utils only, no protocol stack)"
+	help
+	  Build only the hostap utility layer (eloop / os / wpa_debug /
+	  wpabuf / common). The WPA/EAP protocol stack is provided externally
+	  (e.g. by firmware on a co-processor).
+
+config WIFI_QCOM_HOSTAP_ELOOP
+	bool "Run hostap eloop thread for QCC730 (MINIMAL builds)"
+	depends on WIFI_QCOM
+	depends on WIFI_NM_WPA_SUPPLICANT_MINIMAL
+	select ZVFS
+	select ZVFS_EVENTFD
+	help
+	  Compiles qcom_hostap_eloop.c and starts a Zephyr thread that runs
+	  hostap's eloop_run(), so registered timeouts (nan_de_timer, EAPOL
+	  retransmits, etc.) actually fire when supp_main is not linked.
+
+	  Only meaningful with WIFI_NM_WPA_SUPPLICANT_MINIMAL=y — in a full
+	  supplicant build supp_main already runs eloop_run() in its own
+	  thread, and this helper would be a duplicate. Enable this when
+	  application code uses hostap state machines directly (e.g. NAN
+	  USD via nan_de.c) and posts work to the eloop via
+	  qcom_hostap_post().
+
+	  ZVFS_EVENTFD is the wake mechanism between WMI event handlers and
+	  the eloop thread — same model supp_main.c uses with the full
+	  supplicant.
+
 config WIFI_QCOM_AUTO_DHCPV4
 	bool "Automatically starts DHCP4 negotiation"
 	depends on WIFI_QCOM

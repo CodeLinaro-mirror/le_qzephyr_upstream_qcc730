@@ -45,6 +45,10 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #endif
 #endif
 
+#ifdef CONFIG_WIFI_QCOM_HOSTAP_ELOOP
+#include "inc/qcom_hostap_eloop.h"
+#endif
+
 #define SCAN_MODE_BLOCKING 1
 #define SCAN_MODE_UNBLOCKING 2
 #define QCOM_MAX_DEVICES 2
@@ -2152,6 +2156,21 @@ static void qwifi_drv_intf_init(struct net_if *iface)
     qwifi_hal_reg_rxcb(iface, qwifi_drv_eth_rx_cb, link_change_handler);
 
     dev_data->wlan_enabled = qapi_WLAN_Enable(true);
+
+#ifdef CONFIG_WIFI_QCOM_HOSTAP_ELOOP
+    /* Start the hostap eloop thread at WiFi STA bring-up. The hostap
+     * nan_de / eapol cores assume a single-threaded eloop drives their
+     * timers and event delivery; MINIMAL builds do not link supp_main, so
+     * the thread has no other owner. Tying it to the netif means it is
+     * already running before any feature module (Enterprise, NAN USD) is
+     * enabled and lives for the lifetime of the interface (the driver has
+     * no WiFi-disable path). The acquire is refcounted and idempotent.
+     */
+    if (qcom_hostap_eloop_acquire() != 0) {
+        LOG_ERR("hostap eloop acquire failed");
+    }
+#endif
+
     qapi_WLAN_DEV_Mode_e devMode = DEV_MODE_STATION_E;
     qapi_WLAN_Set_Param(QCOM_DEV_STA_ID, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE, &devMode,
                         sizeof(devMode), false);
