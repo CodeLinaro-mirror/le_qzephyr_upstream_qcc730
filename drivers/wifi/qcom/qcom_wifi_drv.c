@@ -570,14 +570,18 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
     case WIFI_SECURITY_TYPE_EAP_PEAP_GTC:
     case WIFI_SECURITY_TYPE_EAP_TTLS_MSCHAPV2:
     case WIFI_SECURITY_TYPE_EAP_PEAP_TLS:
-        /* Configure wpa_supplicant EAP state machine without triggering its
-         * scan/connect flow.  Firmware handles 802.11 auth+assoc below.
-         * Use QAPI_WLAN_AUTH_WPA2_E_SHA256_E (authMode=WMI_WPA2_PSK_AUTH=16)
-         * to match APs advertising AKM5 (WPA-EAP-SHA256, akm_result=16). */
+        /* WPA2-Enterprise (AKM1, 802.1X/SHA1 PRF).
+         * Zephyr defines these types without a WPA3 qualifier; the WPA3
+         * variant is WIFI_SECURITY_TYPE_EAP_WPA3_ENT_PEAP_MSCHAPV2 below.
+         * Use QAPI_WLAN_AUTH_WPA2_E → WMI_WPA2_AUTH (0x04) so the firmware
+         * matches AKM1 in the AP RSN IE and uses SHA1 PRF for PTK derivation.
+         * This is compatible with AKM1-only APs (pure WPA2-Enterprise) and
+         * also with transition-mode APs that advertise both AKM1 and AKM5
+         * (the firmware will match AKM1 and negotiate accordingly). */
         if (qcom_ent_setup_supplicant(dev, params)) {
             return -EINVAL;
         }
-        e_wpa_ver = QAPI_WLAN_AUTH_WPA2_E_SHA256_E;
+        e_wpa_ver = QAPI_WLAN_AUTH_WPA2_E;
         e_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
         is_eap = true;
         break;
