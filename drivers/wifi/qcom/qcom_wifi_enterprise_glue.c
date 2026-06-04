@@ -49,6 +49,10 @@ typedef struct {
 } qcom_ent_sta_cfg_t;
 
 #define QCOM_ENT_ENC_NONE 0U
+#define QCOM_ENT_ENC_AES  3U  /* sec_mode=WLAN_AES_CRYPT (mlme_al.h) */
+
+#define HS_KEY_USAGE_PTK  0   /* PAIRWISE_USAGE — PTK phase */
+#define HS_KEY_USAGE_GTK  1   /* GROUP_USAGE   — GTK phase */
 
 /* nt_dpm_add_sta / nt_dpm_delete_sta — DPM STA table management.
  * Defined in prop/libwifiqcc730/dpm/src/mlme_al.c.
@@ -112,6 +116,38 @@ struct qcom_ent_ctx {
 	 * The timer fires and uses hs_compl_ptk_ran to avoid a duplicate DPM entry.
 	 */
 	struct k_work_delayable pmk_4way_timer;
+	/*
+	 * connect_raised: set true the first time wifi_mgmt_raise_connect_result_event()
+	 * is called for this association — either by pmk_4way_timer_fn (fallback path)
+	 * or by qcom_ent_4way_hs_done (normal FOURWAY_HANDSHAKE_SUCCESS path).
+	 *
+	 * Guards against a duplicate Connected event in the race where the fallback
+	 * timer fires before M1 arrives AND FOURWAY_HANDSHAKE_SUCCESS still arrives
+	 * later (both paths fire in the same association).  Without this flag,
+	 * qcom_ent_4way_hs_done() raises Connected and restarts DHCP unconditionally,
+	 * producing two concurrent DHCP sessions that drive a BA del/add storm and
+	 * eventually hang the system.
+	 *
+	 * Reset to false in qcom_ent_assoc_event() on each new association.
+	 */
+	bool connect_raised;
+	/*
+	 * timer_added_fallback_staid: set true when pmk_4way_timer_fn calls
+	 * qcom_ent_open_data_tx() with hal_sta_idx=0 (hs_compl_ptk_ran was false
+	 * at fire time, so the real firmware PTK had not yet run).
+	 *
+	 * When qcom_ent_4way_hs_done() later detects both this flag AND
+	 * hs_compl_ptk_ran=true (firmware PTK did run after the timer), the DPM
+	 * table has two AES entries: staid[data_staid] from the timer fallback and
+	 * staid[N] from __real_hs_compl_evt.  nt_dpm_find_sta_entry_for_eth_pkt()
+	 * returns the lower staid for TX while BA sessions live on the higher staid,
+	 * causing nt_dpm_reorder_queue_flush() to deadlock on the reorder mutex →
+	 * permanent BA del/add loop → system hang.
+	 *
+	 * Fix: qcom_ent_4way_hs_done() removes the stale timer entry via
+	 * qcom_ent_close_data_tx() when this condition is detected.
+	 */
+	bool timer_added_fallback_staid;
 };
 
 static struct qcom_ent_ctx g_ent_ctx;
@@ -155,10 +191,7 @@ void __wrap_hs_compl_evt(void *ctxt, uint8_t *peer, void *key, int status)
 	const uint8_t *k = (const uint8_t *)key;
 	int key_usage = k ? (int)k[2] : -1;
 
-	LOG_INF("hs_compl_evt: CALLED status=%d key_usage=%d (0=PTK 1=GTK -1=NULL key)",
-		status, key_usage);
-
-	if (key_usage == 0 /* PAIRWISE_USAGE — PTK phase */) {
+	if (key_usage == HS_KEY_USAGE_PTK) {
 		/*
 		 * PTK phase: __real_hs_compl_evt (called below) will add the AES
 		 * DPM entry with the correct bss_sta_idx from dev->halBssInfo.
@@ -166,16 +199,14 @@ void __wrap_hs_compl_evt(void *ctxt, uint8_t *peer, void *key, int status)
 		 * duplicate entry with hal_sta_idx=0.
 		 */
 		g_ent_ctx.hs_compl_ptk_ran = true;
-		LOG_INF("hs_compl_evt: PTK phase — firmware will add AES DPM entry (hs_compl_ptk_ran=true)");
 	}
 
-	if (status != 0 && key_usage == 1 /* GROUP_USAGE — GTK phase */) {
+	if (status != 0 && key_usage == HS_KEY_USAGE_GTK) {
 		/*
 		 * GTK phase complete: firmware PTK phase (above) already added
 		 * the AES DPM entry with correct bss_sta_idx.  Cancel the
 		 * fallback timer so it does not fire and check hs_compl_ptk_ran.
 		 */
-		LOG_INF("hs_compl_evt: GTK phase complete — cancelling PMK fallback timer");
 		k_work_cancel_delayable(&g_ent_ctx.pmk_4way_timer);
 	}
 
@@ -217,6 +248,7 @@ static void pmk_4way_timer_fn(struct k_work *work)
 			LOG_WRN("pmk_4way_timer: FOURWAY_HANDSHAKE_SUCCESS not received in 600ms "
 				"— hs_compl PTK phase not observed, adding AES DPM entry (hal_sta_idx=0)");
 			qcom_ent_open_data_tx(g_ent_ctx.bssid);
+			g_ent_ctx.timer_added_fallback_staid = true;
 		} else {
 			/*
 			 * __wrap_hs_compl_evt confirmed the PTK phase ran: firmware's
@@ -231,6 +263,7 @@ static void pmk_4way_timer_fn(struct k_work *work)
 		}
 
 		if (g_ent_ctx.iface) {
+			g_ent_ctx.connect_raised = true;
 			wifi_mgmt_raise_connect_result_event(g_ent_ctx.iface,
 							     WIFI_STATUS_CONN_SUCCESS);
 #if defined(CONFIG_WIFI_QCOM_AUTO_DHCPV4)
@@ -245,8 +278,6 @@ static void pmk_4way_timer_fn(struct k_work *work)
 		} else {
 			LOG_ERR("pmk_4way_timer: iface is NULL — cannot raise connect event");
 		}
-	} else {
-		LOG_INF("pmk_4way_timer: data_sta already added (4WHS completed normally)");
 	}
 }
 
@@ -268,32 +299,38 @@ static void pmk_4way_timer_fn(struct k_work *work)
  * nt_dpm_add_sta() again with the real sec_mode (AES/TKIP).
  */
 
+/* qcom_ent_dpm_add_sta - populate a sta_config_t and call nt_dpm_add_sta().
+ * Returns 0 on success, non-zero on error.
+ */
+static int qcom_ent_dpm_add_sta(const uint8_t *bssid, uint8_t sec_mode, uint8_t *staid_out)
+{
+    qcom_ent_sta_cfg_t cfg;
+
+    memset(&cfg, 0, sizeof(cfg));
+    memcpy(cfg.bssid, bssid, sizeof(cfg.bssid));
+    cfg.IsAP = 1;
+    memcpy(cfg.sta_mac_address, bssid, sizeof(cfg.sta_mac_address));
+    cfg.qos_sta  = 1;
+    cfg.sec_mode = sec_mode;
+    cfg.ht       = 1;
+    return nt_dpm_add_sta(&cfg, staid_out, 0 /* hal_sta_idx */);
+}
+
 /*
  * qcom_ent_open_eap_tx - add temporary ENC_NONE DPM STA entry.
  * Called from qcom_ent_assoc_event() once the BSSID is known.
  */
 static void qcom_ent_open_eap_tx(const uint8_t *bssid)
 {
-    qcom_ent_sta_cfg_t cfg;
-    int err;
-
     if (g_ent_ctx.early_sta_added) {
-        return; /* already added */
+        return;
     }
 
-    memset(&cfg, 0, sizeof(cfg));
-    memcpy(cfg.bssid, bssid, 6);
-    cfg.IsAP = 1;              /* peer is AP */
-    memcpy(cfg.sta_mac_address, bssid, 6);
-    cfg.qos_sta  = 1;
-    cfg.sec_mode = QCOM_ENT_ENC_NONE;
-    cfg.ht       = 1;
+    int err = qcom_ent_dpm_add_sta(bssid, QCOM_ENT_ENC_NONE, &g_ent_ctx.early_staid);
 
-    err = nt_dpm_add_sta(&cfg, &g_ent_ctx.early_staid, 0 /* hal_sta_idx */);
-    if (err == 0 /* ERR_NONE */) {
+    if (err == 0) {
         g_ent_ctx.early_sta_added = true;
-        LOG_INF("open_eap_tx: ENC_NONE DPM STA entry added staid=%u",
-                g_ent_ctx.early_staid);
+        LOG_DBG("open_eap_tx: ENC_NONE DPM STA entry added staid=%u", g_ent_ctx.early_staid);
     } else {
         LOG_ERR("open_eap_tx: nt_dpm_add_sta failed err=%d", err);
     }
@@ -313,7 +350,7 @@ static void qcom_ent_close_eap_tx(void)
 
     err = nt_dpm_delete_sta(g_ent_ctx.early_staid);
     if (err == 0) {
-        LOG_INF("close_eap_tx: ENC_NONE DPM STA entry deleted staid=%u",
+        LOG_DBG("close_eap_tx: ENC_NONE DPM STA entry deleted staid=%u",
                 g_ent_ctx.early_staid);
     } else {
         LOG_WRN("close_eap_tx: nt_dpm_delete_sta staid=%u err=%d",
@@ -341,25 +378,15 @@ static void qcom_ent_close_eap_tx(void)
  */
 static void qcom_ent_open_data_tx(const uint8_t *bssid)
 {
-    qcom_ent_sta_cfg_t cfg;
-    int err;
-
     if (g_ent_ctx.data_sta_added) {
         return;
     }
 
-    memset(&cfg, 0, sizeof(cfg));
-    memcpy(cfg.bssid, bssid, 6);
-    cfg.IsAP = 1;
-    memcpy(cfg.sta_mac_address, bssid, 6);
-    cfg.qos_sta  = 1;
-    cfg.sec_mode = 3; /* AES/CCMP — matches WPA2-Enterprise cipher */
-    cfg.ht       = 1;
+    int err = qcom_ent_dpm_add_sta(bssid, QCOM_ENT_ENC_AES, &g_ent_ctx.data_staid);
 
-    err = nt_dpm_add_sta(&cfg, &g_ent_ctx.data_staid, 0);
     if (err == 0) {
         g_ent_ctx.data_sta_added = true;
-        LOG_INF("open_data_tx: AES DPM STA entry added staid=%u", g_ent_ctx.data_staid);
+        LOG_DBG("open_data_tx: AES DPM STA entry added staid=%u", g_ent_ctx.data_staid);
     } else {
         LOG_ERR("open_data_tx: nt_dpm_add_sta failed err=%d", err);
     }
@@ -375,7 +402,7 @@ static void qcom_ent_close_data_tx(void)
 
     err = nt_dpm_delete_sta(g_ent_ctx.data_staid);
     if (err == 0) {
-        LOG_INF("close_data_tx: AES DPM STA entry deleted staid=%u", g_ent_ctx.data_staid);
+        LOG_DBG("close_data_tx: AES DPM STA entry deleted staid=%u", g_ent_ctx.data_staid);
     } else {
         LOG_WRN("close_data_tx: nt_dpm_delete_sta staid=%u err=%d",
                 g_ent_ctx.data_staid, err);
@@ -417,7 +444,7 @@ static void enterprise_eap_rx(const uint8_t *src_addr, const uint8_t *eapol_data
 		return;
 	}
 
-	LOG_INF("EAP RX: src=%02x:%02x:%02x len=%u eapol_type=0x%02x",
+	LOG_DBG("EAP RX: src=%02x:%02x:%02x len=%u eapol_type=0x%02x",
 		src_addr[0], src_addr[1], src_addr[2], eapol_len,
 		eapol_len >= 2 ? eapol_data[1] : 0);
 
@@ -448,21 +475,24 @@ static void *qcom_supp_init(void *supp_drv_if_ctx,
 	}
 
 	if (iface_name) {
-		strlcpy(g_ent_ctx.ifname, iface_name, sizeof(g_ent_ctx.ifname) - 1);
+		strlcpy(g_ent_ctx.ifname, iface_name, sizeof(g_ent_ctx.ifname));
 	}
 
 	k_work_init_delayable(&g_ent_ctx.pmk_4way_timer, pmk_4way_timer_fn);
 
 	nt_dpm_set_eap_enterprise_hook(enterprise_eap_rx);
 
-	LOG_INF("enterprise glue init: ifname=%s", g_ent_ctx.ifname);
 	return &g_ent_ctx;
 }
 
 static void qcom_supp_deinit(void *if_priv)
 {
+	struct k_work_sync sync;
+
 	ARG_UNUSED(if_priv);
-	k_work_cancel_delayable(&g_ent_ctx.pmk_4way_timer);
+	/* Use _sync to wait for any in-flight timer handler to complete
+	 * before zeroing the context — k_work_cancel_delayable() does not wait. */
+	k_work_cancel_delayable_sync(&g_ent_ctx.pmk_4way_timer, &sync);
 	qcom_ent_close_eap_tx();   /* clean up if EAP auth was interrupted */
 	qcom_ent_close_data_tx();  /* clean up if data path STA entry was added */
 	nt_dpm_set_eap_enterprise_hook(NULL);
@@ -526,22 +556,38 @@ static int qcom_supp_get_scan_results2(void *if_priv)
 {
 	/* QCC730 fullmac: firmware owns scanning.
 	 *
-	 * wpa_drv_zep_get_scan_results2() blocks on drv_resp_sem after calling
-	 * this op, waiting for wpa_drv_zep_event_proc_scan_done() to signal it.
-	 * Without this signal the supplicant thread stalls for SCAN_TIMEOUT (~30s)
-	 * before the EAP state machine starts — long enough for the AP to deauth.
+	 * wpa_drv_zep_get_scan_results2() (driver_zephyr.c) blocks on
+	 * drv_resp_sem after calling this op, waiting for scan results.
+	 * Signal completion by giving the semaphore directly.
 	 *
-	 * Invoke the scan_done callback synchronously here.  This:
-	 *   1. Gives drv_resp_sem → k_sem_take in the caller returns immediately.
-	 *   2. Cancels the eloop scan timeout registered in wpa_drv_zep_scan2().
-	 *   3. Queues EVENT_SCAN_RESULTS with NULL (harmless empty results).
+	 * DO NOT call scan_done() here.  scan_done() (wpa_drv_zep_event_proc_scan_done)
+	 * gives drv_resp_sem AND enqueues EVENT_SCAN_RESULTS.  Since this function is
+	 * called from within the EVENT_SCAN_RESULTS processing chain:
+	 *
+	 *   event_socket_handler → wpa_supplicant_event(EVENT_SCAN_RESULTS)
+	 *     → wpa_supplicant_get_scan_results → wpa_drv_zep_get_scan_results2
+	 *       → this function → scan_done → enqueues EVENT_SCAN_RESULTS #2
+	 *
+	 * event_socket_handler drains the FIFO in a do-while loop, so EVENT_SCAN_RESULTS #2
+	 * is processed immediately after the current event, which calls this function again,
+	 * which enqueues EVENT_SCAN_RESULTS #3, and so on — infinite loop.
+	 *
+	 * Each iteration does alloc + free of scan_res2 (16 bytes) plus two heap
+	 * allocs in send_data() for the event message.  After enough iterations the
+	 * Zephyr sys_heap free-list becomes corrupted (circular FREE_NEXT pointer),
+	 * causing alloc_chunk() to loop forever with interrupts disabled → system freeze.
+	 *
+	 * Fix: give drv_resp_sem directly.  qcom_supp_scan2() never registers a scan
+	 * timeout via eloop_register_timeout(), so there is nothing to cancel.
 	 */
 	ARG_UNUSED(if_priv);
 
-	if (g_ent_ctx.supp_drv_if_ctx && g_ent_ctx.cb.scan_done) {
-		g_ent_ctx.cb.scan_done(
-			(struct zep_drv_if_ctx *)g_ent_ctx.supp_drv_if_ctx,
-			NULL);
+	if (g_ent_ctx.supp_drv_if_ctx) {
+		struct zep_drv_if_ctx *if_ctx =
+			(struct zep_drv_if_ctx *)g_ent_ctx.supp_drv_if_ctx;
+
+		if_ctx->scan_res2_get_in_prog = false;
+		k_sem_give(&if_ctx->drv_resp_sem);
 	}
 
 	return 0;
@@ -597,7 +643,6 @@ static int qcom_supp_set_key(void *if_priv, const unsigned char *ifname, enum wp
 		 */
 		qcom_ent_close_eap_tx();
 
-		LOG_INF("set_key(KEY_FLAG_PMK): pmk_len=%zu, passing to firmware", key_len);
 		qapi_WLAN_Set_Param(g_ent_ctx.device_id,
 				    __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
 				    __QAPI_WLAN_PARAM_GROUP_SECURITY_PMK,
@@ -614,7 +659,6 @@ static int qcom_supp_set_key(void *if_priv, const unsigned char *ifname, enum wp
 		 * in hs_compl_evt PTK phase).
 		 */
 		k_work_schedule(&g_ent_ctx.pmk_4way_timer, K_MSEC(600));
-		LOG_INF("set_key(KEY_FLAG_PMK): AES DPM fallback timer started (600ms)");
 		return 0;
 	}
 
@@ -640,8 +684,6 @@ static int qcom_supp_set_supp_port(void *if_priv, int authorized, char *bssid)
 	ARG_UNUSED(if_priv);
 	ARG_UNUSED(bssid);
 
-	LOG_INF("set_supp_port: authorized=%d (EAP auth done, awaiting firmware 4-way HS)",
-		authorized);
 	return 0;
 }
 
@@ -768,9 +810,9 @@ void qcom_ent_assoc_event(const struct device *dev, const uint8_t *bssid, bool s
 	 */
 	k_work_cancel_delayable(&g_ent_ctx.pmk_4way_timer);
 	qcom_ent_close_data_tx();
-	g_ent_ctx.data_sta_added   = false;
 	g_ent_ctx.hs_compl_ptk_ran = false;
-	LOG_INF("assoc_event: per-association state reset");
+	g_ent_ctx.connect_raised   = false;
+	g_ent_ctx.timer_added_fallback_staid = false;
 
 	/*
 	 * Open the temporary ENC_NONE DPM STA entry so outbound EAPOL frames
@@ -788,12 +830,6 @@ void qcom_ent_assoc_event(const struct device *dev, const uint8_t *bssid, bool s
 	if_ctx->ssid_len = g_ent_ctx.ssid_len;
 	memcpy(if_ctx->ssid, g_ent_ctx.ssid, g_ent_ctx.ssid_len);
 
-	/*
-	LOG_INF("assoc_event: if_ctx ssid_len=%d ssid=\"%.*s\" bssid=%02x:%02x:%02x:%02x:%02x:%02x",
-		if_ctx->ssid_len, if_ctx->ssid_len, if_ctx->ssid,
-		bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
-		*/
-
 	/* assoc_info.addr is read by wpa_drv_zep_event_proc_assoc_resp()
 	 * and copied to if_ctx->bssid which get_bssid() returns. */
 	event.assoc_info.addr = g_ent_ctx.bssid;
@@ -802,12 +838,10 @@ void qcom_ent_assoc_event(const struct device *dev, const uint8_t *bssid, bool s
 	event.assoc_info.req_ies = NULL;
 	event.assoc_info.req_ies_len = 0;
 
-	//LOG_INF("assoc_event: posting EVENT_ASSOC to wpa_supplicant (success=%d)", (int)success);
 	wpa_drv_zep_event_proc_assoc_resp(
 		(struct zep_drv_if_ctx *)g_ent_ctx.supp_drv_if_ctx,
 		&event,
 		success ? WLAN_STATUS_SUCCESS : WLAN_STATUS_UNSPECIFIED_FAILURE);
-	//LOG_INF("assoc_event: wpa_drv_zep_event_proc_assoc_resp returned");
 }
 
 /*
@@ -839,21 +873,93 @@ void qcom_ent_4way_hs_done(struct net_if *iface)
 	 * DPM entry, there is no duplicate (the Build 18 staid[0]+staid[1]
 	 * issue does not apply here).
 	 */
-	LOG_INF("4way_hs_done: FOURWAY_HANDSHAKE_SUCCESS received — adding AES DPM entry");
-	qcom_ent_open_data_tx(g_ent_ctx.bssid);
+	/*
+	 * Dual-staid cleanup: if the fallback timer fired before M1 arrived
+	 * (timer_added_fallback_staid=true) and firmware PTK subsequently ran
+	 * (hs_compl_ptk_ran=true), the DPM table has two AES entries:
+	 *   - data_staid (e.g. staid[0]): timer fallback, hal_sta_idx=0
+	 *   - staid[N]: firmware PTK, correct bss_sta_idx from halBssInfo
+	 *
+	 * nt_dpm_find_sta_entry_for_eth_pkt() scans from i=0 and returns the
+	 * lower staid for TX, while BA sessions use conn->station_id = staid[N].
+	 * nt_dpm_reorder_queue_flush() deadlocks on the reorder mutex because
+	 * the TX path and RX BA path operate on different staid slots →
+	 * permanent BA del/add loop → system hang.
+	 *
+	 * Remove the stale timer entry.  Firmware's staid[N] remains.
+	 * Set data_sta_added=true afterward to prevent qcom_ent_open_data_tx()
+	 * from adding yet another entry (firmware's is already correct).
+	 */
+	if (g_ent_ctx.timer_added_fallback_staid && g_ent_ctx.hs_compl_ptk_ran) {
+		/*
+		 * Timer fired before FOURWAY_HANDSHAKE_SUCCESS AND firmware PTK ran:
+		 * DPM table has two AES entries (timer staid + firmware staid).
+		 * Remove the stale timer entry; firmware's entry with correct
+		 * bss_sta_idx stays.
+		 */
+		LOG_WRN("4way_hs_done: removing stale timer-fallback DPM entry staid=%u"
+			" (firmware PTK added correct entry — dual-staid cleanup)",
+			g_ent_ctx.data_staid);
+		qcom_ent_close_data_tx();         /* deletes stale staid, clears data_sta_added */
+		g_ent_ctx.data_sta_added = true;  /* firmware's staid is live; prevent re-add */
+		g_ent_ctx.timer_added_fallback_staid = false;
+	} else if (g_ent_ctx.hs_compl_ptk_ran) {
+		/*
+		 * Normal path: firmware PTK phase ran via __real_hs_compl_evt and
+		 * already called nt_dpm_add_sta() with the correct bss_sta_idx from
+		 * halBssInfo.  Do NOT add a second entry with hal_sta_idx=0 here —
+		 * that creates dual-staid (staid[N] firmware + staid[M] ours) which
+		 * causes TX to use the lower staid while BA sessions reference the
+		 * higher, producing reorder mutex deadlock → DHCP TX failure / hang.
+		 */
+		g_ent_ctx.data_sta_added = true;  /* firmware's staid is live; mark as done */
+	} else {
+		/*
+		 * Fallback: __wrap_hs_compl_evt was never called (intra-archive
+		 * --wrap miss) so firmware did not add a DPM entry via hs_compl_evt
+		 * PTK phase.  Add the AES entry here with hal_sta_idx=0.
+		 */
+		LOG_INF("4way_hs_done: FOURWAY_HANDSHAKE_SUCCESS received — adding AES DPM entry");
+		qcom_ent_open_data_tx(g_ent_ctx.bssid);
+	}
 
+	/*
+	 * Guard against duplicate Connected event.
+	 *
+	 * Race: pmk_4way_timer fires (M1 delayed >600ms after PMK delivery) →
+	 * timer raises Connected and starts DHCP.  Then the real 4-way HS
+	 * completes and FOURWAY_HANDSHAKE_SUCCESS arrives here.  Without this
+	 * guard, a second Connected + net_dhcpv4_restart() would launch a
+	 * concurrent DHCP session → BA del/add storm → system hang.
+	 */
+	if (g_ent_ctx.connect_raised) {
+		LOG_WRN("4way_hs_done: connect already raised (pmk_4way_timer fired first)"
+			" — skipping duplicate Connected and DHCP restart");
+		return;
+	}
+	g_ent_ctx.connect_raised = true;
 	wifi_mgmt_raise_connect_result_event(iface, WIFI_STATUS_CONN_SUCCESS);
 
 #if defined(CONFIG_WIFI_QCOM_AUTO_DHCPV4)
-	/* Use restart (stop+start) rather than start: driver_zephyr.c already
-	 * called net_dhcpv4_restart() at EAP auth completion, leaving DHCP in
-	 * SELECTING state.  net_dhcpv4_start() is a no-op when DHCP is not
-	 * DISABLED, so restart forces a fresh DISCOVER now that AES is ready.
+	/*
+	 * Do NOT call net_dhcpv4_restart() here.
+	 *
+	 * wpa_drv_zep_set_supp_port(authorized=1) in driver_zephyr.c already
+	 * called net_dhcpv4_restart() from the wpa_supplicant thread when EAP
+	 * auth completed.  That session is in SELECTING or INIT state and will
+	 * retry the DISCOVER automatically (via the DHCP timeout_work) once the
+	 * AES DPM entry is available (installed by __real_hs_compl_evt).
+	 *
+	 * Calling net_dhcpv4_restart() here (even via deferred work) would:
+	 *   1. Call net_dhcpv4_stop() which acquires the DHCP mutex.  If the
+	 *      net_mgmt event thread currently holds that mutex (processing an
+	 *      earlier DHCP event), the system work queue blocks forever and
+	 *      the shell becomes unresponsive.
+	 *   2. Reset the DHCP state machine unnecessarily, adding ~4s of
+	 *      DISCOVER retry delay.
 	 */
-	net_dhcpv4_restart(iface);
 #endif
 }
-
 /*
  * qcom_ent_setup_supplicant - configure wpa_supplicant EAP credentials.
  *
