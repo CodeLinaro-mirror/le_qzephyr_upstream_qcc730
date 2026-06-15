@@ -11,6 +11,7 @@
 
 #ifdef CONFIG_ARM_MPU
 #include <zephyr/arch/arm/mpu/arm_mpu.h>
+extern void arm_core_mpu_disable(void);
 static struct z_mpu_context_retained mpu_context;
 #endif
 

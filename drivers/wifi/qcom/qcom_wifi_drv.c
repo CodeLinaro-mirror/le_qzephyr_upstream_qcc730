@@ -1844,7 +1844,7 @@ static int qwifi_drv_get_bmiss_threshold(const struct device *dev, struct qcom_w
     return 0;
 }
 
-int32_t set_op_mode(struct device *dev, char *opmode, char *hidden_ssid)
+int32_t set_op_mode(const struct device *dev, char *opmode, char *hidden_ssid)
 {
     int32_t ret = -1;
     uint8_t hidden_flag = 0;
@@ -2127,7 +2127,7 @@ qapi_Status_t qwifi_drv_eth_rx_cb(void *drv_intf_data, void *bufp, uint16_t len,
 static void link_change_handler(void *drv_iface, uint32_t event, uint8_t* mac_addr)
 {
     struct net_if *iface = (struct net_if *)drv_iface;
-    struct device *dev = net_if_get_device(iface);
+    const struct device *dev = net_if_get_device(iface);
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     uint8_t deviceId = dev_data->active_device;
 
