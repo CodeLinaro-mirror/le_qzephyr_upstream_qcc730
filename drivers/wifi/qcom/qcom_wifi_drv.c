@@ -21,6 +21,8 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #include "qapi_lowpower.h"
 #ifdef CONFIG_PM_DEVICE
 #include <zephyr/pm/device.h>
+#endif
+#ifdef CONFIG_PM
 #include <zephyr/pm/policy.h>
 #include <zephyr/pm/pm.h>
 #endif
@@ -2829,6 +2831,103 @@ static int qwifi_drv_set_rsp_rate(const struct device *dev, struct qcom_wifi_set
     return 0;
 }
 
+/*
+ * WNM Sleep — routed through qapi → wmi_cmd_send → WLAN task message queue,
+ * following the same pattern as qwifi_drv_set_rate → qapi_WLAN_Set_Rate.
+ */
+
+static int qwifi_drv_wnm_sleep(const struct device *dev,
+				struct wifi_wnm_sleep_params *params)
+{
+	if (params->action == WIFI_WNM_SLEEP_ENTER) {
+		uint8_t sleeping, ap_capable;
+		uint32_t interval_ms;
+		uint16_t d0, d1, d2, d3, d4, d5, d6;
+		uint32_t enabled;
+        struct qwifi_drv_dev_data_t *dev_data = dev->data;
+        struct qwifi_bss_status_t *bss_status = &dev_data->bss_status;
+
+        if(bss_status->connected == false) {
+            LOG_DBG("Not connected to an AP");
+            return -ENOTCONN;
+        }
+		qapi_WLAN_Wnm_Fill_Status(&sleeping, &ap_capable, &interval_ms,
+					  &d0, &d1, &d2, &d3, &d4, &d5, &d6,
+					  &enabled);
+		if (!ap_capable)
+			LOG_WRN("WNM: AP did not advertise WNM-Sleep bit 17; "
+				"proceeding anyway (vendor AP may support without advertising)");
+		qapi_Status_t rc = qapi_WLAN_Wnm_Sleep(0, params->interval_ms);
+#ifdef CONFIG_PM
+		/* Allow Zephyr PM to enter S2RAM for WNM sleep (mirrors qbmps enable). */
+		if (rc == QAPI_OK &&
+		    pm_policy_state_lock_is_active(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES))
+			pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
+#endif
+		return (rc == QAPI_OK) ? 0 : -EIO;
+	} else {
+		qapi_Status_t rc = qapi_WLAN_Wnm_Sleep(1, 0);
+#ifdef CONFIG_PM
+		/* Re-lock S2RAM so Zephyr PM does not re-enter suspend immediately
+		 * after WNM sleep exit.  The lock is released again on the next
+		 * WNM sleep enter (mirrors the put above). */
+		if (!pm_policy_state_lock_is_active(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES))
+			pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
+#endif
+		return (rc == QAPI_OK) ? 0 : -EIO;
+	}
+}
+
+void nt_wnm_s2ram_relock(void)
+{
+#ifdef CONFIG_PM
+	if (!pm_policy_state_lock_is_active(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES))
+		pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
+#endif
+}
+
+static int qwifi_drv_wnm_status(const struct device *dev,
+				 struct wifi_wnm_status *status)
+{
+	uint16_t enter_req, enter_rsp, exit_req, exit_rsp;
+	uint16_t wkup_sta, wkup_tim, wkup_idle;
+	uint8_t  sleeping, ap_capable;
+	uint32_t interval_ms, enabled;
+
+	qapi_WLAN_Wnm_Fill_Status(&sleeping, &ap_capable, &interval_ms,
+				   &enter_req, &enter_rsp,
+				   &exit_req,  &exit_rsp,
+				   &wkup_sta,  &wkup_tim, &wkup_idle,
+				   &enabled);
+
+	status->enabled           = (bool)enabled;
+	status->sleeping          = sleeping;
+	status->ap_capable        = ap_capable;
+	status->interval_ms       = interval_ms;
+	status->enter_req_sent    = enter_req;
+	status->enter_rsp_rcvd    = enter_rsp;
+	status->exit_req_sent     = exit_req;
+	status->exit_rsp_rcvd     = exit_rsp;
+	status->wakeup_sta_data   = wkup_sta;
+	status->wakeup_tim        = wkup_tim;
+	status->wakeup_bss_idle_timer = wkup_idle;
+	return 0;
+}
+
+static int qwifi_drv_wnm_set_enable(const struct device *dev, uint32_t enable)
+{
+	qapi_Status_t rc = qapi_WLAN_Wnm_Set_Enable((uint8_t)enable);
+
+	return (rc == QAPI_OK) ? 0 : -EIO;
+}
+
+static int qwifi_drv_wnm_set_bss_max_idle(const struct device *dev, uint32_t m_seconds)
+{
+	qapi_Status_t rc = qapi_WLAN_Wnm_Set_Bss_Max_Idle(m_seconds);
+
+	return (rc == QAPI_OK) ? 0 : -EIO;
+}
+
 static int qwifi_drv_dev_init(const struct device *dev)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
@@ -2889,6 +2988,10 @@ static int qwifi_drv_dev_init(const struct device *dev)
         .set_ba_win_size    = qwifi_drv_set_ba_win_size,
         .set_cts_to_self	= qwifi_drv_set_cts_to_self,
         .set_rsp_rate	= qwifi_drv_set_rsp_rate,
+        .wnm_sleep	= qwifi_drv_wnm_sleep,
+        .wnm_status	= qwifi_drv_wnm_status,
+        .wnm_set_enable       = qwifi_drv_wnm_set_enable,
+        .wnm_set_bss_max_idle = qwifi_drv_wnm_set_bss_max_idle,
     };
     dev_data->qcom_wifi_cmd = qwifi_ops;
 

@@ -857,3 +857,74 @@ static int wifi_set_rsp_rate(uint64_t mgmt_request, struct net_if *iface,
 	return api->set_rsp_rate(dev, params);
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_RSP_RATE, wifi_set_rsp_rate);
+
+static int wifi_wnm_sleep(uint64_t mgmt_request, struct net_if *iface,
+			  void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct wifi_wnm_sleep_params *params = data;
+
+	if (api == NULL || api->wnm_sleep == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->wnm_sleep(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_WNM_SLEEP, wifi_wnm_sleep);
+
+static int wifi_wnm_status(uint64_t mgmt_request, struct net_if *iface,
+			   void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct wifi_wnm_status *status = data;
+
+	if (api == NULL || api->wnm_status == NULL) {
+		return -ENOTSUP;
+	}
+	if (!data || len != sizeof(*status)) {
+		return -EINVAL;
+	}
+
+	return api->wnm_status(dev, status);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_WNM_STATUS, wifi_wnm_status);
+
+static int wifi_wnm_set_enable(uint64_t mgmt_request, struct net_if *iface,
+			       void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+
+	if (api == NULL || api->wnm_set_enable == NULL) {
+		return -ENOTSUP;
+	}
+	if (!data || len != sizeof(uint32_t)) {
+		return -EINVAL;
+	}
+	return api->wnm_set_enable(dev, *(uint32_t *)data);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_WNM_SET_ENABLE, wifi_wnm_set_enable);
+
+static int wifi_wnm_set_bss_max_idle(uint64_t mgmt_request, struct net_if *iface,
+				     void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+
+	if (api == NULL || api->wnm_set_bss_max_idle == NULL) {
+		return -ENOTSUP;
+	}
+	if (!data || len != sizeof(uint32_t)) {
+		return -EINVAL;
+	}
+	return api->wnm_set_bss_max_idle(dev, *(uint32_t *)data);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_WNM_SET_BSS_MAX_IDLE, wifi_wnm_set_bss_max_idle);

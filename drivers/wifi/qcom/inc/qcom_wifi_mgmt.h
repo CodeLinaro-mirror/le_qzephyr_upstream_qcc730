@@ -96,6 +96,14 @@ enum qcom_net_request_wifi_cmd {
 	NET_REQUEST_WIFI_CMD_QCOM_SET_CTS_TO_SELF,
 	/** Set RSP Rate */
 	NET_REQUEST_WIFI_CMD_QCOM_SET_RSP_RATE,
+	/** Enter or exit WNM Sleep Mode */
+	NET_REQUEST_WIFI_CMD_QCOM_WNM_SLEEP,
+	/** Query WNM sleep status and statistics */
+	NET_REQUEST_WIFI_CMD_QCOM_WNM_STATUS,
+	/** Enable or disable WNM Sleep Mode */
+	NET_REQUEST_WIFI_CMD_QCOM_WNM_SET_ENABLE,
+	/** Set BSS Max Idle Period (seconds) */
+	NET_REQUEST_WIFI_CMD_QCOM_WNM_SET_BSS_MAX_IDLE,
 	NET_REQUEST_WIFI_CMD_QCOM_MAX,
 };
 
@@ -295,6 +303,26 @@ NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_CTS_TO_SELF);
 #define NET_REQUEST_WIFI_QCOM_SET_RSP_RATE					\
 	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_SET_RSP_RATE)
 NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_RSP_RATE);
+
+/** WNM Sleep Mode control (enter / exit) */
+#define NET_REQUEST_WIFI_QCOM_WNM_SLEEP					\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_WNM_SLEEP)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_WNM_SLEEP);
+
+/** Query WNM Sleep Mode status and statistics */
+#define NET_REQUEST_WIFI_QCOM_WNM_STATUS				\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_WNM_STATUS)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_WNM_STATUS);
+
+/** Enable or disable WNM Sleep Mode */
+#define NET_REQUEST_WIFI_QCOM_WNM_SET_ENABLE				\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_WNM_SET_ENABLE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_WNM_SET_ENABLE);
+
+/** Set BSS Max Idle Period (seconds) */
+#define NET_REQUEST_WIFI_QCOM_WNM_SET_BSS_MAX_IDLE			\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_WNM_SET_BSS_MAX_IDLE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_WNM_SET_BSS_MAX_IDLE);
 
 /** Set TX Power parameters */
 struct qcom_wifi_set_tx_power_params{
@@ -563,6 +591,34 @@ struct qcom_wifi_set_cts_to_self_params {
 struct qcom_wifi_set_rsp_rate_params {
 	/** index of rate table */
 	uint8_t rate_idx;
+};
+
+/** WNM Sleep action */
+enum wifi_wnm_sleep_action {
+	WIFI_WNM_SLEEP_ENTER = 0,
+	WIFI_WNM_SLEEP_EXIT  = 1,
+};
+
+/** WNM Sleep request parameters */
+struct wifi_wnm_sleep_params {
+	enum wifi_wnm_sleep_action action;
+	/** Sleep interval in ms; 0 = keep current configuration */
+	uint32_t interval_ms;
+};
+
+/** WNM Sleep status and statistics */
+struct wifi_wnm_status {
+	bool    enabled;
+	bool    sleeping;
+	bool    ap_capable;
+	uint32_t interval_ms;
+	uint32_t enter_req_sent;
+	uint32_t enter_rsp_rcvd;
+	uint32_t exit_req_sent;
+	uint32_t exit_rsp_rcvd;
+	uint32_t wakeup_sta_data;
+	uint32_t wakeup_tim;
+	uint32_t wakeup_bss_idle_timer;
 };
 
 /** Wi-Fi management API */
@@ -1141,7 +1197,7 @@ struct qcom_wifi_mgmt_ops {
 	 * @brief Set Rsp rate to 6Mbps on the active WLAN device.
 	 *
 	 * Set Rsp rate to 6Mbps via qapi_WLAN_Set_Param for the currently active
-	 * WLAN interface. 
+	 * WLAN interface.
 	 *
 	 * @param dev Pointer to the driver device instance.
 	 * @param params Rsp rate index:
@@ -1151,6 +1207,44 @@ struct qcom_wifi_mgmt_ops {
 	 */
 	int (*set_rsp_rate)(const struct device *dev,
 			struct qcom_wifi_set_rsp_rate_params *params);
+
+	/** Enter or exit WNM Sleep Mode.
+	 *
+	 * @param dev   Pointer to the device structure for the driver instance.
+	 * @param params WNM sleep action and optional interval.
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*wnm_sleep)(const struct device *dev,
+			struct wifi_wnm_sleep_params *params);
+
+	/** Query WNM sleep status and statistics.
+	 *
+	 * @param dev    Pointer to the device structure for the driver instance.
+	 * @param status Output struct filled with current WNM state and counters.
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*wnm_status)(const struct device *dev,
+			struct wifi_wnm_status *status);
+
+	/** Enable or disable WNM Sleep Mode.
+	 *
+	 * @param dev    Pointer to the device structure for the driver instance.
+	 * @param enable 1 to enable, 0 to disable.
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*wnm_set_enable)(const struct device *dev, uint32_t enable);
+
+	/** Set BSS Max Idle Period.
+	 *
+	 * @param dev     Pointer to the device structure for the driver instance.
+	 * @param seconds BSS Max Idle Period in seconds (0–3600).
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*wnm_set_bss_max_idle)(const struct device *dev, uint32_t seconds);
 };
 
 #endif
