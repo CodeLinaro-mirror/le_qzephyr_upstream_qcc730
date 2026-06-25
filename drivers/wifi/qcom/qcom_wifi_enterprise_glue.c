@@ -942,22 +942,26 @@ void qcom_ent_4way_hs_done(struct net_if *iface)
 
 #if defined(CONFIG_WIFI_QCOM_AUTO_DHCPV4)
 	/*
-	 * Do NOT call net_dhcpv4_restart() here.
+	 * PMKSA cache-hit path: wpa_drv_zep_set_supp_port(authorized=1) is
+	 * still called by the supplicant after PMK auth completes, which
+	 * triggers net_dhcpv4_restart() in driver_zephyr.c — so a DHCP session
+	 * IS already in flight by the time we reach here, same as the full-EAP
+	 * path.  We do NOT call net_dhcpv4_restart() again.
 	 *
-	 * wpa_drv_zep_set_supp_port(authorized=1) in driver_zephyr.c already
-	 * called net_dhcpv4_restart() from the wpa_supplicant thread when EAP
-	 * auth completed.  That session is in SELECTING or INIT state and will
-	 * retry the DISCOVER automatically (via the DHCP timeout_work) once the
-	 * AES DPM entry is available (installed by __real_hs_compl_evt).
+	 * However, on the cache-hit path set_key(KEY_FLAG_PMK) is never called,
+	 * so close_eap_tx() never ran and the temporary ENC_NONE DPM entry
+	 * added by open_eap_tx() at association time is still live.
+	 * nt_dpm_find_sta_entry_for_eth_pkt() scans staid from 0 and would find
+	 * this ENC_NONE entry before the firmware AES entry, causing DHCP frames
+	 * to be sent unencrypted and silently dropped by the AP.
 	 *
-	 * Calling net_dhcpv4_restart() here (even via deferred work) would:
-	 *   1. Call net_dhcpv4_stop() which acquires the DHCP mutex.  If the
-	 *      net_mgmt event thread currently holds that mutex (processing an
-	 *      earlier DHCP event), the system work queue blocks forever and
-	 *      the shell becomes unresponsive.
-	 *   2. Reset the DHCP state machine unnecessarily, adding ~4s of
-	 *      DISCOVER retry delay.
+	 * Fix: remove the stale ENC_NONE entry now.  The firmware AES entry
+	 * (added by hs_compl_evt PTK phase) is already live, so DHCP frames
+	 * will be correctly encrypted going forward.
 	 */
+	if (g_ent_ctx.early_sta_added) {
+		qcom_ent_close_eap_tx();
+	}
 #endif
 }
 /*
