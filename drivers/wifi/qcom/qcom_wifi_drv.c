@@ -326,7 +326,6 @@ static int station_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *
     case WIFI_SECURITY_TYPE_EAP_PEAP_GTC:
     case WIFI_SECURITY_TYPE_EAP_TTLS_MSCHAPV2:
     case WIFI_SECURITY_TYPE_EAP_PEAP_TLS:
-    case WIFI_SECURITY_TYPE_EAP_WPA3_ENT_PEAP_MSCHAPV2:
         if (info->reason_code == RECEIVED_ASSOC_RESP) {
             LOG_INF("station_connect_event: Enterprise assoc done (connected=%d)",
                        bss->connected);
@@ -574,38 +573,18 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
     case WIFI_SECURITY_TYPE_EAP_PEAP_GTC:
     case WIFI_SECURITY_TYPE_EAP_TTLS_MSCHAPV2:
     case WIFI_SECURITY_TYPE_EAP_PEAP_TLS:
-        /* WPA2-Enterprise (AKM1, 802.1X/SHA1 PRF).
-         * Zephyr defines these types without a WPA3 qualifier; the WPA3
-         * variant is WIFI_SECURITY_TYPE_EAP_WPA3_ENT_PEAP_MSCHAPV2 below.
-         * Use QAPI_WLAN_AUTH_WPA2_E → WMI_WPA2_AUTH (0x04) so the firmware
-         * matches AKM1 in the AP RSN IE and uses SHA1 PRF for PTK derivation.
-         * This is compatible with AKM1-only APs (pure WPA2-Enterprise) and
-         * also with transition-mode APs that advertise both AKM1 and AKM5
-         * (the firmware will match AKM1 and negotiate accordingly). */
+        /* wpa3_ent_mode is the sole AKM discriminator; mfp is intentionally ignored here —
+         * Zephyr's default OPTIONAL must not silently upgrade WPA2-Enterprise to AKM5. */
         if (qcom_ent_setup_supplicant(dev, params)) {
             return -EINVAL;
         }
-        e_wpa_ver = QAPI_WLAN_AUTH_WPA2_E;
-        e_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
-        is_eap = true;
-        break;
-    case WIFI_SECURITY_TYPE_EAP_WPA3_ENT_PEAP_MSCHAPV2:
-        /*
-         * AKM5 (WPA-EAP-SHA256) enterprise connection — two sub-modes:
-         *   -w 2 (MFP Required): WPA3-Enterprise Only.
-         *     QAPI_WLAN_AUTH_WPA3_ENT_ONLY_E → WMI_WPA3_ENTERPRISE_ONLY_AUTH (0x200)
-         *     wlan_wmi.c sets dev->rsn_cap |= (MFPC|MFPR); AssocReq RSN IE has MFPR=1.
-         *     AP must have ieee80211w=2 (MFPR=1).
-         *   no -w (or -w 1): WPA3 Transition mode.
-         *     QAPI_WLAN_AUTH_WPA2_E_SHA256_E → WMI_WPA2_SHA256_AUTH (0x100)
-         *     MFPC=1, MFPR=0; compatible with transition AP (ieee80211w=1).
-         */
-        if (qcom_ent_setup_supplicant(dev, params)) {
-            return -EINVAL;
+        if (params->wpa3_ent_mode == WIFI_WPA3_ENTERPRISE_ONLY) {
+            e_wpa_ver = QAPI_WLAN_AUTH_WPA3_ENT_ONLY_E;
+        } else if (params->wpa3_ent_mode == WIFI_WPA3_ENTERPRISE_TRANSITION) {
+            e_wpa_ver = QAPI_WLAN_AUTH_WPA2_E_SHA256_E;
+        } else {
+            e_wpa_ver = QAPI_WLAN_AUTH_WPA2_E;
         }
-        e_wpa_ver = (params->mfp == WIFI_MFP_REQUIRED)
-                    ? QAPI_WLAN_AUTH_WPA3_ENT_ONLY_E
-                    : QAPI_WLAN_AUTH_WPA2_E_SHA256_E;
         e_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
         is_eap = true;
         break;
