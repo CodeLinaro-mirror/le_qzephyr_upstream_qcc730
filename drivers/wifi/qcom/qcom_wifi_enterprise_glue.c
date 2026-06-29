@@ -809,6 +809,7 @@ void qcom_ent_assoc_event(const struct device *dev, const uint8_t *bssid, bool s
 	 * Also clean up any lingering AES DPM entry from the prior session.
 	 */
 	k_work_cancel_delayable(&g_ent_ctx.pmk_4way_timer);
+	qcom_ent_close_eap_tx();   /* clean up stale ENC_NONE entry from any prior session */
 	qcom_ent_close_data_tx();
 	g_ent_ctx.hs_compl_ptk_ran = false;
 	g_ent_ctx.connect_raised   = false;
