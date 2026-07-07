@@ -4,6 +4,7 @@
  */
 
 #include <errno.h>
+#include <stdio.h>
 #include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/net/net_if.h>
@@ -475,7 +476,7 @@ static void *qcom_supp_init(void *supp_drv_if_ctx,
 	}
 
 	if (iface_name) {
-		strlcpy(g_ent_ctx.ifname, iface_name, sizeof(g_ent_ctx.ifname));
+		snprintf(g_ent_ctx.ifname, sizeof(g_ent_ctx.ifname), "%s", iface_name);
 	}
 
 	k_work_init_delayable(&g_ent_ctx.pmk_4way_timer, pmk_4way_timer_fn);

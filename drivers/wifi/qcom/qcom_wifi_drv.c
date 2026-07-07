@@ -142,9 +142,9 @@ static void dhcp_stop_work_handler(struct k_work *work)
 }
 #endif /* CONFIG_WIFI_QCOM_AUTO_DHCPV4 */
 
-static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity);
 void clear_wifi_busy(void);
 #ifdef CONFIG_PM_DEVICE
+static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity);
 extern qapi_Status_t qapi_WLAN_Activity_Register_CB(void (*callback)(PM_WLAN_ACTIVITY_STATUS));
 #endif
 
@@ -191,6 +191,7 @@ static const uint32_t rate_index_to_kbps[] = {
 };
 #define MAX_RATE_INDEX (sizeof(rate_index_to_kbps) / sizeof(rate_index_to_kbps[0]))
 
+#ifdef CONFIG_PM_DEVICE
 static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity)
 {
     const struct device *wifi_dev = device_get_binding("qwifi_sta");
@@ -212,6 +213,7 @@ static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity)
         pm_device_busy_set(wifi_dev);
     }
 }
+#endif
 
 static struct qwifi_drv_dev_data_t g_wifi_dev_data_sap;
 static struct qwifi_drv_dev_cfg_t g_wifi_dev_cfg_sap = {
