@@ -31,6 +31,12 @@ extern void nt_dpm_set_eap_enterprise_hook(void (*fn)(const uint8_t *src_addr,
 						       const uint8_t *eapol_data,
 						       uint16_t eapol_len));
 
+/* Clears dev->is_pmk_set so suppl_process_m1_evt holds any incoming M1 until
+ * the new EAP-derived PMK is delivered via wmi_set_enterprise_pmk(). */
+extern void wmi_clear_enterprise_pmk_ready(void);
+/* Delivers EAP-derived PMK directly to firmware supplicant (no QAPI reconnect). */
+extern void wmi_set_enterprise_pmk(uint8_t vdev_id, const uint8_t *pmk, uint32_t pmk_len);
+
 /*
  * Mirror of sta_config_t from prop/libwifiqcc730/dpm/inc/mlme_al.h.
  * Layout must stay in sync with the original (all uint8_t — no padding).
@@ -148,6 +154,30 @@ struct qcom_ent_ctx {
 	 * qcom_ent_close_data_tx() when this condition is detected.
 	 */
 	bool timer_added_fallback_staid;
+	/*
+	 * reauth_in_progress: set true on the first EAP-Request while already
+	 * connected (data_sta_added=true), cleared when set_key(KEY_FLAG_PMK)
+	 * delivers the new PMK.  Guards two behaviours:
+	 *   1. enterprise_eap_rx: suppress repeated is_pmk_set clears for every
+	 *      EAP-Request in the same reauth exchange (one clear is enough).
+	 *   2. set_key: route PMK delivery via wmi_set_enterprise_pmk() instead of
+	 *      qapi_WLAN_Set_Param(SECURITY_PMK) — the QAPI path triggers a firmware
+	 *      reconnect on an already-connected link, causing reason=15 disconnect.
+	 */
+	bool reauth_in_progress;
+	/*
+	 * pmk_delivered: set true when set_key(KEY_FLAG_PMK) is called, meaning
+	 * the host wpa_supplicant ran a full or fast-reauth EAP exchange and
+	 * delivered a fresh PMK for this association.
+	 *
+	 * On a PMKSA cache-hit, firmware completes the 4-way HS using the cached
+	 * PMK without any host EAP exchange, so set_key is never called and this
+	 * flag stays false.  qcom_ent_4way_hs_done() uses this to detect the
+	 * cache-hit path and suppress DUT-initiated EAPOL-Start (via maxStart=0)
+	 * before the startWhen timer fires, preventing an unwanted fast-reauth
+	 * that would overwrite the firmware's cached PMK with a conflicting one.
+	 */
+	bool pmk_delivered;
 };
 
 static struct qcom_ent_ctx g_ent_ctx;
@@ -444,9 +474,19 @@ static void enterprise_eap_rx(const uint8_t *src_addr, const uint8_t *eapol_data
 		return;
 	}
 
-	LOG_DBG("EAP RX: src=%02x:%02x:%02x len=%u eapol_type=0x%02x",
-		src_addr[0], src_addr[1], src_addr[2], eapol_len,
-		eapol_len >= 2 ? eapol_data[1] : 0);
+	/*
+	 * Reauth detection: AP sends EAP-Request after the link is already up.
+	 * Guard on connect_raised=true: only then is the initial 4WHS complete.
+	 * EAP-Requests arriving before connect_raised belong to the initial
+	 * PMKSA cache-hit 4WHS and must NOT clear is_pmk_set or cancel the timer.
+	 */
+	if (g_ent_ctx.connect_raised && !g_ent_ctx.reauth_in_progress
+	    && eapol_len >= 5 && eapol_data[1] == 0x00 && eapol_data[4] == 0x01) {
+		g_ent_ctx.reauth_in_progress = true;
+		k_work_cancel_delayable(&g_ent_ctx.pmk_4way_timer);
+		LOG_INF("enterprise_eap_rx: reauth start — cancel timer, clear is_pmk_set");
+		wmi_clear_enterprise_pmk_ready();
+	}
 
 	memset(&event, 0, sizeof(event));
 	event.eapol_rx.src = src_addr;
@@ -641,8 +681,34 @@ static int qcom_supp_set_key(void *if_priv, const unsigned char *ifname, enum wp
 		 * the PMK to firmware.  hs_compl_evt() will add a new entry
 		 * with the correct sec_mode (AES/TKIP) after the 4-way HS.
 		 */
+		g_ent_ctx.pmk_delivered = true;
 		qcom_ent_close_eap_tx();
 
+		if (g_ent_ctx.reauth_in_progress) {
+			/*
+			 * EAP reauth while already connected: skip qapi_WLAN_Set_Param().
+			 * That QAPI path triggers a firmware reconnect on an already-live
+			 * link (reason=15 disconnect observed in testing).
+			 *
+			 * wmi_set_enterprise_pmk() calls cm_init_enterprise_pmk() directly,
+			 * which takes the suppl_auth_update_pmk() branch (rec exists) and
+			 * updates the PMK in-place.  fourway_handshake_for_first_time was
+			 * already reset to TRUE by wmi_clear_enterprise_pmk_ready() when
+			 * the reauth started, so the upcoming GTK phase will re-send
+			 * FOURWAY_HANDSHAKE_SUCCESS → qcom_ent_4way_hs_done().
+			 */
+			LOG_DBG("set_key PMK: reauth path — wmi_set_enterprise_pmk");
+			wmi_set_enterprise_pmk(g_ent_ctx.device_id, key, (uint32_t)key_len);
+			g_ent_ctx.reauth_in_progress = false;
+			/* Reauth: FOURWAY_HANDSHAKE_SUCCESS will arrive normally via
+			 * qcom_ent_4way_hs_done() — no fallback timer needed. */
+			return 0;
+		}
+
+		/*
+		 * First connect (no prior data path): use the QAPI path which
+		 * wakes the firmware supplicant state machine for a fresh session.
+		 */
 		qapi_WLAN_Set_Param(g_ent_ctx.device_id,
 				    __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
 				    __QAPI_WLAN_PARAM_GROUP_SECURITY_PMK,
@@ -651,12 +717,9 @@ static int qcom_supp_set_key(void *if_priv, const unsigned char *ifname, enum wp
 		/*
 		 * Start the AES DPM fallback timer.
 		 * M1→M2→M3→M4 typically completes in <200ms.  Allow 600ms to
-		 * accommodate RADIUS latency and AP retry delays (e.g. after
-		 * multiple assoc rejections).  FOURWAY_HANDSHAKE_SUCCESS should
-		 * arrive via station_connect_event() → qcom_ent_4way_hs_done().
-		 * If not (queue-full edge case), the timer raises the connect event
-		 * and starts DHCP directly (firmware already added the AES DPM entry
-		 * in hs_compl_evt PTK phase).
+		 * accommodate RADIUS latency and AP retry delays.
+		 * FOURWAY_HANDSHAKE_SUCCESS should arrive via
+		 * station_connect_event() → qcom_ent_4way_hs_done().
 		 */
 		k_work_schedule(&g_ent_ctx.pmk_4way_timer, K_MSEC(600));
 		return 0;
@@ -813,6 +876,8 @@ void qcom_ent_assoc_event(const struct device *dev, const uint8_t *bssid, bool s
 	g_ent_ctx.hs_compl_ptk_ran = false;
 	g_ent_ctx.connect_raised   = false;
 	g_ent_ctx.timer_added_fallback_staid = false;
+	g_ent_ctx.reauth_in_progress = false;
+	g_ent_ctx.pmk_delivered = false;
 
 	/*
 	 * Open the temporary ENC_NONE DPM STA entry so outbound EAPOL frames
@@ -858,85 +923,16 @@ void qcom_ent_4way_hs_done(struct net_if *iface)
 	k_work_cancel_delayable(&g_ent_ctx.pmk_4way_timer);
 
 	/*
-	 * Add the AES DPM STA entry for the encrypted data path.
-	 *
-	 * Root cause analysis (Build 47 log): firmware's hs_compl_evt() is an
-	 * intra-archive call — the linker --wrap=hs_compl_evt is never invoked,
-	 * so __wrap_hs_compl_evt does not run, hs_compl_ptk_ran stays false.
-	 * More importantly, zero "DPM Add STA" events are observed in the log
-	 * for the FOURWAY_HANDSHAKE_SUCCESS path, confirming that hs_compl_evt
-	 * does NOT call nt_dpm_add_sta() in this firmware/config.  Without an
-	 * explicit call here, the DPM table has no AES entry → DHCP TX returns
-	 * hal_ret=17 (no DPM entry found).
-	 *
-	 * Calling open_data_tx() is safe: since hs_compl_evt does not add a
-	 * DPM entry, there is no duplicate (the Build 18 staid[0]+staid[1]
-	 * issue does not apply here).
-	 */
-	/*
-	 * Dual-staid cleanup: if the fallback timer fired before M1 arrived
-	 * (timer_added_fallback_staid=true) and firmware PTK subsequently ran
-	 * (hs_compl_ptk_ran=true), the DPM table has two AES entries:
-	 *   - data_staid (e.g. staid[0]): timer fallback, hal_sta_idx=0
-	 *   - staid[N]: firmware PTK, correct bss_sta_idx from halBssInfo
-	 *
-	 * nt_dpm_find_sta_entry_for_eth_pkt() scans from i=0 and returns the
-	 * lower staid for TX, while BA sessions use conn->station_id = staid[N].
-	 * nt_dpm_reorder_queue_flush() deadlocks on the reorder mutex because
-	 * the TX path and RX BA path operate on different staid slots →
-	 * permanent BA del/add loop → system hang.
-	 *
-	 * Remove the stale timer entry.  Firmware's staid[N] remains.
-	 * Set data_sta_added=true afterward to prevent qcom_ent_open_data_tx()
-	 * from adding yet another entry (firmware's is already correct).
-	 */
-	if (g_ent_ctx.timer_added_fallback_staid && g_ent_ctx.hs_compl_ptk_ran) {
-		/*
-		 * Timer fired before FOURWAY_HANDSHAKE_SUCCESS AND firmware PTK ran:
-		 * DPM table has two AES entries (timer staid + firmware staid).
-		 * Remove the stale timer entry; firmware's entry with correct
-		 * bss_sta_idx stays.
-		 */
-		LOG_WRN("4way_hs_done: removing stale timer-fallback DPM entry staid=%u"
-			" (firmware PTK added correct entry — dual-staid cleanup)",
-			g_ent_ctx.data_staid);
-		qcom_ent_close_data_tx();         /* deletes stale staid, clears data_sta_added */
-		g_ent_ctx.data_sta_added = true;  /* firmware's staid is live; prevent re-add */
-		g_ent_ctx.timer_added_fallback_staid = false;
-	} else if (g_ent_ctx.hs_compl_ptk_ran) {
-		/*
-		 * Normal path: firmware PTK phase ran via __real_hs_compl_evt and
-		 * already called nt_dpm_add_sta() with the correct bss_sta_idx from
-		 * halBssInfo.  Do NOT add a second entry with hal_sta_idx=0 here —
-		 * that creates dual-staid (staid[N] firmware + staid[M] ours) which
-		 * causes TX to use the lower staid while BA sessions reference the
-		 * higher, producing reorder mutex deadlock → DHCP TX failure / hang.
-		 */
-		g_ent_ctx.data_sta_added = true;  /* firmware's staid is live; mark as done */
-	} else {
-		/*
-		 * Fallback: __wrap_hs_compl_evt was never called (intra-archive
-		 * --wrap miss) so firmware did not add a DPM entry via hs_compl_evt
-		 * PTK phase.  Add the AES entry here with hal_sta_idx=0.
-		 */
-		LOG_INF("4way_hs_done: FOURWAY_HANDSHAKE_SUCCESS received — adding AES DPM entry");
-		qcom_ent_open_data_tx(g_ent_ctx.bssid);
-	}
-
-	/*
-	 * Guard against duplicate Connected event.
-	 *
-	 * Race: pmk_4way_timer fires (M1 delayed >600ms after PMK delivery) →
-	 * timer raises Connected and starts DHCP.  Then the real 4-way HS
-	 * completes and FOURWAY_HANDSHAKE_SUCCESS arrives here.  Without this
-	 * guard, a second Connected + net_dhcpv4_restart() would launch a
-	 * concurrent DHCP session → BA del/add storm → system hang.
+	 * Guard against duplicate Connected event on reauth 4WHS completion
+	 * (Case B) and against duplicate event when the fallback timer fired
+	 * first (Case A).  In both cases the data path is already live —
+	 * skip the connect raise and DPM management below.
 	 */
 	if (g_ent_ctx.connect_raised) {
-		LOG_WRN("4way_hs_done: connect already raised (pmk_4way_timer fired first)"
-			" — skipping duplicate Connected and DHCP restart");
+		LOG_INF("4way_hs_done: connect already raised — skipping duplicate event");
 		return;
 	}
+
 	g_ent_ctx.connect_raised = true;
 	wifi_mgmt_raise_connect_result_event(iface, WIFI_STATUS_CONN_SUCCESS);
 
@@ -961,6 +957,28 @@ void qcom_ent_4way_hs_done(struct net_if *iface)
 	 */
 	if (g_ent_ctx.early_sta_added) {
 		qcom_ent_close_eap_tx();
+	}
+
+	/*
+	 * PMKSA cache-hit: suppress DUT-initiated EAPOL-Start before its
+	 * startWhen timer fires.
+	 *
+	 * On a cache-hit, set_key(KEY_FLAG_PMK) is never called (no EAP
+	 * exchange was needed), so pmk_delivered stays false.  If the host
+	 * EAPOL SM is left unconfigured, it sends EAPOL-Start ~2s later
+	 * (startWhen=2), the AP responds with fast-reauth and produces a new
+	 * PMK.  That new PMK overwrites the cached PMK the firmware just used
+	 * for the successful 4WHS.  The AP's follow-up 4WHS still uses the
+	 * OLD cached PMK → MIC mismatch → M2 rejected → AP deauths DUT.
+	 *
+	 * Fix: set maxStart=0 so the SM transitions CONNECTING→AUTHENTICATED
+	 * without sending any EAPOL-Start.  The SM remains active and handles
+	 * AP-initiated EAP-Requests normally (reauth, periodic PMK refresh).
+	 */
+	if (!g_ent_ctx.pmk_delivered) {
+		LOG_INF("4way_hs_done: PMKSA cache-hit — suppress EAPOL-Start");
+		wpa_drv_zep_eapol_suppress_start(
+			(struct zep_drv_if_ctx *)g_ent_ctx.supp_drv_if_ctx);
 	}
 #endif
 }
