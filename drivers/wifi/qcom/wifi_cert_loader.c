@@ -1,6 +1,7 @@
 /*
  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ *
+ * SPDX-License-Identifier: Apache-2.0
  *
  * wifi_cert_loader.c — Load EAP-TLS certificates from LittleFS into the
  * Zephyr TLS credentials store.
