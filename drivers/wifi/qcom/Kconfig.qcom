@@ -56,6 +56,55 @@ config WIFI_QCOM_HOSTAP_ELOOP
 	  the eloop thread — same model supp_main.c uses with the full
 	  supplicant.
 
+config WIFI_QCOM_WPS
+	bool "WPS Enrollee support for QCC730 (PBC + PIN)"
+	depends on WIFI_QCOM
+	select WIFI_NM_WPA_SUPPLICANT
+	select WIFI_NM_WPA_SUPPLICANT_MINIMAL
+	select WIFI_QCOM_HOSTAP_ELOOP
+	help
+	  Enables WPS Enrollee (PBC and PIN methods) for QCC730 using a
+	  firmware-assisted WPS scan path.  The firmware performs the WPS IE
+	  scan and AP discovery; the host handles EAP-WSC (M1-M8) via the
+	  hostap WPS protocol stack.
+
+	  Can be disabled to save flash when WPS is not required.
+
+config WPS_MANUFACTURER
+	string "WPS manufacturer string"
+	depends on WIFI_QCOM_WPS
+	default "Qualcomm"
+	help
+	  Manufacturer string included in WPS IE and M1 message.
+
+config WPS_MODEL_NAME
+	string "WPS model name string"
+	depends on WIFI_QCOM_WPS
+	default "ModelName"
+	help
+	  Model name string included in WPS IE and M1 message.
+
+config WPS_MODEL_NUMBER
+	string "WPS model number string"
+	depends on WIFI_QCOM_WPS
+	default "123456790"
+	help
+	  Model number string included in WPS IE and M1 message.
+
+config WPS_SERIAL_NUMBER
+	string "WPS serial number string"
+	depends on WIFI_QCOM_WPS
+	default "123456"
+	help
+	  Serial number string included in WPS IE and M1 message.
+
+config WPS_DEVICE_NAME
+	string "WPS device name string"
+	depends on WIFI_QCOM_WPS
+	default "IOT-NT"
+	help
+	  Device name string included in WPS IE and M1 message.
+
 config WIFI_QCOM_AUTO_DHCPV4
 	bool "Automatically starts DHCP4 negotiation"
 	depends on WIFI_QCOM

@@ -42,7 +42,7 @@
 
 LOG_MODULE_REGISTER(qcom_hostap_eloop, LOG_LEVEL_INF);
 
-#define QCOM_HE_THREAD_STACK_SIZE 4096
+#define QCOM_HE_THREAD_STACK_SIZE 5120
 #define QCOM_HE_THREAD_PRIO       K_PRIO_PREEMPT(7)
 
 /* ------------------------------- state ------------------------------- */
