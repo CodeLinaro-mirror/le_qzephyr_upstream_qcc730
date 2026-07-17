@@ -328,14 +328,24 @@ static int station_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *
     case WIFI_SECURITY_TYPE_EAP_PEAP_GTC:
     case WIFI_SECURITY_TYPE_EAP_TTLS_MSCHAPV2:
     case WIFI_SECURITY_TYPE_EAP_PEAP_TLS:
+        /*
+         * RECEIVED_ASSOC_RESP only means 802.11 association succeeded —
+         * EAP has not run yet (or, on a PMKSA cache-hit, the 4-way HS has
+         * not run yet either).  The generic QAPI_OK check above already
+         * set bss->connected=true from this same event, which makes
+         * "wifi status" report COMPLETED before authentication actually
+         * finished.  Undo that here; only FOURWAY_HANDSHAKE_SUCCESS below
+         * (real key install) is a true completion.
+         */
         if (info->reason_code == RECEIVED_ASSOC_RESP) {
-            LOG_INF("station_connect_event: Enterprise assoc done (connected=%d)",
-                       bss->connected);
+            bss->connected = false;
+            LOG_INF("station_connect_event: Enterprise assoc done (auth pending)");
             qcom_ent_assoc_event(dev, info->bssid,
                                  connect_status == WIFI_STATUS_CONN_SUCCESS,
                                  dev_data->active_device);
         } else if (info->reason_code == FOURWAY_HANDSHAKE_SUCCESS) {
             LOG_INF("station_connect_event: Enterprise 4-way HS done, raising connect");
+            bss->connected = true;
             qcom_ent_4way_hs_done(iface);
         }
         return 0;
