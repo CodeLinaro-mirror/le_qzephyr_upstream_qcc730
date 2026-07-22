@@ -45,6 +45,10 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #endif
 #endif
 
+#ifdef CONFIG_WIFI_QCOM_WPS
+#include "inc/qcom_wps_glue.h"
+#endif
+
 #ifdef CONFIG_WIFI_QCOM_HOSTAP_ELOOP
 #include "inc/qcom_hostap_eloop.h"
 #endif
@@ -81,7 +85,16 @@ struct qwifi_drv_dev_data_t {
     const struct device *dev;
     struct qcom_wifi_mgmt_ops qcom_wifi_cmd;
     k_timeout_t timeout;
+    /* Persistent buffers for WPS PSK reconnect — cfg_connect.ssid/psk
+     * point here so the pointers remain valid after wps_sync_cfg_connect(). */
+    uint8_t wps_ssid_buf[WIFI_SSID_MAX_LEN];
+    uint8_t wps_psk_buf[64];   /* 64 == wps_credential.key[64] (hostap wps.h) */
 };
+
+/* Ensure wps_psk_buf can hold the maximum WPS PSK key length.
+ * wifi_connect_req_params.psk_length is documented as "Max 64" bytes. */
+_Static_assert(sizeof(((struct qwifi_drv_dev_data_t *)0)->wps_psk_buf) >= 64,
+               "wps_psk_buf must be at least 64 bytes (WPS PSK max)");
 
 struct qwifi_drv_dev_cfg_t {
     int32_t scan_mode;
@@ -354,6 +367,20 @@ static int station_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *
     }
 #endif /* CONFIG_WIFI_QCOM_ENTERPRISE */
 
+#ifdef CONFIG_WIFI_QCOM_WPS
+    /* WPS flow: firmware open assoc → EAP hook → M1-M8 → PSK reconnect.
+     * qcom_wps_connect_in_progress() returns true only during the connect
+     * phase (PBC active, scan complete), so the check is precise. */
+    if (info->reason_code == RECEIVED_ASSOC_RESP &&
+        qcom_wps_connect_in_progress()) {
+        qcom_wps_assoc_event(dev, info->bssid,
+                             connect_status == WIFI_STATUS_CONN_SUCCESS,
+                             dev_data->active_device);
+        /* Skip normal connect path — credentials come via EAP-WSC (M1-M8). */
+        return 0;
+    }
+#endif /* CONFIG_WIFI_QCOM_WPS */
+
     wifi_mgmt_raise_connect_result_event(iface, connect_status);
     if (bss->connected) {
 #if defined(CONFIG_WIFI_QCOM_AUTO_DHCPV4)
@@ -511,6 +538,12 @@ static void qwifi_drv_event_handler(uint8_t dev_id, uint32_t event, void *contex
     case QAPI_WLAN_CHANNEL_SWITCH_CB_E:
         LOG_INF("CSA Done.");
         break;
+#ifdef CONFIG_WIFI_QCOM_WPS
+    case QAPI_WLAN_WPS_SCAN_AP_CB_E:
+    case QAPI_WLAN_WPS_SCAN_COMP_CB_E:
+        qwifi_wps_scan_event(event, private, length);
+        break;
+#endif
     default:
         LOG_WRN("%s:%d event: %d, ignored.", __FUNCTION__, __LINE__, event);
         break;
@@ -675,6 +708,71 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
 
     return 0;
 }
+
+#ifdef CONFIG_WIFI_QCOM_WPS
+
+/*
+ * qwifi_wps_sync_connect_params — update cfg_connect with WPS-negotiated
+ * credentials so that "wifi status" and net_mgmt events reflect the correct
+ * SSID, security type and PSK after the PSK reconnect triggered by WPS M8.
+ * Must be called before qapi_WLAN_Commit() in the PSK reconnect path.
+ */
+void qwifi_wps_sync_connect_params(const struct device *dev,
+                                    const uint8_t *ssid, uint8_t ssid_len,
+                                    enum wifi_security_type security,
+                                    const uint8_t *psk, uint8_t psk_len)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    struct wifi_connect_req_params *p     = &dev_data->cfg_connect;
+
+    memset(p, 0, sizeof(*p));
+
+    /* SSID — copy into persistent buffer owned by dev_data */
+    ssid_len = (ssid_len <= WIFI_SSID_MAX_LEN) ? ssid_len : WIFI_SSID_MAX_LEN;
+    memcpy(dev_data->wps_ssid_buf, ssid, ssid_len);
+    p->ssid        = dev_data->wps_ssid_buf;
+    p->ssid_length = ssid_len;
+
+    p->security = security;
+
+    /* PSK — copy into persistent buffer owned by dev_data */
+    if (security != WIFI_SECURITY_TYPE_NONE && psk && psk_len > 0) {
+        psk_len = (psk_len <= sizeof(dev_data->wps_psk_buf))
+                  ? psk_len : sizeof(dev_data->wps_psk_buf);
+        memcpy(dev_data->wps_psk_buf, psk, psk_len);
+        p->psk        = dev_data->wps_psk_buf;
+        p->psk_length = psk_len;
+    }
+}
+
+static int qwifi_drv_wps_config(const struct device *dev,
+                                  struct wifi_wps_config_params *params)
+{
+    if (!dev || !params) {
+        return -EINVAL;
+    }
+
+    switch (params->oper) {
+    case WIFI_WPS_PBC: {
+        static const uint8_t zero_bssid[WIFI_MAC_ADDR_LEN] = {0};
+        const uint8_t  *bssid    = (memcmp(params->bssid, zero_bssid,
+                                            WIFI_MAC_ADDR_LEN) == 0) ?
+                                    NULL : params->bssid;
+        const uint16_t *channels = params->channel_count > 0 ?
+                                    params->channels : NULL;
+        return qcom_wps_start_pbc(dev, bssid, channels, params->channel_count);
+    }
+    case WIFI_WPS_CANCEL:
+        qcom_hostap_lock();
+        qcom_wps_cancel(dev);
+        qcom_hostap_unlock();
+        return 0;
+    default:
+        LOG_WRN("qwifi_drv_wps_config: unsupported op=%d", params->oper);
+        return -ENOTSUP;
+    }
+}
+#endif /* CONFIG_WIFI_QCOM_WPS */
 
 static int qwifi_drv_scan(const struct device *dev, struct wifi_scan_params *params, scan_result_cb_t cb)
 {
@@ -2172,6 +2270,13 @@ static void qwifi_drv_intf_init(struct net_if *iface)
     }
 #endif
 
+#ifdef CONFIG_WIFI_QCOM_WPS
+    /* Initialise WPS context after eloop is running — event_cb fires on eloop thread */
+    if (qcom_wps_init(dev) != 0) {
+        LOG_ERR("WPS context init failed");
+    }
+#endif
+
     qapi_WLAN_DEV_Mode_e devMode = DEV_MODE_STATION_E;
     qapi_WLAN_Set_Param(QCOM_DEV_STA_ID, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE, &devMode,
                         sizeof(devMode), false);
@@ -2806,6 +2911,9 @@ static const struct wifi_mgmt_ops qwifi_drv_mgmt = {
     .get_power_save_config = qwifi_get_power_save,
 #if defined(CONFIG_WIFI_QCOM_ENTERPRISE) && defined(CONFIG_WIFI_NM_WPA_SUPPLICANT_CRYPTO_ENTERPRISE)
     .enterprise_creds = supplicant_add_enterprise_creds,
+#endif
+#ifdef CONFIG_WIFI_QCOM_WPS
+    .wps_config = qwifi_drv_wps_config,
 #endif
 };
 

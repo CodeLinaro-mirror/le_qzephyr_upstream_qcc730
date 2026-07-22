@@ -25,6 +25,19 @@ if(CONFIG_WIFI_QCOM_ENTERPRISE)
     zephyr_ld_options(-Wl,--wrap=hs_compl_evt)
 endif()
 
+if(CONFIG_WIFI_QCOM_WPS)
+    zephyr_library_sources(qcom_wps_glue.c)
+    zephyr_library_include_directories(
+        ${ZEPHYR_HOSTAP_MODULE_DIR}/src
+        ${ZEPHYR_HOSTAP_MODULE_DIR}/src/utils
+        ${ZEPHYR_HOSTAP_MODULE_DIR}/src/common
+        ${ZEPHYR_HOSTAP_MODULE_DIR}/src/crypto
+        ${ZEPHYR_HOSTAP_MODULE_DIR}/src/l2_packet
+        ${ZEPHYR_HOSTAP_MODULE_DIR}/src/wps
+    )
+    zephyr_library_link_libraries(hostap)
+endif()
+
 if(CONFIG_FILE_SYSTEM_LITTLEFS AND CONFIG_WIFI_SHELL_RUNTIME_CERTIFICATES)
     zephyr_library_sources(wifi_cert_loader.c)
     # LITTLEFS is an INTERFACE library that provides the lfs.h include path
