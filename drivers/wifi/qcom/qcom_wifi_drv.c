@@ -49,6 +49,10 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #include "inc/qcom_wps_glue.h"
 #endif
 
+#if defined(CONFIG_WIFI_NM_WPA_SUPPLICANT) && !defined(CONFIG_WIFI_NM_WPA_SUPPLICANT_MINIMAL)
+#include "supp_main.h"
+#endif
+
 #ifdef CONFIG_WIFI_QCOM_HOSTAP_ELOOP
 #include "inc/qcom_hostap_eloop.h"
 #endif
@@ -2628,6 +2632,27 @@ static int qwifi_ps_drv_set_bmps_enable(const struct device *dev, struct qcom_wi
         LOG_ERR("fail to enable bmps. ret %d.", ret);
         err = -EINVAL;
     }
+
+#if defined(CONFIG_WIFI_NM_WPA_SUPPLICANT) && !defined(CONFIG_WIFI_NM_WPA_SUPPLICANT_MINIMAL)
+    /*
+     * Pause/resume wpa_supplicant's wpas_periodic() 10s eloop timeout for
+     * the duration of BMPS -- see wpas_bmps_pause_periodic() in
+     * wpa_supplicant.c.  Do this regardless of qapi_bmps_cfg()'s result so
+     * a failed disable-BMPS call cannot leave the periodic timer paused
+     * forever.
+     *
+     * Gated out of MINIMAL supplicant builds: zephyr_wifi_bmps_enter/exit()
+     * live in supp_main.c, which the hostap CMakeLists only compiles in the
+     * non-MINIMAL branch -- and MINIMAL builds don't compile wpa_supplicant.c
+     * either, so there is no wpas_periodic() timer to pause. Referencing the
+     * symbols there (e.g. qcli_app) would be an undefined-reference link error.
+     */
+    if (param->enable) {
+        zephyr_wifi_bmps_enter();
+    } else {
+        zephyr_wifi_bmps_exit();
+    }
+#endif /* CONFIG_WIFI_NM_WPA_SUPPLICANT && !CONFIG_WIFI_NM_WPA_SUPPLICANT_MINIMAL */
 
     return err;
 }
