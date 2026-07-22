@@ -2020,6 +2020,16 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
     case QAPI_WLAN_AUTH_NONE_E:
         status->security = WIFI_SECURITY_TYPE_NONE;
         break;
+#ifdef CONFIG_WIFI_QCOM_ENTERPRISE
+    case QAPI_WLAN_AUTH_WPA2_E:
+    case QAPI_WLAN_AUTH_WPA2_E_SHA256_E:
+    case QAPI_WLAN_AUTH_WPA3_ENT_ONLY_E:
+        /* Firmware auth_mode only encodes the AKM (WPA2-Ent / +SHA256 / AKM5-only),
+         * not the EAP method — pull the actual security type saved at connect time. */
+        status->security = dev_data->cfg_connect.security;
+        status->wpa3_ent_type = dev_data->cfg_connect.wpa3_ent_mode;
+        break;
+#endif /* CONFIG_WIFI_QCOM_ENTERPRISE */
     default:
         status->security = WIFI_SECURITY_TYPE_UNKNOWN;
         break;
