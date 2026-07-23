@@ -792,3 +792,68 @@ static int wifi_pm_set_rx_filter_in_bmps(uint64_t mgmt_request, struct net_if *i
 }
 
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_PM_QCOM_SET_RX_FILTER_IN_BMPS, wifi_pm_set_rx_filter_in_bmps);
+
+static int wifi_set_ba_win_size(uint64_t mgmt_request, struct net_if *iface,
+				  void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *qcom_wifi_mgmt_api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_set_ba_win_size_params *ba_win_size = data;
+
+	if (qcom_wifi_mgmt_api == NULL || qcom_wifi_mgmt_api->set_ba_win_size == NULL) {
+		return -ENOTSUP;
+	}
+
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+
+	if (!data || len != sizeof(*ba_win_size)) {
+		return -EINVAL;
+	}
+
+	return qcom_wifi_mgmt_api->set_ba_win_size(dev, ba_win_size);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_BA_WIN_SIZE, wifi_set_ba_win_size);
+
+static int wifi_set_cts_to_self(uint64_t mgmt_request, struct net_if *iface,
+			    void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_set_cts_to_self_params *params = data;
+
+	if (api == NULL || api->set_cts_to_self == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->set_cts_to_self(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_CTS_TO_SELF, wifi_set_cts_to_self);
+
+static int wifi_set_rsp_rate(uint64_t mgmt_request, struct net_if *iface,
+			    void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_set_rsp_rate_params *params = data;
+
+	if (api == NULL || api->set_rsp_rate == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->set_rsp_rate(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_RSP_RATE, wifi_set_rsp_rate);

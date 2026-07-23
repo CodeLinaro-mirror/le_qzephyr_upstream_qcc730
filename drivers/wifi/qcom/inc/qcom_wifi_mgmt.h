@@ -90,6 +90,12 @@ enum qcom_net_request_wifi_cmd {
 	NET_REQUEST_WIFI_PM_CMD_QCOM_SET_COMPRESS_QOS_NULL_ENABLE_IN_BMPS,
 	/** Set Rx filter in BMPS */
 	NET_REQUEST_WIFI_PM_CMD_QCOM_SET_RX_FILTER_IN_BMPS,
+	/** Set BA Window size */
+	NET_REQUEST_WIFI_CMD_QCOM_SET_BA_WIN_SIZE,
+	/** Set CTS to SELF */
+	NET_REQUEST_WIFI_CMD_QCOM_SET_CTS_TO_SELF,
+	/** Set RSP Rate */
+	NET_REQUEST_WIFI_CMD_QCOM_SET_RSP_RATE,
 	NET_REQUEST_WIFI_CMD_QCOM_MAX,
 };
 
@@ -275,6 +281,20 @@ NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_PM_QCOM_SET_COMPRESS_QOS_NULL_E
 	(NET_WIFI_BASE | NET_REQUEST_WIFI_PM_CMD_QCOM_SET_RX_FILTER_IN_BMPS)
 NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_PM_QCOM_SET_RX_FILTER_IN_BMPS);
 
+/** Set BA Window size */
+#define NET_REQUEST_WIFI_QCOM_SET_BA_WIN_SIZE					\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_SET_BA_WIN_SIZE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_BA_WIN_SIZE);
+
+/** Set CTS to SELF */
+#define NET_REQUEST_WIFI_QCOM_SET_CTS_TO_SELF					\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_SET_CTS_TO_SELF)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_CTS_TO_SELF);
+
+/** Set RSP Rate */
+#define NET_REQUEST_WIFI_QCOM_SET_RSP_RATE					\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_SET_RSP_RATE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_RSP_RATE);
 
 /** Set TX Power parameters */
 struct qcom_wifi_set_tx_power_params{
@@ -524,6 +544,25 @@ struct qcom_wifi_pm_compress_qos_null_params {
 struct qcom_wifi_pm_rx_filter_params {
 	uint8_t enable;
 	bool (*bmps_rx_filter_cb)(uint16_t type, bool bm_cast, void *wifi_frame, uint16_t len);
+};
+
+/** Set BA window size parameters */
+struct qcom_wifi_set_ba_win_size_params {
+	/** TX BA Window size */
+	uint16_t tx_size;
+	/** RX BA Window size */
+	uint16_t rx_size;
+};
+
+/** Set cts to self parameters */
+struct qcom_wifi_set_cts_to_self_params {
+	uint32_t enable;
+};
+
+/** Set Rsp Rate parameters */
+struct qcom_wifi_set_rsp_rate_params {
+	/** index of rate table */
+	uint8_t rate_idx;
 };
 
 /** Wi-Fi management API */
@@ -1067,6 +1106,51 @@ struct qcom_wifi_mgmt_ops {
 	 */
 	int (*set_rx_filter_in_bmps)(const struct device *dev,
 		struct qcom_wifi_pm_rx_filter_params *param);
+
+	/**
+	 * @brief Set BA Window size.
+	 *
+	 * Set the BA window size via
+	 * __QAPI_WLAN_PARAM_GROUP_WIRELESS_BA_WIN_SIZE.
+	 *
+	 * @param dev Pointer to the driver device instance.
+	 * @param params BA Window size
+	 *
+	 * @return 0 if ok, < 0 if error.
+	 */
+	int (*set_ba_win_size)(const struct device *dev,
+			struct qcom_wifi_set_ba_win_size_params *params);
+
+	/**
+	 * @brief Enable or disable CTS to SELF on the active WLAN device.
+	 *
+	 * Controls CTS to SELF via qapi_WLAN_Set_Param for the currently active
+	 * WLAN interface. 
+	 *
+	 * @param dev Pointer to the driver device instance.
+	 * @param params CTS to SELF control flag:
+	 *        - 1: enable
+	 *        - 0: disable
+	 *
+	 * @return 0 on success; -1 on failure.
+	 */
+	int (*set_cts_to_self)(const struct device *dev,
+			struct qcom_wifi_set_cts_to_self_params *params);
+
+	/**
+	 * @brief Set Rsp rate to 6Mbps on the active WLAN device.
+	 *
+	 * Set Rsp rate to 6Mbps via qapi_WLAN_Set_Param for the currently active
+	 * WLAN interface. 
+	 *
+	 * @param dev Pointer to the driver device instance.
+	 * @param params Rsp rate index:
+	 *        - 8: 6Mbps
+	 *
+	 * @return 0 on success; -1 on failure.
+	 */
+	int (*set_rsp_rate)(const struct device *dev,
+			struct qcom_wifi_set_rsp_rate_params *params);
 };
 
 #endif

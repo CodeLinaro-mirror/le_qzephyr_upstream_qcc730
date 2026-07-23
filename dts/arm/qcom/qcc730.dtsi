@@ -194,7 +194,7 @@
 			status = "disabled";
 		};
 
-		// There are 3 FLASH chip options available
+		// There are some FLASH chip options available
 		// if not sure which one is on your chip
 		// all can be enabled. Initialization won't
 		// finish for the absent ones.
@@ -226,31 +226,59 @@
 			status = "disabled";
 		};
 
-		qspi_nor_flash5: gd25lq32ee@0 {
+		qspi_nor_flash5: gd25q32eeigr@0 {
+			compatible = "qcom,qspi-qcc730-nor";
+			device-id = <0x001640c8>;
+			reg = <0 0x400000>;
+			status = "disabled";
+		};
+
+		qspi_nor_flash6: gd25lq32eeigr@0 {
 			compatible = "qcom,qspi-qcc730-nor";
 			device-id = <0x001660c8>;
 			reg = <0 0x400000>;
 			status = "disabled";
 		};
 		
-		qspi_nor_flash6: PY25Q32HB@0 {
+		qspi_nor_flash7: PY25Q32HB@0 {
 			compatible = "qcom,qspi-qcc730-nor";
 			device-id = <0x00162085>;
 			reg = <0 0x400000>;
 			status = "disabled";
 		};
 
-		qspi_nor_flash7: PY25Q64HA@0 {
+		qspi_nor_flash8: PY25Q64HA@0 {
 			compatible = "qcom,qspi-qcc730-nor";
 			device-id = <0x00172085>;
+			reg = <0 0x800000>;
+			status = "disabled";
+		};
+
+		qspi_nor_flash9: PY25Q32LC@0 {
+			compatible = "qcom,qspi-qcc730-nor";
+			device-id = <0x00166585>;
 			reg = <0 0x400000>;
 			status = "disabled";
 		};
 
-		qspi_nor_flash8: PY25Q32LC@0 {
+		qspi_nor_flash10: W25Q33PWXHIQ@0 {
 			compatible = "qcom,qspi-qcc730-nor";
-			device-id = <0x00166585>;
+			device-id = <0x001660ef>;
 			reg = <0 0x400000>;
+			status = "disabled";
+		};
+
+		qspi_nor_flash11: W25Q32RVXHJQ@0 {
+			compatible = "qcom,qspi-qcc730-nor";
+			device-id = <0x001640ef>;
+			reg = <0 0x400000>;
+			status = "disabled";
+		};
+
+		qspi_nor_flash12: W25Q64PWZKIQ@0 {
+			compatible = "qcom,qspi-qcc730-nor";
+			device-id = <0x001760ef>;
+			reg = <0 0x800000>;
 			status = "disabled";
 		};
 

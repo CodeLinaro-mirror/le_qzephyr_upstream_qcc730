@@ -38,6 +38,17 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #endif
 #include "wlan_qapi_helper.h"
 
+#ifdef CONFIG_WIFI_QCOM_ENTERPRISE
+#include "inc/qcom_wifi_enterprise_glue.h"
+#ifdef CONFIG_WIFI_NM_WPA_SUPPLICANT_CRYPTO_ENTERPRISE
+#include "supp_api.h"
+#endif
+#endif
+
+#ifdef CONFIG_WIFI_QCOM_HOSTAP_ELOOP
+#include "inc/qcom_hostap_eloop.h"
+#endif
+
 #define SCAN_MODE_BLOCKING 1
 #define SCAN_MODE_UNBLOCKING 2
 #define QCOM_MAX_DEVICES 2
@@ -82,9 +93,58 @@ static struct qwifi_drv_dev_cfg_t g_wifi_dev_cfg = {
     .scan_mode = SCAN_MODE_UNBLOCKING,
 };
 
-static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity);
+#ifdef CONFIG_WIFI_QCOM_AUTO_DHCPV4
+/*
+ * DHCP work contexts.
+ *
+ * net_dhcpv4_start() / net_dhcpv4_stop() must NOT be called directly from
+ * the WiFi driver event callbacks because those run in a context where the
+ * net_mgmt callback lock may already be held, which would cause a deadlock.
+ * Offload the calls to the system work queue instead.
+ *
+ * Each context embeds the target iface so that start and stop always
+ * operate on the same interface.
+ */
+struct dhcp_start_work_ctx {
+    struct k_work_delayable work;
+    struct net_if *iface;
+};
+
+struct dhcp_stop_work_ctx {
+    struct k_work work;
+    struct net_if *iface;
+};
+
+static struct dhcp_start_work_ctx g_dhcp_start_ctx;
+static struct dhcp_stop_work_ctx  g_dhcp_stop_ctx;
+
+static void dhcp_start_work_handler(struct k_work *work)
+{
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    struct dhcp_start_work_ctx *ctx =
+        CONTAINER_OF(dwork, struct dhcp_start_work_ctx, work);
+
+    if (ctx->iface) {
+        LOG_INF("Starting DHCP client on iface %p", ctx->iface);
+        net_dhcpv4_start(ctx->iface);
+    }
+}
+
+static void dhcp_stop_work_handler(struct k_work *work)
+{
+    struct dhcp_stop_work_ctx *ctx =
+        CONTAINER_OF(work, struct dhcp_stop_work_ctx, work);
+
+    if (ctx->iface) {
+        LOG_INF("Stopping DHCP client on iface %p", ctx->iface);
+        net_dhcpv4_stop(ctx->iface);
+    }
+}
+#endif /* CONFIG_WIFI_QCOM_AUTO_DHCPV4 */
+
 void clear_wifi_busy(void);
 #ifdef CONFIG_PM_DEVICE
+static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity);
 extern qapi_Status_t qapi_WLAN_Activity_Register_CB(void (*callback)(PM_WLAN_ACTIVITY_STATUS));
 #endif
 
@@ -131,6 +191,7 @@ static const uint32_t rate_index_to_kbps[] = {
 };
 #define MAX_RATE_INDEX (sizeof(rate_index_to_kbps) / sizeof(rate_index_to_kbps[0]))
 
+#ifdef CONFIG_PM_DEVICE
 static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity)
 {
     const struct device *wifi_dev = device_get_binding("qwifi_sta");
@@ -152,6 +213,7 @@ static void wifi_activity_cb(PM_WLAN_ACTIVITY_STATUS activity)
         pm_device_busy_set(wifi_dev);
     }
 }
+#endif
 
 static struct qwifi_drv_dev_data_t g_wifi_dev_data_sap;
 static struct qwifi_drv_dev_cfg_t g_wifi_dev_cfg_sap = {
@@ -254,10 +316,40 @@ static int station_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *
         bss->connected = false;
     }
 
+#ifdef CONFIG_WIFI_QCOM_ENTERPRISE
+    /* Enterprise flow has two firmware callbacks:
+     *   RECEIVED_ASSOC_RESP (0x01): 802.11 assoc done → post EVENT_ASSOC to
+     *       wpa_supplicant so the EAP state machine starts.
+     *   FOURWAY_HANDSHAKE_SUCCESS (0x02): firmware 4-way HS complete, keys
+     *       installed → raise connect event and start DHCP. */
+    switch (dev_data->cfg_connect.security) {
+    case WIFI_SECURITY_TYPE_EAP_TLS:
+    case WIFI_SECURITY_TYPE_EAP_PEAP_MSCHAPV2:
+    case WIFI_SECURITY_TYPE_EAP_PEAP_GTC:
+    case WIFI_SECURITY_TYPE_EAP_TTLS_MSCHAPV2:
+    case WIFI_SECURITY_TYPE_EAP_PEAP_TLS:
+        if (info->reason_code == RECEIVED_ASSOC_RESP) {
+            LOG_INF("station_connect_event: Enterprise assoc done (connected=%d)",
+                       bss->connected);
+            qcom_ent_assoc_event(dev, info->bssid,
+                                 connect_status == WIFI_STATUS_CONN_SUCCESS,
+                                 dev_data->active_device);
+        } else if (info->reason_code == FOURWAY_HANDSHAKE_SUCCESS) {
+            LOG_INF("station_connect_event: Enterprise 4-way HS done, raising connect");
+            qcom_ent_4way_hs_done(iface);
+        }
+        return 0;
+    default:
+        break;
+    }
+#endif /* CONFIG_WIFI_QCOM_ENTERPRISE */
+
     wifi_mgmt_raise_connect_result_event(iface, connect_status);
     if (bss->connected) {
 #if defined(CONFIG_WIFI_QCOM_AUTO_DHCPV4)
-        net_dhcpv4_start(iface);
+        /* Schedule DHCP start via work queue to avoid potential deadlock */
+        g_dhcp_start_ctx.iface = iface;
+        k_work_schedule(&g_dhcp_start_ctx.work, K_MSEC(1));
 #endif
     }
 
@@ -337,7 +429,9 @@ static void station_disconnect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt
 
     if (dev_mode == DEV_MODE_STATION_E) {
 #if defined(CONFIG_WIFI_QCOM_AUTO_DHCPV4)
-        net_dhcpv4_stop(dev_data->iface);
+        /* Schedule DHCP stop via work queue to avoid potential deadlock */
+        g_dhcp_stop_ctx.iface = dev_data->iface;
+        k_work_submit(&g_dhcp_stop_ctx.work);
 #endif
     }
 }
@@ -443,6 +537,7 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
     qapi_WLAN_Crypt_Type_e e_cipher;
     const uint8_t *psk = NULL;
     uint8_t psk_length = 0;
+    bool is_eap = false;
     wlan_qapi_cxt_t *p_cxt = gp_wlan_qapi_cxt;
 
 #ifdef CONFIG_PM_DEVICE
@@ -474,6 +569,28 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
     case WIFI_SECURITY_TYPE_NONE:
         e_wpa_ver = QAPI_WLAN_AUTH_NONE_E;
         break;
+#ifdef CONFIG_WIFI_QCOM_ENTERPRISE
+    case WIFI_SECURITY_TYPE_EAP_TLS:
+    case WIFI_SECURITY_TYPE_EAP_PEAP_MSCHAPV2:
+    case WIFI_SECURITY_TYPE_EAP_PEAP_GTC:
+    case WIFI_SECURITY_TYPE_EAP_TTLS_MSCHAPV2:
+    case WIFI_SECURITY_TYPE_EAP_PEAP_TLS:
+        /* wpa3_ent_mode is the sole AKM discriminator; mfp is intentionally ignored here —
+         * Zephyr's default OPTIONAL must not silently upgrade WPA2-Enterprise to AKM5. */
+        if (qcom_ent_setup_supplicant(dev, params)) {
+            return -EINVAL;
+        }
+        if (params->wpa3_ent_mode == WIFI_WPA3_ENTERPRISE_ONLY) {
+            e_wpa_ver = QAPI_WLAN_AUTH_WPA3_ENT_ONLY_E;
+        } else if (params->wpa3_ent_mode == WIFI_WPA3_ENTERPRISE_TRANSITION) {
+            e_wpa_ver = QAPI_WLAN_AUTH_WPA2_E_SHA256_E;
+        } else {
+            e_wpa_ver = QAPI_WLAN_AUTH_WPA2_E;
+        }
+        e_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
+        is_eap = true;
+        break;
+#endif /* CONFIG_WIFI_QCOM_ENTERPRISE */
     default:
         LOG_ERR("Authentication method not supported");
         return -EIO;
@@ -512,7 +629,7 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
                             (void *)&channel, sizeof(channel), false);
     }
 
-    if (e_wpa_ver) {
+    if (e_wpa_ver && !is_eap) {
         psk = params->psk;
         psk_length = params->psk_length;
         if (((params->security == WIFI_SECURITY_TYPE_SAE)
@@ -532,6 +649,14 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
                             sizeof(qapi_WLAN_Crypt_Type_e), false);
         qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
                             __QAPI_WLAN_PARAM_GROUP_SECURITY_PASSPHRASE, (void *)psk, psk_length, false);
+    } else if (is_eap) {
+        /* WPA2-Enterprise: set auth mode and cipher, no passphrase */
+        qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
+                            __QAPI_WLAN_PARAM_GROUP_SECURITY_AUTH_MODE, (void *)&e_wpa_ver,
+                            sizeof(qapi_WLAN_Auth_Mode_e), false);
+        qapi_WLAN_Set_Param(deviceId, __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
+                            __QAPI_WLAN_PARAM_GROUP_SECURITY_ENCRYPTION_TYPE, (void *)&e_cipher,
+                            sizeof(qapi_WLAN_Crypt_Type_e), false);
     } else {
         wlan_clear_privacy(deviceId);
     }
@@ -1700,7 +1825,7 @@ static int qwifi_drv_get_bmiss_threshold(const struct device *dev, struct qcom_w
     return 0;
 }
 
-int32_t set_op_mode(struct device *dev, char *opmode, char *hidden_ssid)
+int32_t set_op_mode(const struct device *dev, char *opmode, char *hidden_ssid)
 {
     int32_t ret = -1;
     uint8_t hidden_flag = 0;
@@ -1947,6 +2072,7 @@ static int qwifi_drv_send(const struct device *dev, struct net_pkt *pkt)
     }
 
     ret = qwifi_hal_tx(deviceId, pkt_buf, pkt_len);
+
     if (ret != NT_OK) {
         nt_dpm_free_buffer_ext(pkt_buf);
         return -EAGAIN;
@@ -1963,11 +2089,12 @@ qapi_Status_t qwifi_drv_eth_rx_cb(void *drv_intf_data, void *bufp, uint16_t len,
     ARG_UNUSED(hal_data);
     const struct device *dev = net_if_get_device(iface);
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
+
 #ifdef CONFIG_PM_DEVICE
     pm_device_busy_set(dev);
 #endif
 
-pkt = net_pkt_rx_alloc_with_buffer(iface, len, AF_UNSPEC, 0, dev_data->timeout);
+    pkt = net_pkt_rx_alloc_with_buffer(iface, len, AF_UNSPEC, 0, dev_data->timeout);
     if (!pkt) {
         return QAPI_ERR_NO_MEMORY;
     }
@@ -1981,7 +2108,7 @@ pkt = net_pkt_rx_alloc_with_buffer(iface, len, AF_UNSPEC, 0, dev_data->timeout);
 static void link_change_handler(void *drv_iface, uint32_t event, uint8_t* mac_addr)
 {
     struct net_if *iface = (struct net_if *)drv_iface;
-    struct device *dev = net_if_get_device(iface);
+    const struct device *dev = net_if_get_device(iface);
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     uint8_t deviceId = dev_data->active_device;
 
@@ -2010,6 +2137,21 @@ static void qwifi_drv_intf_init(struct net_if *iface)
     qwifi_hal_reg_rxcb(iface, qwifi_drv_eth_rx_cb, link_change_handler);
 
     dev_data->wlan_enabled = qapi_WLAN_Enable(true);
+
+#ifdef CONFIG_WIFI_QCOM_HOSTAP_ELOOP
+    /* Start the hostap eloop thread at WiFi STA bring-up. The hostap
+     * nan_de / eapol cores assume a single-threaded eloop drives their
+     * timers and event delivery; MINIMAL builds do not link supp_main, so
+     * the thread has no other owner. Tying it to the netif means it is
+     * already running before any feature module (Enterprise, NAN USD) is
+     * enabled and lives for the lifetime of the interface (the driver has
+     * no WiFi-disable path). The acquire is refcounted and idempotent.
+     */
+    if (qcom_hostap_eloop_acquire() != 0) {
+        LOG_ERR("hostap eloop acquire failed");
+    }
+#endif
+
     qapi_WLAN_DEV_Mode_e devMode = DEV_MODE_STATION_E;
     qapi_WLAN_Set_Param(QCOM_DEV_STA_ID, __QAPI_WLAN_PARAM_GROUP_WIRELESS, __QAPI_WLAN_PARAM_GROUP_WIRELESS_OPERATION_MODE, &devMode,
                         sizeof(devMode), false);
@@ -2071,8 +2213,12 @@ static int qwifi_drv_set_rate(const struct device *dev, struct qcom_wifi_set_rat
 
     qapi_Status_t ret = qapi_WLAN_Set_Rate(&cfg);
     if (ret != QAPI_OK) {
-        LOG_ERR("Failed to set rate (staid=%u, p=%u, s=%u, t=%u): %d",
-                cfg.rate_staid, cfg.rate_p_rate, cfg.rate_s_rate, cfg.rate_t_rate, ret);
+		if(cfg.ra_ON == QAPI_WLAN_RA_OFF) {
+            LOG_ERR("Failed to set rate (staid=%u, p=%u, s=%u, t=%u): %d",
+                    cfg.rate_staid, cfg.rate_p_rate, cfg.rate_s_rate, cfg.rate_t_rate, ret);
+		} else if(cfg.ra_ON == QAPI_WLAN_RA_HT_ONLY_ENABLE || cfg.ra_ON == QAPI_WLAN_RA_HT_ONLY_DISABLE) {
+			LOG_ERR("Failed to set rate ht Only option");
+		}
         return -EIO;
     }
     return 0;
@@ -2454,6 +2600,110 @@ int qwifi_get_power_save(const struct device *dev, struct wifi_ps_config *config
     return 0;
 }
 
+/**
+ * @brief Configure Block Ack (BA) window size on the active WLAN device.
+ *
+ * Programs the BA window size via qapi_WLAN_Set_Param
+ * for the currently active interface. 
+ *
+ * @param tx_size   TX BA Window size, Typically constrained to less than 64.
+ * @param rx_szie   RX BA Window size, Typically constrained to less than 64.
+ *
+ * @return 0 on success; -1 on failure.
+ *
+ * Notes:
+ * - Operates on the active device.
+ * - The firmware enforces valid ranges; invalid values are rejected by qapi_WLAN_Set_Param.
+ */
+static int qwifi_drv_set_ba_win_size(const struct device *dev, struct qcom_wifi_set_ba_win_size_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    qapi_WLAN_BA_Window_Size_t ba_win_size;
+
+    ba_win_size.tx_size = params->tx_size;
+    ba_win_size.rx_size = params->rx_size;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_BA_WINDOW_SIZE,
+                        &ba_win_size,
+                        sizeof(ba_win_size),
+                        false);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set BA window size for device %d: %d", deviceId, ret);
+        return -EIO;
+    }
+    return 0;
+}
+
+/**
+ * @brief Enable or disable CTS to SELF on the active WLAN device.
+ *
+ * Controls CTS to SELF via qapi_WLAN_Set_Param for the currently active
+ * WLAN interface. 
+ *
+ * @param dev Pointer to the driver device instance.
+ * @param params CTS to SELF control flag:
+ *        - 1: enable
+ *        - 0: disable
+ *
+ * @return 0 on success; -1 on failure.
+ */
+
+static int qwifi_drv_set_cts_to_self(const struct device *dev, struct qcom_wifi_set_cts_to_self_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint32_t enable = params->enable;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_PROTECTION_MODE,
+                        &enable,
+                        sizeof(enable),
+                        FALSE);
+    if (ret != QAPI_OK) {
+        LOG_ERR("Failed to set CTS to SELF (enable=%u) for device %d: %d", enable, deviceId, ret);
+        return -EIO;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Set Rsp rate to 6Mbps on the active WLAN device.
+ *
+ * Set Rsp rate to 6Mbps via qapi_WLAN_Set_Param for the currently active
+ * WLAN interface. 
+ *
+ * @param dev Pointer to the driver device instance.
+ * @param params Rsp rate index:
+ *        - 8: 6Mbps
+ *
+ * @return 0 on success; -1 on failure.
+ */
+
+static int qwifi_drv_set_rsp_rate(const struct device *dev, struct qcom_wifi_set_rsp_rate_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+    uint8_t rate_idx = params->rate_idx;
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(deviceId,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_RSP_RATE,
+                        &rate_idx,
+                        sizeof(rate_idx),
+                        FALSE);
+    if (ret != QAPI_OK) {
+        LOG_ERR("set RspRate fail, check the wlan connection or data validation");
+        return -EIO;
+    }
+
+    return 0;
+}
+
 static int qwifi_drv_dev_init(const struct device *dev)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
@@ -2461,6 +2711,10 @@ static int qwifi_drv_dev_init(const struct device *dev)
         g_qwifi_dev_by_id[QCOM_DEV_STA_ID] = dev;
         qwifi_init();
         qapi_WLAN_Set_Callback(qwifi_drv_event_handler, (void *)dev);
+#ifdef CONFIG_WIFI_QCOM_AUTO_DHCPV4
+        k_work_init_delayable(&g_dhcp_start_ctx.work, dhcp_start_work_handler);
+        k_work_init(&g_dhcp_stop_ctx.work, dhcp_stop_work_handler);
+#endif
     }
     else if (strcmp(dev->name, "qwifi_sap") == 0) {
         g_qwifi_dev_by_id[QCOM_DEV_AP_ID] = dev;
@@ -2506,7 +2760,10 @@ static int qwifi_drv_dev_init(const struct device *dev)
         .set_ignore_bc_mc_in_bmps = qwifi_ps_drv_ignore_bc_mc_in_bmps,
         .set_power_optimization_enable_in_bmps = qwifi_ps_drv_set_power_optimization_enable_in_bmps,
         .set_compress_qos_null_enable_in_bmps = qwifi_ps_drv_set_compress_qos_null_enable_in_bmps,
-        .set_rx_filter_in_bmps = qwifi_ps_drv_set_rx_filter_in_bmps
+        .set_rx_filter_in_bmps = qwifi_ps_drv_set_rx_filter_in_bmps,
+        .set_ba_win_size    = qwifi_drv_set_ba_win_size,
+        .set_cts_to_self	= qwifi_drv_set_cts_to_self,
+        .set_rsp_rate	= qwifi_drv_set_rsp_rate,
     };
     dev_data->qcom_wifi_cmd = qwifi_ops;
 
@@ -2527,6 +2784,9 @@ static const struct wifi_mgmt_ops qwifi_drv_mgmt = {
     .ap_config_params = ap_config_params,
     .set_power_save = qwifi_power_save,
     .get_power_save_config = qwifi_get_power_save,
+#if defined(CONFIG_WIFI_QCOM_ENTERPRISE) && defined(CONFIG_WIFI_NM_WPA_SUPPLICANT_CRYPTO_ENTERPRISE)
+    .enterprise_creds = supplicant_add_enterprise_creds,
+#endif
 };
 
 static const struct net_wifi_mgmt_offload qwifi_drv_api = {
@@ -2534,6 +2794,9 @@ static const struct net_wifi_mgmt_offload qwifi_drv_api = {
     .wifi_iface.send = qwifi_drv_send,
     .wifi_iface.get_config = get_config,
     .wifi_mgmt_api = &qwifi_drv_mgmt,
+#if defined(CONFIG_WIFI_NM_WPA_SUPPLICANT) && defined(CONFIG_WIFI_QCOM_ENTERPRISE)
+    .wifi_drv_ops = &qcom_wifi_ent_drv_ops,
+#endif
 };
 
 #ifdef CONFIG_WIFI_NM
