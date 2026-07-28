@@ -17,6 +17,7 @@
 
 #include "driver_zephyr.h"
 #include "supp_api.h"
+#include "crypto/tls.h"
 
 #include <qwifi_api.h>
 
@@ -1130,8 +1131,10 @@ int qcom_ent_setup_supplicant(const struct device *dev,
 				"PMKSA invalidate check for this SSID");
 		} else if (!fp_entry->valid || memcmp(fp_entry->fp, new_fp, sizeof(new_fp)) != 0) {
 			LOG_INF("setup_supplicant: credential fp changed (or first connect) "
-				"for this SSID — invalidating firmware PMKSA cache for prior BSSID");
+				"for this SSID — invalidating firmware PMKSA cache for prior BSSID "
+				"and host TLS session cache");
 			wmi_invalidate_ent_pmksa(g_ent_ctx.bssid);
+			tls_global_session_cache_invalidate();
 			memcpy(fp_entry->fp, new_fp, sizeof(new_fp));
 			fp_entry->valid = true;
 		}
