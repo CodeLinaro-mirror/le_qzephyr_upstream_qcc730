@@ -928,3 +928,24 @@ static int wifi_wnm_set_bss_max_idle(uint64_t mgmt_request, struct net_if *iface
 	return api->wnm_set_bss_max_idle(dev, *(uint32_t *)data);
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_WNM_SET_BSS_MAX_IDLE, wifi_wnm_set_bss_max_idle);
+
+#ifdef CONFIG_WIFI_QCOM_P2P
+static int wifi_p2p(uint64_t mgmt_request, struct net_if *iface,
+		    void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+
+	if (api == NULL || api->p2p == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(struct qcom_wifi_p2p_params)) {
+		return -EINVAL;
+	}
+	return api->p2p(dev, data);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_P2P, wifi_p2p);
+#endif /* CONFIG_WIFI_QCOM_P2P */

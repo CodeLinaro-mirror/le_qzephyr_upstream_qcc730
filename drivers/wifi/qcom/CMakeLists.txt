@@ -2,12 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0;
 zephyr_library_sources_ifdef(CONFIG_WIFI_QCOM qcom_wifi_drv.c)
 zephyr_library_sources_ifdef(CONFIG_WIFI_QCOM qcom_wifi_mgmt.c)
+zephyr_library_sources_ifdef(CONFIG_WIFI_QCOM_P2P qcom_wifi_p2p_glue.c)
 zephyr_library_sources_ifdef(CONFIG_WIFI_QCOM_HOSTAP_ELOOP qcom_hostap_eloop.c)
 zephyr_library_link_libraries_ifdef(CONFIG_WIFI_QCOM_HOSTAP_ELOOP hostap)
 zephyr_library_include_directories_ifdef(CONFIG_WIFI_QCOM_HOSTAP_ELOOP
     ${ZEPHYR_HOSTAP_MODULE_DIR}/src
     ${ZEPHYR_HOSTAP_MODULE_DIR}/src/utils
     ${ZEPHYR_HOSTAP_MODULE_DIR}/src/common
+)
+zephyr_library_include_directories_ifdef(CONFIG_WIFI_QCOM_P2P
+    ${ZEPHYR_HOSTAP_MODULE_DIR}/src/p2p
+    ${ZEPHYR_HOSTAP_MODULE_DIR}/src/wps
 )
 zephyr_include_directories(inc)
 

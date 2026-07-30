@@ -13,6 +13,9 @@
 
 #include "qcom_wps_glue.h"
 #include "qcom_hostap_eloop.h"
+#ifdef CONFIG_WIFI_QCOM_P2P
+#include "qcom_wifi_p2p.h"           /* qcom_p2p_build_assoc_req_ie */
+#endif
 #include "qapi_wlan_base.h"
 #include "qapi_wlan_param_group.h"   /* __QAPI_WLAN_PARAM_GROUP_WIRELESS_APP_IE */
 #include "wlan_drv.h"                /* WMI_FRAME_PROBE_REQ, QCOM_DEV_STA_ID */
@@ -199,6 +202,16 @@ static wsc_ie_info_t parse_wsc_ie(const uint8_t *payload, uint8_t payload_len)
  *  scanning                   scan round in progress flag
  *  pbc_uuid[] / counts        UUID dedup (wpa_supplicant uses wps_ap_info array)
  */
+
+#define P2P_CRED_MAX 4
+
+struct p2p_cred_entry {
+    bool                  valid;
+    uint8_t               peer_addr[6];
+    uint32_t              last_used;
+    struct wps_credential cred;
+};
+
 static struct {
     /* Device context */
     const struct device    *dev;        /* Zephyr device pointer */
@@ -236,9 +249,12 @@ static struct {
     uint8_t  eap_staid;
     struct l2_packet_data *l2;  /* persistent l2 handle for EAP-WSC session */
 
-    /* Credentials received from M8 — applied after WPS session fully cancelled */
-    bool                    cred_valid;
-    struct wps_credential   cred;
+    /* Persistent credential table — multiple P2P groups indexed by peer addr */
+    struct p2p_cred_entry  *cred_table;
+    uint8_t                 cred_count;
+
+    /* Assoc retry — for P2P GO that hasn't started beaconing yet */
+    uint8_t                 assoc_retries;
 
     /* Optional scan filter — set by qcom_wps_start_pbc(), persists for the
      * full PBC session (all rescan rounds).  Cleared by qcom_wps_cancel()
@@ -594,16 +610,23 @@ static void wps_eap_rx_handle(struct qcom_he_msg *base)
                  * PSK reconnect with the credentials saved in wps_cred_cb. */
                 if (g_wps.wps_data &&
                     g_wps.wps_data->state == WPS_FINISHED &&
-                    g_wps.cred_valid) {
+                    g_wps.cred_count > 0) {
 
-                    bool            cred_valid = g_wps.cred_valid;
-                    struct wps_credential cred = g_wps.cred;
+                    struct p2p_cred_entry *latest = NULL;
+                    for (uint8_t ci = 0; ci < P2P_CRED_MAX; ci++) {
+                        if (g_wps.cred_table[ci].valid &&
+                            (!latest || g_wps.cred_table[ci].last_used > latest->last_used))
+                            latest = &g_wps.cred_table[ci];
+                    }
+                    if (!latest) goto out;
+
+                    struct wps_credential cred = latest->cred;
                     uint8_t         device_id  = g_wps.device_id;
                     uint16_t        ap_channel = g_wps.target_ap.channel;
 
                     qcom_wps_cancel(g_wps.dev);
 
-                    if (cred_valid) {
+                    {
                         uint16_t wmi_auth;
                         if (cred.auth_type & WPS_AUTH_WPA2PSK)
                             wmi_auth = 0x10;
@@ -627,29 +650,41 @@ static void wps_eap_rx_handle(struct qcom_he_msg *base)
 
                         qapi_WLAN_Disconnect(device_id);
 
-                        if (wmi_auth != 0x01 && cred.key_len > 0) {
-                            const uint8_t *psk     = cred.key;
-                            uint8_t        psk_len = (uint8_t)cred.key_len;
-                            uint8_t        psk_bin[32];
+                        /* WPS credential key: per the WPS spec, when a GO/AP
+                         * hands out a *random* PSK (not a user-typed
+                         * passphrase) it encodes the raw 256-bit PMK as 64
+                         * hex ASCII characters (see upstream
+                         * wps_supplicant.c: cred->key_len == 2*PMK_LEN(32)
+                         * -> hexstr2bin(cred->key, ssid->psk, PMK_LEN)).
+                         * cred.key_len==64 here means 64 *ASCII hex chars*,
+                         * not 64 raw PMK bytes.
+                         *
+                         * The fw's wmi_set_passphrase_cmd() has its own
+                         * special case for passphrase_len==WMI_PASSPHRASE_LEN
+                         * (64): it treats the first 32 bytes of the buffer
+                         * as the already-derived binary PMK and memcpy's them
+                         * straight into dev->pmk, skipping PBKDF2 entirely.
+                         * If we forward the 64 ASCII hex chars unchanged,
+                         * fw copies the ASCII bytes (not the decoded value)
+                         * as the PMK, so PTK/MIC come out wrong and the GO's
+                         * M1 retransmits forever. Decode the hex string into
+                         * 32 raw bytes first, then hand fw a 64-byte buffer
+                         * whose first half is the real PMK — matching what
+                         * wmi_set_passphrase_cmd() actually copies. */
+                        uint8_t psk_buf[64] = {0};
+                        const uint8_t *psk_ptr = cred.key;
+                        size_t         psk_len = cred.key_len;
+                        if (cred.key_len == 64 &&
+                            hexstr2bin((const char *)cred.key, psk_buf, 32) == 0) {
+                            psk_ptr = psk_buf;
+                            psk_len = sizeof(psk_buf);
+                        }
 
-                            /* WPS Network Key with key_len==64 is a hex-encoded
-                             * 32-byte PMK (WPA2 passphrase max is 63 chars).
-                             * Convert to binary — firmware expects either an
-                             * ASCII passphrase (8-63 bytes) or a 32-byte PMK. */
-                            if (cred.key_len == 64) {
-                                if (hexstr2bin((const char *)cred.key,
-                                               psk_bin, sizeof(psk_bin)) == 0) {
-                                    psk     = psk_bin;
-                                } else {
-                                    LOG_ERR("wps: invalid 64-char PSK, aborting reconnect");
-                                    goto out;
-                                }
-                            }
-
+                        if (wmi_auth != 0x01 && psk_len > 0) {
                             wlan_set_psk_params(device_id,
                                                 cred.ssid, cred.ssid_len,
                                                 wmi_auth, wmi_cipher,
-                                                psk, psk_len);
+                                                psk_ptr, psk_len);
                         } else {
                             qapi_WLAN_Set_Param(device_id,
                                                 __QAPI_WLAN_PARAM_GROUP_WIRELESS,
@@ -742,6 +777,60 @@ static void wps_eap_rx(const uint8_t *src_addr,
 /* Credential callback                                                  */
 /* ------------------------------------------------------------------ */
 
+static void cred_table_upsert(const struct wps_credential *cred)
+{
+    if (!g_wps.cred_table) {
+        g_wps.cred_table = k_malloc(sizeof(struct p2p_cred_entry) * P2P_CRED_MAX);
+        if (!g_wps.cred_table) {
+            LOG_ERR("cred_table_upsert: OOM");
+            return;
+        }
+        memset(g_wps.cred_table, 0,
+               sizeof(struct p2p_cred_entry) * P2P_CRED_MAX);
+        g_wps.cred_count = 0;
+    }
+
+    uint32_t now = k_uptime_get_32();
+    struct p2p_cred_entry *slot = NULL;
+
+    for (uint8_t i = 0; i < P2P_CRED_MAX; i++) {
+        if (g_wps.cred_table[i].valid &&
+            memcmp(g_wps.cred_table[i].peer_addr, cred->mac_addr, 6) == 0) {
+            slot = &g_wps.cred_table[i];
+            break;
+        }
+    }
+
+    if (!slot) {
+        for (uint8_t i = 0; i < P2P_CRED_MAX; i++) {
+            if (!g_wps.cred_table[i].valid) {
+                slot = &g_wps.cred_table[i];
+                break;
+            }
+        }
+    }
+
+    if (!slot) {
+        slot = &g_wps.cred_table[0];
+        for (uint8_t i = 1; i < P2P_CRED_MAX; i++) {
+            if (g_wps.cred_table[i].last_used < slot->last_used)
+                slot = &g_wps.cred_table[i];
+        }
+    }
+
+    slot->valid = true;
+    memcpy(slot->peer_addr, cred->mac_addr, 6);
+    slot->last_used = now;
+    slot->cred = *cred;
+
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < P2P_CRED_MAX; i++) {
+        if (g_wps.cred_table[i].valid)
+            count++;
+    }
+    g_wps.cred_count = count;
+}
+
 static int wps_cred_cb(void *ctx, const struct wps_credential *cred)
 {
     ARG_UNUSED(ctx);
@@ -752,11 +841,7 @@ static int wps_cred_cb(void *ctx, const struct wps_credential *cred)
 
     g_wps.wps_success = true;
 
-    /* Save credentials — reconnect happens after WPS session is fully
-     * cancelled (in WPS_DONE path) to avoid conflicting with the ongoing
-     * EAP-WSC session and WPS IE still injected in Assoc Req. */
-    g_wps.cred       = *cred;
-    g_wps.cred_valid = true;
+    cred_table_upsert(cred);
 
     return 0;
 }
@@ -948,6 +1033,156 @@ int qcom_wps_start_pbc(const struct device *dev,
     return qcom_wps_scan(dev);
 }
 
+int qcom_wps_start_from_bssid(const struct device *dev,
+                               const uint8_t *bssid,
+                               const uint8_t *ssid, uint8_t ssid_len,
+                               uint16_t channel)
+{
+    if (!dev || !bssid || !ssid || ssid_len == 0 || ssid_len > 32)
+        return -EINVAL;
+
+    if (g_wps.supp_pbc_active) {
+        LOG_WRN("qcom_wps_start_from_bssid: WPS already in progress");
+        return -EBUSY;
+    }
+
+    g_wps.dev             = dev;
+    g_wps.supp_pbc_active = true;
+    g_wps.wps_success     = false;
+    g_wps.scanning        = false;  /* no scan phase */
+    g_wps.assoc_retries   = 0;
+
+    /* Fill target_ap so wps_rf_band_cb() reads the correct channel for M1
+     * RF Bands, and qcom_wps_assoc_event() has bssid to verify against. */
+    memset(&g_wps.target_ap, 0, sizeof(g_wps.target_ap));
+    memcpy(g_wps.target_ap.bssid, bssid, 6);
+    memcpy(g_wps.target_ap.ssid,  ssid,  ssid_len);
+    g_wps.target_ap.ssid_len = ssid_len;
+    g_wps.target_ap.channel  = channel;
+    g_wps.target_found       = true;
+
+    qcom_hostap_lock();
+    eloop_register_timeout(WPS_PBC_WALK_TIME, 0, pbc_walk_timer_fn, NULL, NULL);
+    qcom_hostap_unlock();
+
+    return qcom_wps_connect(dev, &g_wps.target_ap);
+}
+
+static struct p2p_cred_entry *cred_table_find(const uint8_t *peer_addr,
+                                              const uint8_t *ssid,
+                                              uint8_t ssid_len)
+{
+    if (!g_wps.cred_table || g_wps.cred_count == 0)
+        return NULL;
+
+    if (peer_addr && !is_zero_ether_addr(peer_addr)) {
+        for (uint8_t i = 0; i < P2P_CRED_MAX; i++) {
+            if (g_wps.cred_table[i].valid &&
+                memcmp(g_wps.cred_table[i].peer_addr, peer_addr, 6) == 0)
+                return &g_wps.cred_table[i];
+        }
+    }
+
+    if (ssid && ssid_len > 0) {
+        for (uint8_t i = 0; i < P2P_CRED_MAX; i++) {
+            if (g_wps.cred_table[i].valid &&
+                g_wps.cred_table[i].cred.ssid_len == ssid_len &&
+                memcmp(g_wps.cred_table[i].cred.ssid, ssid, ssid_len) == 0)
+                return &g_wps.cred_table[i];
+        }
+    }
+
+    return NULL;
+}
+
+bool qcom_wps_has_persistent_cred(const uint8_t *peer_addr,
+                                   const uint8_t *ssid, uint8_t ssid_len)
+{
+    return cred_table_find(peer_addr, ssid, ssid_len) != NULL;
+}
+
+int qcom_wps_connect_persistent(const uint8_t *bssid,
+                                const uint8_t *ssid, uint8_t ssid_len,
+                                uint16_t channel)
+{
+    if (!ssid || ssid_len == 0)
+        return -EINVAL;
+
+    struct p2p_cred_entry *entry = cred_table_find(bssid, ssid, ssid_len);
+    if (!entry)
+        return -ENOENT;
+
+    if (!bssid)
+        return 0;
+
+    entry->last_used = k_uptime_get_32();
+
+    struct wps_credential *cred = &entry->cred;
+    uint8_t device_id = g_wps.device_id;
+
+    qapi_WLAN_Disconnect(device_id);
+
+    uint16_t wmi_auth;
+    if (cred->auth_type & WPS_AUTH_WPA2PSK)
+        wmi_auth = 0x10;
+    else if (cred->auth_type & WPS_AUTH_WPAPSK)
+        wmi_auth = 0x08;
+    else
+        wmi_auth = 0x01;
+
+    uint8_t wmi_cipher;
+    if (cred->encr_type & WPS_ENCR_AES)
+        wmi_cipher = 0x08;
+    else if (cred->encr_type & WPS_ENCR_TKIP)
+        wmi_cipher = 0x04;
+    else
+        wmi_cipher = 0x01;
+
+    uint8_t psk_buf[64] = {0};
+    const uint8_t *psk_ptr = cred->key;
+    size_t psk_len = cred->key_len;
+    if (cred->key_len == 64 &&
+        hexstr2bin((const char *)cred->key, psk_buf, 32) == 0) {
+        psk_ptr = psk_buf;
+        psk_len = sizeof(psk_buf);
+    }
+
+    if (wmi_auth != 0x01 && psk_len > 0) {
+        wlan_set_psk_params(device_id,
+                            cred->ssid, cred->ssid_len,
+                            wmi_auth, wmi_cipher,
+                            psk_ptr, psk_len);
+    } else {
+        qapi_WLAN_Set_Param(device_id,
+                            __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                            __QAPI_WLAN_PARAM_GROUP_WIRELESS_SSID,
+                            (void *)cred->ssid, cred->ssid_len, false);
+        wlan_clear_privacy(device_id);
+    }
+
+    if (channel > 0) {
+        uint16_t freq = (channel <= 14) ? (2407 + channel * 5) :
+                        (5000 + channel * 5);
+        qapi_WLAN_Set_Param(device_id,
+                            __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                            __QAPI_WLAN_PARAM_GROUP_WIRELESS_CHANNEL,
+                            &freq, sizeof(freq), false);
+    }
+
+    qapi_WLAN_Set_Param(device_id,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_BSSID,
+                        (void *)bssid, 6, false);
+
+    qapi_WLAN_Commit(device_id);
+
+    LOG_WRN("qcom_wps_connect_persistent: SSID=%.*s ch=%u auth=0x%x peer=%02x:%02x:%02x:%02x:%02x:%02x",
+            (int)cred->ssid_len, (const char *)cred->ssid, channel, wmi_auth,
+            entry->peer_addr[0], entry->peer_addr[1], entry->peer_addr[2],
+            entry->peer_addr[3], entry->peer_addr[4], entry->peer_addr[5]);
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* WPS Probe Request IE inject / remove                                 */
 /* ------------------------------------------------------------------ */
@@ -971,6 +1206,8 @@ static int qcom_wps_set_ie(uint8_t device_id, uint8_t frame_type, bool inject)
     ie.mgmt_Frame_Type = frame_type;
 
     struct wpabuf *ie_buf = NULL;
+    uint8_t combined[255];
+    uint8_t combined_len = 0;
 
     if (inject) {
         if (frame_type == WMI_FRAME_PROBE_REQ) {
@@ -985,8 +1222,28 @@ static int qcom_wps_set_ie(uint8_t device_id, uint8_t frame_type, bool inject)
             LOG_ERR("qcom_wps_set_ie: build IE failed (frame_type=%u)", frame_type);
             return -ENOMEM;
         }
-        ie.ie_Info = (uint8_t *)wpabuf_head(ie_buf);
-        ie.ie_Len  = (uint8_t)wpabuf_len(ie_buf);
+        combined_len = (uint8_t)wpabuf_len(ie_buf);
+        memcpy(combined, wpabuf_head(ie_buf), combined_len);
+
+#ifdef CONFIG_WIFI_QCOM_P2P
+        /* P2P GC association to a GO needs a P2P IE (Capability + Device
+         * Info) alongside the WSC IE. The GO's WPS registrar parses this
+         * to recover our P2P Device Address and match it against the
+         * Enrollee it authorized during GO Negotiation — without it the
+         * address is unknown and the GO treats us as an unexpected/second
+         * PBC session, replying M2D config_error=12 even though the real
+         * cause has nothing to do with an actual PBC overlap. */
+        if (frame_type != WMI_FRAME_PROBE_REQ) {
+            int p2p_ie_len = qcom_p2p_build_assoc_req_ie(
+                g_wps.ap_bssid, combined + combined_len,
+                sizeof(combined) - combined_len);
+            if (p2p_ie_len > 0) {
+                combined_len += (uint8_t)p2p_ie_len;
+            }
+        }
+#endif
+        ie.ie_Info = combined;
+        ie.ie_Len  = combined_len;
     } else {
         static const uint8_t clear_ie[] = { 0xdd };
         ie.ie_Info = (uint8_t *)clear_ie;
@@ -1047,6 +1304,12 @@ int qcom_wps_connect(const struct device *dev,
 
     /* WPS enrollee always uses the STA device */
     const uint8_t device_id = QCOM_DEV_STA_ID;
+
+    /* Force-clear stale firmware BSS state from a prior connection.
+     * Without this, firmware walks into the roaming/handoff path when
+     * the same BSSID reappears with a different SSID (Huawei rotates
+     * the group SSID on every new P2P session). */
+    qapi_WLAN_Disconnect(device_id);
 
     memcpy(g_wps.ap_bssid, result->bssid, 6);
     g_wps.device_id = device_id;
@@ -1294,9 +1557,14 @@ void qcom_wps_cancel(const struct device *dev)
     struct wps_context *saved_ctx = g_wps.wps_ctx;
     const struct device *saved_dev = g_wps.dev;
     uint8_t saved_device_id = g_wps.device_id;
+    struct p2p_cred_entry *saved_cred_table = g_wps.cred_table;
+    uint8_t saved_cred_count = g_wps.cred_count;
     memset(&g_wps, 0, sizeof(g_wps));
-    g_wps.wps_ctx = saved_ctx;
-    g_wps.dev     = saved_dev;
+    g_wps.wps_ctx    = saved_ctx;
+    g_wps.dev        = saved_dev;
+    g_wps.device_id  = saved_device_id;
+    g_wps.cred_table = saved_cred_table;
+    g_wps.cred_count = saved_cred_count;
 
     if (!succeeded) {
         qapi_WLAN_Disconnect(saved_device_id);
@@ -1305,11 +1573,28 @@ void qcom_wps_cancel(const struct device *dev)
     LOG_DBG("qcom_wps_cancel: WPS cancelled");
 }
 
+static void wps_assoc_retry_fn(void *eloop_ctx, void *timeout_ctx)
+{
+    (void)eloop_ctx; (void)timeout_ctx;
+    if (g_wps.supp_pbc_active && g_wps.target_found) {
+        qcom_wps_connect(g_wps.dev, &g_wps.target_ap);
+    }
+}
+
 void qcom_wps_assoc_event(const struct device *dev, const uint8_t *bssid,
                            bool success, uint8_t device_id)
 {
     if (!success) {
-        LOG_WRN("qcom_wps_assoc_event: assoc failed");
+        if (g_wps.assoc_retries < 4 && g_wps.target_found) {
+            g_wps.assoc_retries++;
+            LOG_WRN("qcom_wps_assoc_event: assoc failed, retry %u/4",
+                    g_wps.assoc_retries);
+            qcom_hostap_lock();
+            eloop_register_timeout(0, 200000, wps_assoc_retry_fn, NULL, NULL);
+            qcom_hostap_unlock();
+            return;
+        }
+        LOG_WRN("qcom_wps_assoc_event: assoc failed, giving up");
         qcom_wps_cancel(dev);
         return;
     }

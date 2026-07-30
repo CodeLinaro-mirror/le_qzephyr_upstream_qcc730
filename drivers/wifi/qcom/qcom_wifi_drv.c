@@ -2953,6 +2953,59 @@ static int qwifi_drv_wnm_set_bss_max_idle(const struct device *dev, uint32_t m_s
 	return (rc == QAPI_OK) ? 0 : -EIO;
 }
 
+#ifdef CONFIG_WIFI_QCOM_P2P
+static int qwifi_drv_p2p(const struct device *dev,
+                         struct qcom_wifi_p2p_params *p)
+{
+    (void)dev;
+    switch (p->subcmd) {
+    case P2P_SUBCMD_ENABLE:
+        return qcom_p2p_enable(&p->enable.cfg) ? -EIO : 0;
+    case P2P_SUBCMD_DISABLE:
+        return qcom_p2p_disable() ? -EIO : 0;
+    case P2P_SUBCMD_APPLY_CFG:
+        return qcom_p2p_apply_runtime_cfg(&p->apply_cfg.cfg);
+    case P2P_SUBCMD_APPLY_DISC_INT:
+        return qcom_p2p_apply_disc_int(p->apply_disc_int.min_disc_int,
+                                       p->apply_disc_int.max_disc_int,
+                                       p->apply_disc_int.max_disc_tu);
+    case P2P_SUBCMD_FIND:
+        return qcom_p2p_find_start(p->find.timeout) ? -EIO : 0;
+    case P2P_SUBCMD_STOP_FIND:
+        return qcom_p2p_find_stop() ? -EIO : 0;
+    case P2P_SUBCMD_LISTEN:
+        return qcom_p2p_listen_start(p->listen.timeout) < 0 ? -EIO : 0;
+    case P2P_SUBCMD_CANCEL:
+        return qcom_p2p_cancel() < 0 ? -EIO : 0;
+    case P2P_SUBCMD_FLUSH:
+        return qcom_p2p_flush() < 0 ? -EIO : 0;
+    case P2P_SUBCMD_PEERS_DUMP:
+        p->peers_dump.n = qcom_p2p_peers_dump(p->peers_dump.cb,
+                                              p->peers_dump.cb_ctx);
+        return p->peers_dump.n < 0 ? -EIO : 0;
+    case P2P_SUBCMD_PEER_DUMP:
+        return qcom_p2p_peer_dump(p->peer_dump.mac, p->peer_dump.cb,
+                                  p->peer_dump.cb_ctx) < 0 ? -EIO : 0;
+    case P2P_SUBCMD_CONNECT:
+        return qcom_p2p_connect(p->connect.mac, p->connect.wps_method,
+                                p->connect.go_intent, p->connect.persistent,
+                                p->connect.auth) < 0 ? -EIO : 0;
+    case P2P_SUBCMD_REJECT:
+        return qcom_p2p_reject(p->reject.mac) < 0 ? -EIO : 0;
+    case P2P_SUBCMD_AUTH_INVITE:
+        return qcom_p2p_authorize_invite(
+            p->auth_invite.clear ? NULL : p->auth_invite.mac) < 0 ? -EIO : 0;
+    case P2P_SUBCMD_INVITE:
+        return qcom_p2p_invite(p->invite.mac, p->invite.role, p->invite.bssid,
+                               p->invite.ssid, p->invite.ssid_len,
+                               p->invite.freq,
+                               p->invite.persistent_group) < 0 ? -EIO : 0;
+    default:
+        return -EINVAL;
+    }
+}
+#endif /* CONFIG_WIFI_QCOM_P2P */
+
 static int qwifi_drv_dev_init(const struct device *dev)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
@@ -3017,6 +3070,9 @@ static int qwifi_drv_dev_init(const struct device *dev)
         .wnm_status	= qwifi_drv_wnm_status,
         .wnm_set_enable       = qwifi_drv_wnm_set_enable,
         .wnm_set_bss_max_idle = qwifi_drv_wnm_set_bss_max_idle,
+#ifdef CONFIG_WIFI_QCOM_P2P
+        .p2p                = qwifi_drv_p2p,
+#endif
     };
     dev_data->qcom_wifi_cmd = qwifi_ops;
 
