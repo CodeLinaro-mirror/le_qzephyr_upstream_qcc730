@@ -26,13 +26,39 @@
 #include "wps/wps_i.h"
 #include "wps/wps_defs.h"
 #include "wps/wps_attr_parse.h"
-#include "eap_common/eap_wsc_common.h"
+#include "eap_common/eap_wsc_common.h"  /* WSC_FLAGS_MF, WSC_FLAGS_LF, EAP_VENDOR_TYPE_WSC */
+#include "eap_common/eap_defs.h"        /* EAP_CODE_*, EAP_TYPE_*, EAP_VENDOR_WFA */
+#include "common/eapol_common.h"        /* EAPOL_VERSION, IEEE802_1X_TYPE_*, ieee802_1x_hdr */
 #include "utils/eloop.h"
-#include "utils/common.h"   /* WPA_GET_BE16, WPA_PUT_BE16, WPA_PUT_BE32 */
+#include "utils/common.h"   /* WPA_GET_BE16, WPA_PUT_BE16, WPA_PUT_BE32, ETH_P_EAPOL */
 #include "l2_packet/l2_packet.h"
 #include "crypto/dh_group5.h"
 
 LOG_MODULE_REGISTER(qcom_wps_glue, CONFIG_WIFI_LOG_LEVEL);
+
+/* EAP/EAPOL protocol constants — sourced from hostap headers:
+ *   EAPOL_VERSION                : eapol_common.h
+ *   IEEE802_1X_TYPE_EAP_PACKET   : eapol_common.h  (== 0x00)
+ *   IEEE802_1X_TYPE_EAPOL_START  : eapol_common.h  (== 0x01)
+ *   sizeof(struct ieee802_1x_hdr): eapol_common.h  (== 4)
+ *   sizeof(struct eap_hdr)       : eap_defs.h      (== 4)
+ *   WSC_FLAGS_MF / WSC_FLAGS_LF  : eap_wsc_common.h
+ *   EAP_VENDOR_TYPE_WSC          : eap_wsc_common.h
+ */
+#define EAPOL_HEADER_LEN        ((int)sizeof(struct ieee802_1x_hdr))
+#define EAP_HEADER_LEN          ((int)sizeof(struct eap_hdr))
+
+/* EAP-WSC (Wi-Fi Simple Configuration) frame layout */
+#define WSC_OP_CODE_IDENTITY    0xFF    /* local marker: EAP-Response/Identity */
+
+/* Offsets within the EAP payload for Expanded type fields */
+#define WSC_EAP_TYPE_OFFSET     (EAP_HEADER_LEN)                        /* 4  */
+#define WSC_EAP_OUI_OFFSET      (EAP_HEADER_LEN + 1)                    /* 5  */
+#define WSC_EAP_VTYPE_OFFSET    (EAP_HEADER_LEN + 1 + 3)                /* 8  */
+#define WSC_EAP_OPCODE_OFFSET   (EAP_HEADER_LEN + 1 + 3 + 4)            /* 12 */
+#define WSC_EAP_FLAGS_OFFSET    (EAP_HEADER_LEN + 1 + 3 + 4 + 1)        /* 13 */
+#define WSC_EAP_BASE_HDR_LEN    (EAP_HEADER_LEN + 1 + 3 + 4 + 1 + 1)   /* 14 */
+#define WSC_EAP_LEN_FIELD_LEN   2       /* extra bytes when FLAGS_LEN_PRESENT */
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -48,9 +74,9 @@ extern void nt_dpm_set_eap_enterprise_hook(void (*fn)(const uint8_t *src_addr,
  * sec_mode: NONE=0, WEP40=1, WEP104=2, AES=3, TKIP=4
  */
 typedef struct {
-    uint8_t bssid[6];
+    uint8_t bssid[WIFI_MAC_ADDR_LEN];
     uint8_t IsAP;
-    uint8_t sta_mac_address[6];
+    uint8_t sta_mac_address[WIFI_MAC_ADDR_LEN];
     uint8_t sta_sig;
     uint8_t dpu_sig;
     uint8_t qos_sta;
@@ -203,11 +229,11 @@ static wsc_ie_info_t parse_wsc_ie(const uint8_t *payload, uint8_t payload_len)
  *  pbc_uuid[] / counts        UUID dedup (wpa_supplicant uses wps_ap_info array)
  */
 
-#define P2P_CRED_MAX 4
+#define WPS_CRED_TABLE_SIZE 4
 
-struct p2p_cred_entry {
+struct wps_cred_entry {
     bool                  valid;
-    uint8_t               peer_addr[6];
+    uint8_t               peer_addr[WIFI_MAC_ADDR_LEN];
     uint32_t              last_used;
     struct wps_credential cred;
 };
@@ -242,15 +268,16 @@ static struct {
      * Connected AP BSSID — set in qcom_wps_connect(), used in
      * qcom_wps_assoc_event() to verify the assoc event is for our target.
      */
-    uint8_t  ap_bssid[6];
+    uint8_t  ap_bssid[WIFI_MAC_ADDR_LEN];
 
     /* EAP TX path — ENC_NONE DPM STA entry for EAPOL frame routing */
     bool     eap_sta_added;
     uint8_t  eap_staid;
     struct l2_packet_data *l2;  /* persistent l2 handle for EAP-WSC session */
+    bool     ie_injected[WMI_NUM_MGMT_FRAME];
 
     /* Persistent credential table — multiple P2P groups indexed by peer addr */
-    struct p2p_cred_entry  *cred_table;
+    struct wps_cred_entry  *cred_table;
     uint8_t                 cred_count;
 
     /* Assoc retry — for P2P GO that hasn't started beaconing yet */
@@ -432,38 +459,40 @@ static int wps_eap_tx(const uint8_t *bssid, uint8_t eap_id,
      *   EAPOL header + EAP header + Identity string
      */
     size_t eap_payload_len = payload ? wpabuf_len(payload) : 0;
-    bool is_identity = (op_code == 0xFF); /* special marker for Identity */
+    bool is_identity = (op_code == WSC_OP_CODE_IDENTITY);
 
     size_t eap_data_len;
     if (is_identity) {
-        eap_data_len = 4 + 1 + WSC_ID_ENROLLEE_LEN; /* EAP header + Type + identity */
+        eap_data_len = EAP_HEADER_LEN + 1 + WSC_ID_ENROLLEE_LEN;
     } else {
-        eap_data_len = 4 + 8 + 2 + eap_payload_len; /* EAP hdr + expanded + op+flags + data */
+        eap_data_len = EAP_HEADER_LEN + 8 + 2 + eap_payload_len;
     }
-    size_t total = 4 + eap_data_len; /* EAPOL header + EAP data */
+    size_t total = EAPOL_HEADER_LEN + eap_data_len;
 
     u8 *buf = os_zalloc(total);
     if (!buf)
         return -ENOMEM;
 
     /* EAPOL header */
-    buf[0] = 0x02;  /* version */
-    buf[1] = 0x00;  /* type = EAP */
+    buf[0] = EAPOL_VERSION;
+    buf[1] = IEEE802_1X_TYPE_EAP_PACKET;
     WPA_PUT_BE16(buf + 2, (u16)eap_data_len);
 
     /* EAP header */
-    buf[4] = 0x02;  /* Code = Response */
+    buf[4] = (u8)EAP_CODE_RESPONSE;
     buf[5] = eap_id;
     WPA_PUT_BE16(buf + 6, (u16)eap_data_len);
 
     if (is_identity) {
-        buf[8] = 0x01; /* Type = Identity */
+        buf[8] = (u8)EAP_TYPE_IDENTITY;
         os_memcpy(buf + 9, WSC_ID_ENROLLEE, WSC_ID_ENROLLEE_LEN);
     } else {
         /* Expanded type: Vendor-Id=00:37:2a, Vendor-Type=00000001 */
-        buf[8]  = 0xfe; /* Type = Expanded */
-        buf[9]  = 0x00; buf[10] = 0x37; buf[11] = 0x2a; /* WFA OUI */
-        WPA_PUT_BE32(buf + 12, 0x00000001); /* WFA Vendor-Type */
+        buf[8]  = (u8)EAP_TYPE_EXPANDED;
+        buf[9]  = (EAP_VENDOR_WFA >> 16) & 0xff;
+        buf[10] = (EAP_VENDOR_WFA >>  8) & 0xff;
+        buf[11] = (EAP_VENDOR_WFA      ) & 0xff;
+        WPA_PUT_BE32(buf + 12, EAP_VENDOR_TYPE_WSC);
         buf[16] = (u8)op_code;
         buf[17] = 0x00; /* Flags */
         if (payload && eap_payload_len > 0)
@@ -495,7 +524,7 @@ static int wps_eap_tx(const uint8_t *bssid, uint8_t eap_id,
  */
 struct wps_eap_rx_msg {
     struct qcom_he_msg  base;           /* MUST be first member */
-    uint8_t             src_addr[6];
+    uint8_t             src_addr[WIFI_MAC_ADDR_LEN];
     uint16_t            eapol_len;
     uint8_t             eapol_data[];   /* flexible array, allocated inline */
 };
@@ -517,7 +546,7 @@ static void wps_eap_rx_handle(struct qcom_he_msg *base)
         goto out;
     }
 
-    if (eapol_len < 4) {
+    if (eapol_len < EAPOL_HEADER_LEN) {
         LOG_WRN("wps_eap_rx: frame too short (%u)", eapol_len);
         goto out;
     }
@@ -525,40 +554,40 @@ static void wps_eap_rx_handle(struct qcom_he_msg *base)
     uint8_t eapol_type = eapol_data[1];
     uint16_t eap_len   = WPA_GET_BE16(eapol_data + 2);
 
-    if (eapol_type != 0x00) {
+    if (eapol_type != IEEE802_1X_TYPE_EAP_PACKET) {
         LOG_DBG("wps_eap_rx: ignoring EAPOL type=0x%02x", eapol_type);
         goto out;
     }
 
-    if (eapol_len < 4 + eap_len || eap_len < 4) {
+    if (eapol_len < EAPOL_HEADER_LEN + eap_len || eap_len < EAP_HEADER_LEN) {
         LOG_WRN("wps_eap_rx: invalid EAP length eap_len=%u eapol_len=%u",
                 eap_len, eapol_len);
         goto out;
     }
 
-    const uint8_t *eap = eapol_data + 4;
+    const uint8_t *eap = eapol_data + EAPOL_HEADER_LEN;
     uint8_t eap_code = eap[0];
     uint8_t eap_id   = eap[1];
-    uint8_t eap_type = (eap_len > 4) ? eap[4] : 0;
+    uint8_t eap_type = (eap_len > EAP_HEADER_LEN) ? eap[EAP_HEADER_LEN] : 0;
 
     LOG_DBG("wps_eap_rx: code=%u id=%u type=0x%02x", eap_code, eap_id, eap_type);
 
-    if (eap_code == 0x01 && eap_type == 0x01) {
+    if (eap_code == EAP_CODE_REQUEST && eap_type == EAP_TYPE_IDENTITY) {
         LOG_DBG("wps_eap_rx: EAP-Request/Identity — sending Response/Identity");
-        wps_eap_tx(src_addr, eap_id, 0xFF, NULL);
+        wps_eap_tx(src_addr, eap_id, WSC_OP_CODE_IDENTITY, NULL);
         goto out;
     }
 
-    if (eap_code == 0x01 && eap_type == 0xfe) {
-        if (eap_len < 4 + 1 + 3 + 4 + 2) {
+    if (eap_code == EAP_CODE_REQUEST && eap_type == EAP_TYPE_EXPANDED) {
+        if (eap_len < WSC_EAP_BASE_HDR_LEN) {
             LOG_WRN("wps_eap_rx: EAP-WSC too short");
             goto out;
         }
-        uint8_t op_code = eap[4 + 1 + 3 + 4];
-        uint8_t flags   = eap[4 + 1 + 3 + 4 + 1];
+        uint8_t op_code = eap[WSC_EAP_OPCODE_OFFSET];
+        uint8_t flags   = eap[WSC_EAP_FLAGS_OFFSET];
 
-        size_t hdr_size = 4 + 1 + 3 + 4 + 1 + 1;
-        if (flags & 0x01) hdr_size += 2;
+        size_t hdr_size = WSC_EAP_BASE_HDR_LEN;
+        if (flags & WSC_FLAGS_LF) hdr_size += WSC_EAP_LEN_FIELD_LEN;
 
         const uint8_t *wsc_data     = eap + hdr_size;
         size_t         wsc_data_len = (eap_len > hdr_size) ? eap_len - hdr_size : 0;
@@ -612,122 +641,44 @@ static void wps_eap_rx_handle(struct qcom_he_msg *base)
                     g_wps.wps_data->state == WPS_FINISHED &&
                     g_wps.cred_count > 0) {
 
-                    struct p2p_cred_entry *latest = NULL;
-                    for (uint8_t ci = 0; ci < P2P_CRED_MAX; ci++) {
+                    struct wps_cred_entry *latest = NULL;
+                    for (uint8_t ci = 0; ci < WPS_CRED_TABLE_SIZE; ci++) {
                         if (g_wps.cred_table[ci].valid &&
                             (!latest || g_wps.cred_table[ci].last_used > latest->last_used))
                             latest = &g_wps.cred_table[ci];
                     }
                     if (!latest) goto out;
 
-                    struct wps_credential cred = latest->cred;
-                    uint8_t         device_id  = g_wps.device_id;
-                    uint16_t        ap_channel = g_wps.target_ap.channel;
+                    struct wps_credential cred       = latest->cred;
+                    uint8_t               device_id  = g_wps.device_id;
+                    uint16_t              ap_channel = g_wps.target_ap.channel;
+                    uint8_t               ap_bssid[WIFI_MAC_ADDR_LEN];
+                    memcpy(ap_bssid, g_wps.ap_bssid, WIFI_MAC_ADDR_LEN);
 
                     qcom_wps_cancel(g_wps.dev);
 
-                    {
-                        uint16_t wmi_auth;
-                        if (cred.auth_type & WPS_AUTH_WPA2PSK)
-                            wmi_auth = 0x10;
-                        else if (cred.auth_type & WPS_AUTH_WPAPSK)
-                            wmi_auth = 0x08;
-                        else
-                            wmi_auth = 0x01;
+                    LOG_INF("wps_eap_rx: PSK reconnect SSID=%.*s "
+                            "auth=0x%x key_len=%zu ch=%u",
+                            (int)cred.ssid_len, cred.ssid,
+                            cred.auth_type, cred.key_len, ap_channel);
 
-                        uint8_t wmi_cipher;
-                        if (cred.encr_type & WPS_ENCR_AES)
-                            wmi_cipher = 0x08;
-                        else if (cred.encr_type & WPS_ENCR_TKIP)
-                            wmi_cipher = 0x04;
-                        else
-                            wmi_cipher = 0x01;
+                    enum wifi_security_type sec =
+                        (cred.auth_type & WPS_AUTH_WPA2PSK) ?
+                            WIFI_SECURITY_TYPE_WPA_AUTO_PERSONAL :
+                        (cred.auth_type & WPS_AUTH_WPAPSK) ?
+                            WIFI_SECURITY_TYPE_WPA_PSK :
+                            WIFI_SECURITY_TYPE_NONE;
+                    qwifi_wps_sync_connect_params(
+                        g_wps.dev,
+                        cred.ssid, cred.ssid_len, sec,
+                        cred.key_len > 0 ? cred.key : NULL,
+                        (uint8_t)cred.key_len);
 
-                        LOG_INF("wps_eap_rx: reconnecting SSID=%.*s "
-                                "wmi_auth=0x%x cipher=0x%x key_len=%zu",
-                                (int)cred.ssid_len, cred.ssid,
-                                wmi_auth, wmi_cipher, cred.key_len);
-
-                        qapi_WLAN_Disconnect(device_id);
-
-                        /* WPS credential key: per the WPS spec, when a GO/AP
-                         * hands out a *random* PSK (not a user-typed
-                         * passphrase) it encodes the raw 256-bit PMK as 64
-                         * hex ASCII characters (see upstream
-                         * wps_supplicant.c: cred->key_len == 2*PMK_LEN(32)
-                         * -> hexstr2bin(cred->key, ssid->psk, PMK_LEN)).
-                         * cred.key_len==64 here means 64 *ASCII hex chars*,
-                         * not 64 raw PMK bytes.
-                         *
-                         * The fw's wmi_set_passphrase_cmd() has its own
-                         * special case for passphrase_len==WMI_PASSPHRASE_LEN
-                         * (64): it treats the first 32 bytes of the buffer
-                         * as the already-derived binary PMK and memcpy's them
-                         * straight into dev->pmk, skipping PBKDF2 entirely.
-                         * If we forward the 64 ASCII hex chars unchanged,
-                         * fw copies the ASCII bytes (not the decoded value)
-                         * as the PMK, so PTK/MIC come out wrong and the GO's
-                         * M1 retransmits forever. Decode the hex string into
-                         * 32 raw bytes first, then hand fw a 64-byte buffer
-                         * whose first half is the real PMK — matching what
-                         * wmi_set_passphrase_cmd() actually copies. */
-                        uint8_t psk_buf[64] = {0};
-                        const uint8_t *psk_ptr = cred.key;
-                        size_t         psk_len = cred.key_len;
-                        if (cred.key_len == 64 &&
-                            hexstr2bin((const char *)cred.key, psk_buf, 32) == 0) {
-                            psk_ptr = psk_buf;
-                            psk_len = sizeof(psk_buf);
-                        }
-
-                        if (wmi_auth != 0x01 && psk_len > 0) {
-                            wlan_set_psk_params(device_id,
-                                                cred.ssid, cred.ssid_len,
-                                                wmi_auth, wmi_cipher,
-                                                psk_ptr, psk_len);
-                        } else {
-                            qapi_WLAN_Set_Param(device_id,
-                                                __QAPI_WLAN_PARAM_GROUP_WIRELESS,
-                                                __QAPI_WLAN_PARAM_GROUP_WIRELESS_SSID,
-                                                (void *)cred.ssid, cred.ssid_len, false);
-                            wlan_clear_privacy(device_id);
-                        }
-
-                        /* Clear WPS IE from Assoc Req before PSK reconnect */
-                        qcom_wps_set_ie(device_id, WMI_FRAME_ASSOC_REQ, false);
-
-                        /* Sync cfg_connect so "wifi status" and net_mgmt
-                         * events reflect the correct SSID, security and PSK
-                         * when station_connect_event fires for the PSK
-                         * reconnect. */
-                        enum wifi_security_type sec =
-                            (cred.auth_type & WPS_AUTH_WPA2PSK) ?
-                                WIFI_SECURITY_TYPE_PSK :
-                            (cred.auth_type & WPS_AUTH_WPAPSK) ?
-                                WIFI_SECURITY_TYPE_WPA_PSK :
-                                WIFI_SECURITY_TYPE_NONE;
-                        qwifi_wps_sync_connect_params(
-                            g_wps.dev,
-                            cred.ssid, cred.ssid_len,
-                            sec,
-                            cred.key_len > 0 ? cred.key : NULL,
-                            (uint8_t)cred.key_len);
-
-                        /* Set channel hint from WPS scan result so the PSK
-                         * reconnect targets the known AP channel directly.
-                         * Use WIRELESS_CHANNEL (pdc channel_hint path) which
-                         * supports both 2.4 GHz and 5 GHz via firmware-side
-                         * dc_get_chidx_from_freq(). */
-                        if (ap_channel > 0) {
-                            uint32_t ch_param[2] = { ap_channel, FALSE };
-                            qapi_WLAN_Set_Param(device_id,
-                                __QAPI_WLAN_PARAM_GROUP_WIRELESS,
-                                __QAPI_WLAN_PARAM_GROUP_WIRELESS_CHANNEL,
-                                ch_param, sizeof(ch_param), false);
-                        }
-
-                        qapi_WLAN_Commit(device_id);
-                    }
+                    /* cancel sets wps_success=true so does not auto-disconnect */
+                    qapi_WLAN_Disconnect(device_id);
+                    qcom_wps_connect_ap(device_id, ap_bssid,
+                                        cred.ssid, cred.ssid_len,
+                                        ap_channel, &cred);
                     goto out;
                 }
             } else {
@@ -737,7 +688,7 @@ static void wps_eap_rx_handle(struct qcom_he_msg *base)
         goto out;
     }
 
-    if (eap_code == 0x04) {
+    if (eap_code == EAP_CODE_FAILURE) {
         LOG_DBG("wps_eap_rx: EAP-Failure received (normal WPS completion)");
         goto out;
     }
@@ -762,7 +713,7 @@ static void wps_eap_rx(const uint8_t *src_addr,
         LOG_ERR("wps_eap_rx: out of memory (len=%u)", eapol_len);
         return;
     }
-    os_memcpy(m->src_addr, src_addr, 6);
+    os_memcpy(m->src_addr, src_addr, WIFI_MAC_ADDR_LEN);
     m->eapol_len = eapol_len;
     os_memcpy(m->eapol_data, eapol_data, eapol_len);
     m->base.handle = wps_eap_rx_handle;
@@ -780,29 +731,29 @@ static void wps_eap_rx(const uint8_t *src_addr,
 static void cred_table_upsert(const struct wps_credential *cred)
 {
     if (!g_wps.cred_table) {
-        g_wps.cred_table = k_malloc(sizeof(struct p2p_cred_entry) * P2P_CRED_MAX);
+        g_wps.cred_table = k_malloc(sizeof(struct wps_cred_entry) * WPS_CRED_TABLE_SIZE);
         if (!g_wps.cred_table) {
             LOG_ERR("cred_table_upsert: OOM");
             return;
         }
         memset(g_wps.cred_table, 0,
-               sizeof(struct p2p_cred_entry) * P2P_CRED_MAX);
+               sizeof(struct wps_cred_entry) * WPS_CRED_TABLE_SIZE);
         g_wps.cred_count = 0;
     }
 
     uint32_t now = k_uptime_get_32();
-    struct p2p_cred_entry *slot = NULL;
+    struct wps_cred_entry *slot = NULL;
 
-    for (uint8_t i = 0; i < P2P_CRED_MAX; i++) {
+    for (uint8_t i = 0; i < WPS_CRED_TABLE_SIZE; i++) {
         if (g_wps.cred_table[i].valid &&
-            memcmp(g_wps.cred_table[i].peer_addr, cred->mac_addr, 6) == 0) {
+            memcmp(g_wps.cred_table[i].peer_addr, cred->mac_addr, WIFI_MAC_ADDR_LEN) == 0) {
             slot = &g_wps.cred_table[i];
             break;
         }
     }
 
     if (!slot) {
-        for (uint8_t i = 0; i < P2P_CRED_MAX; i++) {
+        for (uint8_t i = 0; i < WPS_CRED_TABLE_SIZE; i++) {
             if (!g_wps.cred_table[i].valid) {
                 slot = &g_wps.cred_table[i];
                 break;
@@ -812,19 +763,19 @@ static void cred_table_upsert(const struct wps_credential *cred)
 
     if (!slot) {
         slot = &g_wps.cred_table[0];
-        for (uint8_t i = 1; i < P2P_CRED_MAX; i++) {
+        for (uint8_t i = 1; i < WPS_CRED_TABLE_SIZE; i++) {
             if (g_wps.cred_table[i].last_used < slot->last_used)
                 slot = &g_wps.cred_table[i];
         }
     }
 
     slot->valid = true;
-    memcpy(slot->peer_addr, cred->mac_addr, 6);
+    memcpy(slot->peer_addr, cred->mac_addr, WIFI_MAC_ADDR_LEN);
     slot->last_used = now;
     slot->cred = *cred;
 
     uint8_t count = 0;
-    for (uint8_t i = 0; i < P2P_CRED_MAX; i++) {
+    for (uint8_t i = 0; i < WPS_CRED_TABLE_SIZE; i++) {
         if (g_wps.cred_table[i].valid)
             count++;
     }
@@ -928,7 +879,7 @@ void qwifi_wps_scan_event(uint32_t event_id, void *payload, uint32_t payload_len
 
         /* Store first PBC-active AP as connect target */
         if (!g_wps.target_found) {
-            memcpy(g_wps.target_ap.bssid, ap->bssid, 6);
+            memcpy(g_wps.target_ap.bssid, ap->bssid, WIFI_MAC_ADDR_LEN);
             g_wps.target_ap.ssid_len = ap->ssid_len;
             memcpy(g_wps.target_ap.ssid, ap->ssid, ap->ssid_len);
             g_wps.target_ap.channel  = ap->channel;
@@ -1055,7 +1006,7 @@ int qcom_wps_start_from_bssid(const struct device *dev,
     /* Fill target_ap so wps_rf_band_cb() reads the correct channel for M1
      * RF Bands, and qcom_wps_assoc_event() has bssid to verify against. */
     memset(&g_wps.target_ap, 0, sizeof(g_wps.target_ap));
-    memcpy(g_wps.target_ap.bssid, bssid, 6);
+    memcpy(g_wps.target_ap.bssid, bssid, WIFI_MAC_ADDR_LEN);
     memcpy(g_wps.target_ap.ssid,  ssid,  ssid_len);
     g_wps.target_ap.ssid_len = ssid_len;
     g_wps.target_ap.channel  = channel;
@@ -1068,7 +1019,7 @@ int qcom_wps_start_from_bssid(const struct device *dev,
     return qcom_wps_connect(dev, &g_wps.target_ap);
 }
 
-static struct p2p_cred_entry *cred_table_find(const uint8_t *peer_addr,
+static struct wps_cred_entry *cred_table_find(const uint8_t *peer_addr,
                                               const uint8_t *ssid,
                                               uint8_t ssid_len)
 {
@@ -1076,15 +1027,15 @@ static struct p2p_cred_entry *cred_table_find(const uint8_t *peer_addr,
         return NULL;
 
     if (peer_addr && !is_zero_ether_addr(peer_addr)) {
-        for (uint8_t i = 0; i < P2P_CRED_MAX; i++) {
+        for (uint8_t i = 0; i < WPS_CRED_TABLE_SIZE; i++) {
             if (g_wps.cred_table[i].valid &&
-                memcmp(g_wps.cred_table[i].peer_addr, peer_addr, 6) == 0)
+                memcmp(g_wps.cred_table[i].peer_addr, peer_addr, WIFI_MAC_ADDR_LEN) == 0)
                 return &g_wps.cred_table[i];
         }
     }
 
     if (ssid && ssid_len > 0) {
-        for (uint8_t i = 0; i < P2P_CRED_MAX; i++) {
+        for (uint8_t i = 0; i < WPS_CRED_TABLE_SIZE; i++) {
             if (g_wps.cred_table[i].valid &&
                 g_wps.cred_table[i].cred.ssid_len == ssid_len &&
                 memcmp(g_wps.cred_table[i].cred.ssid, ssid, ssid_len) == 0)
@@ -1101,86 +1052,117 @@ bool qcom_wps_has_persistent_cred(const uint8_t *peer_addr,
     return cred_table_find(peer_addr, ssid, ssid_len) != NULL;
 }
 
-int qcom_wps_connect_persistent(const uint8_t *bssid,
-                                const uint8_t *ssid, uint8_t ssid_len,
-                                uint16_t channel)
+int qcom_wps_connect_ap(uint8_t device_id, const uint8_t *bssid,
+                        const uint8_t *ssid, uint8_t ssid_len,
+                        uint16_t channel, struct wps_credential *cred)
 {
-    if (!ssid || ssid_len == 0)
+    /* cred==NULL: connect open/NONE (no security) */
+    if (!ssid || ssid_len == 0 || !bssid)
         return -EINVAL;
 
-    struct p2p_cred_entry *entry = cred_table_find(bssid, ssid, ssid_len);
-    if (!entry)
-        return -ENOENT;
+    qapi_WLAN_Auth_Mode_e  qapi_auth   = QAPI_WLAN_AUTH_NONE_E;
+    qapi_WLAN_Crypt_Type_e qapi_cipher = QAPI_WLAN_CRYPT_NONE_E;
+    const uint8_t         *psk         = NULL;
+    uint8_t                psk_len     = 0;
+    uint8_t                psk_bin[WIFI_PSK_MAX_LEN] = {0};
 
-    if (!bssid)
-        return 0;
+    if (cred) {
+        if (cred->auth_type & WPS_AUTH_WPA2PSK)
+            qapi_auth = QAPI_WLAN_AUTH_WPA_WPA2_SAE_MIXED_E;
+        else if (cred->auth_type & WPS_AUTH_WPAPSK)
+            qapi_auth = QAPI_WLAN_AUTH_WPA_PSK_E;
+        else
+            qapi_auth = QAPI_WLAN_AUTH_NONE_E;
 
-    entry->last_used = k_uptime_get_32();
+        if (cred->encr_type & WPS_ENCR_AES)
+            qapi_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
+        else if (cred->encr_type & WPS_ENCR_TKIP)
+            qapi_cipher = QAPI_WLAN_CRYPT_TKIP_CRYPT_E;
+        else
+            qapi_cipher = QAPI_WLAN_CRYPT_NONE_E;
 
-    struct wps_credential *cred = &entry->cred;
-    uint8_t device_id = g_wps.device_id;
+        psk     = cred->key;
+        psk_len = (uint8_t)cred->key_len;
 
-    qapi_WLAN_Disconnect(device_id);
-
-    uint16_t wmi_auth;
-    if (cred->auth_type & WPS_AUTH_WPA2PSK)
-        wmi_auth = 0x10;
-    else if (cred->auth_type & WPS_AUTH_WPAPSK)
-        wmi_auth = 0x08;
-    else
-        wmi_auth = 0x01;
-
-    uint8_t wmi_cipher;
-    if (cred->encr_type & WPS_ENCR_AES)
-        wmi_cipher = 0x08;
-    else if (cred->encr_type & WPS_ENCR_TKIP)
-        wmi_cipher = 0x04;
-    else
-        wmi_cipher = 0x01;
-
-    uint8_t psk_buf[64] = {0};
-    const uint8_t *psk_ptr = cred->key;
-    size_t psk_len = cred->key_len;
-    if (cred->key_len == 64 &&
-        hexstr2bin((const char *)cred->key, psk_buf, 32) == 0) {
-        psk_ptr = psk_buf;
-        psk_len = sizeof(psk_buf);
+        if (cred->key_len == WIFI_PSK_MAX_LEN) {
+            if (hexstr2bin((const char *)cred->key,
+                           psk_bin, WIFI_PSK_MAX_LEN / 2) == 0) {
+                psk = psk_bin;
+                /* psk_len stays WIFI_PSK_MAX_LEN — firmware uses this to
+                 * detect PMK-raw path in wmi_set_passphrase_cmd() */
+            } else {
+                LOG_ERR("qcom_wps_connect_ap: invalid 64-char PSK");
+                return -EINVAL;
+            }
+        }
     }
 
-    if (wmi_auth != 0x01 && psk_len > 0) {
-        wlan_set_psk_params(device_id,
-                            cred->ssid, cred->ssid_len,
-                            wmi_auth, wmi_cipher,
-                            psk_ptr, psk_len);
+    if (qapi_auth != QAPI_WLAN_AUTH_NONE_E && psk_len > 0) {
+        qapi_WLAN_Set_Param(device_id,
+                            __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
+                            __QAPI_WLAN_PARAM_GROUP_SECURITY_AUTH_MODE,
+                            &qapi_auth, sizeof(qapi_auth), false);
+        qapi_WLAN_Set_Param(device_id,
+                            __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
+                            __QAPI_WLAN_PARAM_GROUP_SECURITY_ENCRYPTION_TYPE,
+                            &qapi_cipher, sizeof(qapi_cipher), false);
+        qapi_WLAN_Set_Param(device_id,
+                            __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
+                            __QAPI_WLAN_PARAM_GROUP_SECURITY_PASSPHRASE,
+                            psk, psk_len, false);
     } else {
-        qapi_WLAN_Set_Param(device_id,
-                            __QAPI_WLAN_PARAM_GROUP_WIRELESS,
-                            __QAPI_WLAN_PARAM_GROUP_WIRELESS_SSID,
-                            (void *)cred->ssid, cred->ssid_len, false);
         wlan_clear_privacy(device_id);
-    }
-
-    if (channel > 0) {
-        uint16_t freq = (channel <= 14) ? (2407 + channel * 5) :
-                        (5000 + channel * 5);
-        qapi_WLAN_Set_Param(device_id,
-                            __QAPI_WLAN_PARAM_GROUP_WIRELESS,
-                            __QAPI_WLAN_PARAM_GROUP_WIRELESS_CHANNEL,
-                            &freq, sizeof(freq), false);
     }
 
     qapi_WLAN_Set_Param(device_id,
                         __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_SSID,
+                        ssid, ssid_len, false);
+
+    qapi_WLAN_Set_Param(device_id,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
                         __QAPI_WLAN_PARAM_GROUP_WIRELESS_BSSID,
-                        (void *)bssid, 6, false);
+                        (void *)bssid, WIFI_MAC_ADDR_LEN, false);
+
+    if (channel > 0) {
+        uint32_t ch_param[2] = { channel, FALSE };
+        qapi_WLAN_Set_Param(device_id,
+                            __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                            __QAPI_WLAN_PARAM_GROUP_WIRELESS_CHANNEL,
+                            ch_param, sizeof(ch_param), false);
+    }
 
     qapi_WLAN_Commit(device_id);
 
-    LOG_WRN("qcom_wps_connect_persistent: SSID=%.*s ch=%u auth=0x%x peer=%02x:%02x:%02x:%02x:%02x:%02x",
-            (int)cred->ssid_len, (const char *)cred->ssid, channel, wmi_auth,
+    memset(psk_bin, 0, sizeof(psk_bin));
+    return 0;
+}
+
+int qcom_wps_connect_persistent(const uint8_t *bssid,
+                                const uint8_t *ssid, uint8_t ssid_len,
+                                uint16_t channel)
+{
+    if (!ssid || ssid_len == 0 || !bssid)
+        return -EINVAL;
+
+    struct wps_cred_entry *entry = cred_table_find(bssid, ssid, ssid_len);
+    if (!entry)
+        return -ENOENT;
+
+    entry->last_used = k_uptime_get_32();
+
+    LOG_INF("qcom_wps_connect_persistent: SSID=%.*s ch=%u auth=0x%x "
+            "peer=%02x:%02x:%02x:%02x:%02x:%02x",
+            (int)entry->cred.ssid_len, (const char *)entry->cred.ssid,
+            channel, entry->cred.auth_type,
             entry->peer_addr[0], entry->peer_addr[1], entry->peer_addr[2],
             entry->peer_addr[3], entry->peer_addr[4], entry->peer_addr[5]);
-    return 0;
+
+    qapi_WLAN_Disconnect(g_wps.device_id);
+
+    return qcom_wps_connect_ap(g_wps.device_id, bssid,
+                               entry->cred.ssid, entry->cred.ssid_len,
+                               channel, &entry->cred);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1201,6 +1183,14 @@ static int qcom_wps_set_ie(uint8_t device_id, uint8_t frame_type, bool inject)
         LOG_ERR("qcom_wps_set_ie: WPS not initialised");
         return -EINVAL;
     }
+
+    if (frame_type >= WMI_NUM_MGMT_FRAME) {
+        LOG_ERR("qcom_wps_set_ie: invalid frame_type=%u", frame_type);
+        return -EINVAL;
+    }
+
+    if (g_wps.ie_injected[frame_type] == inject)
+        return 0;
 
     qapi_WLAN_App_Ie_Params_t ie = {0};
     ie.mgmt_Frame_Type = frame_type;
@@ -1261,6 +1251,7 @@ static int qcom_wps_set_ie(uint8_t device_id, uint8_t frame_type, bool inject)
                 frame_type, (int)inject, ret);
         return -EIO;
     }
+    g_wps.ie_injected[frame_type] = inject;
     LOG_DBG("WPS IE %s (frame_type=%u bytes=%u)",
             inject ? "injected" : "removed", frame_type, ie.ie_Len);
     return 0;
@@ -1311,7 +1302,7 @@ int qcom_wps_connect(const struct device *dev,
      * the group SSID on every new P2P session). */
     qapi_WLAN_Disconnect(device_id);
 
-    memcpy(g_wps.ap_bssid, result->bssid, 6);
+    memcpy(g_wps.ap_bssid, result->bssid, WIFI_MAC_ADDR_LEN);
     g_wps.device_id = device_id;
 
     LOG_INF("qcom_wps_connect: BSSID=%02x:%02x:%02x:%02x:%02x:%02x "
@@ -1320,28 +1311,6 @@ int qcom_wps_connect(const struct device *dev,
             result->bssid[3], result->bssid[4], result->bssid[5],
             result->ssid_len, result->ssid, result->channel);
 
-    /* Set SSID */
-    qapi_WLAN_Set_Param(device_id,
-                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
-                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_SSID,
-                        (void *)result->ssid, result->ssid_len, false);
-
-    /* Lock to target BSSID — prevents associating to a wrong AP */
-    qapi_WLAN_Set_Param(device_id,
-                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
-                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_BSSID,
-                        (void *)result->bssid, __QAPI_WLAN_MAC_LEN, false);
-
-    /* Set channel to speed up association */
-    if (result->channel > 0) {
-        uint32_t channel[2] = { result->channel, 0 };
-        qapi_WLAN_Set_Param(device_id,
-                            __QAPI_WLAN_PARAM_GROUP_WIRELESS,
-                            __QAPI_WLAN_PARAM_GROUP_WIRELESS_CHANNEL,
-                            (void *)&channel, sizeof(channel), false);
-    }
-
-    wlan_clear_privacy(device_id);
     /* Set connect_pending flag in firmware so discovery.c bypasses strict
      * profile matching during WPS open association. */
     wlan_set_wps_open_connect(device_id, result->channel);
@@ -1352,13 +1321,13 @@ int qcom_wps_connect(const struct device *dev,
      * includes it in the Assoc Request frame.
      */
     if (qcom_wps_set_ie(device_id, WMI_FRAME_ASSOC_REQ, true) < 0) {
-        LOG_WRN("qcom_wps_connect: assoc req IE inject failed");
+        LOG_ERR("qcom_wps_connect: assoc req IE inject failed, aborting");
+        return -EIO;
     }
 
-    /* Commit — triggers 802.11 authentication + association */
-    qapi_WLAN_Commit(device_id);
-
-    return 0;
+    return qcom_wps_connect_ap(device_id, result->bssid,
+                               result->ssid, result->ssid_len,
+                               result->channel, NULL);
 }
 
 bool qcom_wps_connect_in_progress(void)
@@ -1557,7 +1526,7 @@ void qcom_wps_cancel(const struct device *dev)
     struct wps_context *saved_ctx = g_wps.wps_ctx;
     const struct device *saved_dev = g_wps.dev;
     uint8_t saved_device_id = g_wps.device_id;
-    struct p2p_cred_entry *saved_cred_table = g_wps.cred_table;
+    struct wps_cred_entry *saved_cred_table = g_wps.cred_table;
     uint8_t saved_cred_count = g_wps.cred_count;
     memset(&g_wps, 0, sizeof(g_wps));
     g_wps.wps_ctx    = saved_ctx;
@@ -1601,7 +1570,7 @@ void qcom_wps_assoc_event(const struct device *dev, const uint8_t *bssid,
 
     g_wps.dev       = dev;
     g_wps.device_id = device_id;
-    memcpy(g_wps.ap_bssid, bssid, 6);
+    memcpy(g_wps.ap_bssid, bssid, WIFI_MAC_ADDR_LEN);
 
     LOG_INF("qcom_wps_assoc_event: associated to %02x:%02x:%02x:%02x:%02x:%02x",
             bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
@@ -1653,7 +1622,7 @@ void qcom_wps_assoc_event(const struct device *dev, const uint8_t *bssid,
         cfg.IsAP = 1;
         memcpy(cfg.sta_mac_address, bssid, sizeof(cfg.sta_mac_address));
         cfg.qos_sta = 1;
-        cfg.sec_mode = 0;   /* ENC_NONE */
+        cfg.sec_mode = NONE_CRYPT;
         cfg.ht = 1;
         int err = nt_dpm_add_sta(&cfg, &g_wps.eap_staid, 0);
         if (err == 0) {
@@ -1679,7 +1648,7 @@ void qcom_wps_assoc_event(const struct device *dev, const uint8_t *bssid,
      *   Version=0x02, Type=0x01(Start), Length=0x0000
      */
     {
-        static const u8 eapol_start[] = { 0x02, 0x01, 0x00, 0x00 };
+        static const u8 eapol_start[] = { EAPOL_VERSION, IEEE802_1X_TYPE_EAPOL_START, 0x00, 0x00 };
         char ifname[16] = {0};
         struct net_if *iface = net_if_get_first_wifi();
 

@@ -20,8 +20,8 @@ extern "C" {
 
 /* WPS scan result — passed internally via qwifi_wps_scan_event */
 struct qcom_wps_scan_result {
-    uint8_t  bssid[6];
-    uint8_t  ssid[33];
+    uint8_t  bssid[WIFI_MAC_ADDR_LEN];
+    uint8_t  ssid[WIFI_SSID_MAX_LEN];
     uint8_t  ssid_len;
     uint16_t channel;
     int8_t   rssi;
@@ -206,6 +206,28 @@ bool qcom_wps_has_persistent_cred(const uint8_t *peer_addr,
 int qcom_wps_connect_persistent(const uint8_t *bssid,
                                 const uint8_t *ssid, uint8_t ssid_len,
                                 uint16_t channel);
+
+/* Forward declaration — full definition in wps/wps.h */
+struct wps_credential;
+
+/**
+ * qcom_wps_connect_ap - Configure firmware and commit a PSK/open connection.
+ *
+ * Low-level helper shared by the WPS PSK reconnect path and persistent group
+ * reinvocation. Sets auth mode, cipher, passphrase (or clears privacy for
+ * open), SSID, BSSID, channel hint, then calls qapi_WLAN_Commit().
+ *
+ * @device_id  QAPI device ID
+ * @bssid      Target AP BSSID (6 bytes, must not be NULL)
+ * @ssid       SSID bytes (must not be NULL)
+ * @ssid_len   SSID length (must be > 0)
+ * @channel    IEEE channel number; 0 to skip channel hint
+ * @cred       WPS credentials (auth/encr/key); NULL for open/NONE connection
+ * @return     0 on success, negative errno on error
+ */
+int qcom_wps_connect_ap(uint8_t device_id, const uint8_t *bssid,
+                        const uint8_t *ssid, uint8_t ssid_len,
+                        uint16_t channel, struct wps_credential *cred);
 
 #ifdef __cplusplus
 }

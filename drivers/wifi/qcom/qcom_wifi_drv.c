@@ -94,12 +94,12 @@ struct qwifi_drv_dev_data_t {
     /* Persistent buffers for WPS PSK reconnect — cfg_connect.ssid/psk
      * point here so the pointers remain valid after wps_sync_cfg_connect(). */
     uint8_t wps_ssid_buf[WIFI_SSID_MAX_LEN];
-    uint8_t wps_psk_buf[64];   /* 64 == wps_credential.key[64] (hostap wps.h) */
+    uint8_t wps_psk_buf[WIFI_PSK_MAX_LEN];
 };
 
 /* Ensure wps_psk_buf can hold the maximum WPS PSK key length.
  * wifi_connect_req_params.psk_length is documented as "Max 64" bytes. */
-_Static_assert(sizeof(((struct qwifi_drv_dev_data_t *)0)->wps_psk_buf) >= 64,
+_Static_assert(sizeof(((struct qwifi_drv_dev_data_t *)0)->wps_psk_buf) >= WIFI_PSK_MAX_LEN,
                "wps_psk_buf must be at least 64 bytes (WPS PSK max)");
 
 struct qwifi_drv_dev_cfg_t {
