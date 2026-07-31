@@ -14,11 +14,10 @@ manifest:
       url-base: https://git.codelinaro.org/clo/le/qzephyr/zephyrproject-rtos
   defaults:
     remote: zephyrproject-rtos
-    revision: main
+    revision: IOT.ZE.1.0.r1-02700-QCC730.0
   projects:
     - name: zephyr
       remote: zephyrproject-rtos
-      revision: kernel.qzephyr.2.0.r1-rel
       import:
         # By using name-allowlist we can clone only the modules that are
         # strictly needed by the application.
@@ -26,42 +25,32 @@ manifest:
           - zcbor      # for c++ programming
     - name: mbedtls
       remote: zephyrproject-rtos
-      revision: mbedtls.qzephyr.2.0.r1-rel
       path: modules/crypto/mbedtls
     - name: hostap
       remote: zephyrproject-rtos
-      revision: hostap.qzephyr.2.0.r1-rel
       path: modules/lib/hostap
     - name: littlefs
       remote: zephyrproject-rtos
-      revision: littlefs.qzephyr.2.0.r1-rel
       path: modules/fs/littlefs
     - name: segger
       remote: zephyrproject-rtos
-      revision: segger.qzephyr.2.0.r1-rel
       path: modules/debug/segger
-    - name: cAT
-      remote: 3rdparty
-      revision: 3rdparty.qzephyr.1.0.r1-rel
-      path: modules/lib/cAT
-    - name: qtcapy
-      remote: oss
-      revision: 3rdparty.qzephyr.1.0.r1-rel
-      path: modules/lib/qtcapy
-    - name: matter
-      remote: oss
-      revision: 3rdparty.qzephyr.1.0.r1-rel
-      path: connectedhomeip
     - name: qapp
       remote: qoss
-      revision: qcc730.qzephyr.2.0.r1-rel
     - name: qhal
       remote: upstream
-      revision: qcc730.qzephyr.2.0.r1-rel
       path: modules/hal/qcom
     - name: cmsis_6
       remote: zephyrproject-rtos
-      revision: cmsis_6.qzephyr.2.0.r1-rel
       path: modules/hal/cmsis_6
+    - name: cAT
+      remote: 3rdparty
+      path: modules/lib/cAT
+    - name: qtcapy
+      remote: oss
+      path: modules/lib/qtcapy
+    - name: matter
+      remote: oss
+      path: connectedhomeip
   self:
     west-commands: zephyr/scripts/west-commands.yml
