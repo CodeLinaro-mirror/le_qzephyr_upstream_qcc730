@@ -27,6 +27,22 @@ config WIFI_QCOM_ENTERPRISE
 	  in its own thread, and driver_zephyr.c provides
 	  wpa_supplicant_event_wrapper used by qcom_wifi_enterprise_glue.
 
+config WIFI_NM_WPA_SUPPLICANT_NAN_USD
+	bool "Wi-Fi Aware Unsynchronized Service Discovery (NAN USD)"
+	depends on WIFI_NM_WPA_SUPPLICANT
+	help
+	  Enable NAN USD support (FR203517) for device discovery without AP
+	  association, used for Matter Wi-Fi-only commissioning.
+
+config WIFI_NM_WPA_SUPPLICANT_NAN
+	bool
+	default y if WIFI_NM_WPA_SUPPLICANT_NAN_USD
+	select WIFI_NM_WPA_SUPPLICANT_MINIMAL
+	select WIFI_QCOM_HOSTAP_ELOOP
+	help
+	  Internal: enables nan_de.c compilation and the hostap eloop thread
+	  for NAN USD support. Auto-selected by WIFI_NM_WPA_SUPPLICANT_NAN_USD.
+
 config WIFI_NM_WPA_SUPPLICANT_MINIMAL
 	bool "Minimal hostap build (utils only, no protocol stack)"
 	help

@@ -93,6 +93,14 @@ int qcom_hostap_post(struct qcom_he_msg *msg)
 	return 0;
 }
 
+void qcom_hostap_wakeup(void)
+{
+	if (!g_he_running || g_he_eventfd < 0)
+		return;
+	zvfs_eventfd_t one = 1;
+	(void)zvfs_eventfd_write(g_he_eventfd, one);
+}
+
 /* ----------------------------- dispatch ------------------------------ */
 
 /* eloop reader: drains the fifo when the eventfd fires. Holds the glue

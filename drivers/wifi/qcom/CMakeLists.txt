@@ -14,7 +14,9 @@ zephyr_library_include_directories_ifdef(CONFIG_WIFI_QCOM_P2P
     ${ZEPHYR_HOSTAP_MODULE_DIR}/src/p2p
     ${ZEPHYR_HOSTAP_MODULE_DIR}/src/wps
 )
+zephyr_library_sources_ifdef(CONFIG_WIFI_NM_WPA_SUPPLICANT_NAN_USD qcc730_nan_de_glue.c)
 zephyr_include_directories(inc)
+zephyr_include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 if(CONFIG_WIFI_QCOM_ENTERPRISE)
     zephyr_library_sources(qcom_wifi_enterprise_glue.c)

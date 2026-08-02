@@ -51,6 +51,10 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #include "inc/qcom_wps_glue.h"
 #endif
 
+#ifdef CONFIG_WIFI_NM_WPA_SUPPLICANT_NAN_USD
+#include "qcc730_nan_de_glue.h"
+#endif
+
 #if defined(CONFIG_WIFI_NM_WPA_SUPPLICANT) && !defined(CONFIG_WIFI_NM_WPA_SUPPLICANT_MINIMAL)
 #include "supp_main.h"
 #endif
@@ -2856,6 +2860,54 @@ static int qwifi_drv_set_rsp_rate(const struct device *dev, struct qcom_wifi_set
     return 0;
 }
 
+#ifdef CONFIG_WIFI_NM_WPA_SUPPLICANT_NAN_USD
+static int qwifi_drv_nan_publish(const struct device *dev,
+                                 struct qcom_wifi_nan_publish_params *params)
+{
+    ARG_UNUSED(dev);
+    return qcc730_nan_glue_publish(params->service_name,
+                                   params->srv_proto_type,
+                                   params->ssi, params->ssi_len,
+                                   params->ttl,
+                                   params->unsolicited, params->solicited,
+                                   params->freq_list);
+}
+
+static int qwifi_drv_nan_subscribe(const struct device *dev,
+                                   struct qcom_wifi_nan_subscribe_params *params)
+{
+    ARG_UNUSED(dev);
+    return qcc730_nan_glue_subscribe(params->service_name,
+                                     params->srv_proto_type,
+                                     params->active,
+                                     params->ttl,
+                                     params->freq);
+}
+
+static int qwifi_drv_nan_cancel_publish(const struct device *dev,
+                                        struct qcom_wifi_nan_cancel_publish_params *params)
+{
+    ARG_UNUSED(dev);
+    qcc730_nan_glue_cancel_publish(params->publish_id);
+    return 0;
+}
+
+static int qwifi_drv_nan_transmit(const struct device *dev,
+                                  struct qcom_wifi_nan_transmit_params *params)
+{
+    ARG_UNUSED(dev);
+    return qcc730_nan_glue_transmit(params->handle, params->peer_addr,
+                                    params->req_instance_id,
+                                    params->ssi, params->ssi_len);
+}
+#endif /* CONFIG_WIFI_NM_WPA_SUPPLICANT_NAN_USD */
+
+#ifdef CONFIG_WIFI_NM_WPA_SUPPLICANT_NAN_USD
+void qcc730_nan_wmi_roc_evt(void *data)      { qcc730_nan_glue_roc_evt(data); }
+void qcc730_nan_wmi_tx_status_evt(void *data) { qcc730_nan_glue_tx_status_evt(data); }
+void qcc730_nan_wmi_rx_sdf_evt(void *data)   { qcc730_nan_glue_rx_sdf_evt(data); }
+#endif /* CONFIG_WIFI_NM_WPA_SUPPLICANT_NAN_USD */
+
 /*
  * WNM Sleep — routed through qapi → wmi_cmd_send → WLAN task message queue,
  * following the same pattern as qwifi_drv_set_rate → qapi_WLAN_Set_Rate.
@@ -3070,6 +3122,12 @@ static int qwifi_drv_dev_init(const struct device *dev)
         .wnm_status	= qwifi_drv_wnm_status,
         .wnm_set_enable       = qwifi_drv_wnm_set_enable,
         .wnm_set_bss_max_idle = qwifi_drv_wnm_set_bss_max_idle,
+#ifdef CONFIG_WIFI_NM_WPA_SUPPLICANT_NAN_USD
+        .nan_publish        = qwifi_drv_nan_publish,
+        .nan_subscribe      = qwifi_drv_nan_subscribe,
+        .nan_cancel_publish = qwifi_drv_nan_cancel_publish,
+        .nan_transmit       = qwifi_drv_nan_transmit,
+#endif
 #ifdef CONFIG_WIFI_QCOM_P2P
         .p2p                = qwifi_drv_p2p,
 #endif
