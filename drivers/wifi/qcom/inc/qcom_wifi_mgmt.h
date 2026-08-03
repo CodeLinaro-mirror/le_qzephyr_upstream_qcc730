@@ -106,6 +106,14 @@ enum qcom_net_request_wifi_cmd {
 	/** Set BSS Max Idle Period (seconds) */
 	NET_REQUEST_WIFI_CMD_QCOM_WNM_SET_BSS_MAX_IDLE,
 	NET_REQUEST_WIFI_CMD_QCOM_P2P,
+	/** NAN USD Publish */
+	NET_REQUEST_WIFI_CMD_QCOM_NAN_PUBLISH,
+	/** NAN USD Subscribe */
+	NET_REQUEST_WIFI_CMD_QCOM_NAN_SUBSCRIBE,
+	/** NAN USD Cancel Publish */
+	NET_REQUEST_WIFI_CMD_QCOM_NAN_CANCEL_PUBLISH,
+	/** NAN USD Transmit (follow-up) */
+	NET_REQUEST_WIFI_CMD_QCOM_NAN_TRANSMIT,
 	NET_REQUEST_WIFI_CMD_QCOM_MAX,
 };
 
@@ -329,6 +337,26 @@ NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_WNM_SET_BSS_MAX_IDLE);
 #define NET_REQUEST_WIFI_QCOM_P2P						\
 	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_P2P)
 NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_P2P);
+
+/** NAN USD Publish */
+#define NET_REQUEST_WIFI_QCOM_NAN_PUBLISH				\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_NAN_PUBLISH)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_NAN_PUBLISH);
+
+/** NAN USD Subscribe */
+#define NET_REQUEST_WIFI_QCOM_NAN_SUBSCRIBE				\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_NAN_SUBSCRIBE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_NAN_SUBSCRIBE);
+
+/** NAN USD Cancel Publish */
+#define NET_REQUEST_WIFI_QCOM_NAN_CANCEL_PUBLISH			\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_NAN_CANCEL_PUBLISH)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_NAN_CANCEL_PUBLISH);
+
+/** NAN USD Transmit (follow-up) */
+#define NET_REQUEST_WIFI_QCOM_NAN_TRANSMIT				\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_NAN_TRANSMIT)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_NAN_TRANSMIT);
 
 /** Set TX Power parameters */
 struct qcom_wifi_set_tx_power_params{
@@ -1326,9 +1354,111 @@ struct qcom_wifi_mgmt_ops {
 	 */
 	int (*wnm_set_bss_max_idle)(const struct device *dev, uint32_t seconds);
 
+	/** NAN USD Publish
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param params NAN publish parameters
+	 *
+	 * @return publish_id (>0) if ok, < 0 if error
+	 */
+	int (*nan_publish)(const struct device *dev,
+			struct qcom_wifi_nan_publish_params *params);
+
+	/** NAN USD Subscribe
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param params NAN subscribe parameters
+	 *
+	 * @return subscribe_id (>0) if ok, < 0 if error
+	 */
+	int (*nan_subscribe)(const struct device *dev,
+			struct qcom_wifi_nan_subscribe_params *params);
+
+	/** NAN USD Cancel Publish
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param params NAN cancel publish parameters (publish_id)
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*nan_cancel_publish)(const struct device *dev,
+			struct qcom_wifi_nan_cancel_publish_params *params);
+
+	/** NAN USD Transmit (follow-up)
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param params NAN transmit parameters
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*nan_transmit)(const struct device *dev,
+			struct qcom_wifi_nan_transmit_params *params);
+
 #ifdef CONFIG_WIFI_QCOM_P2P
 	int (*p2p)(const struct device *dev, struct qcom_wifi_p2p_params *params);
 #endif
+};
+
+/** NAN Publish parameters */
+struct qcom_wifi_nan_publish_params {
+	/** Service name (e.g., "_matter") */
+	const char *service_name;
+	/** Service protocol type (e.g., 18 for Matter) */
+	uint8_t srv_proto_type;
+	/** Multi-channel frequency list in MHz, NULL-terminated
+	 *  (e.g. {5180, 5220, 5745, 0} for 5GHz social channels).
+	 *  NULL = use 2.4GHz default {2437, 2437, 2412, 2462, 0}. */
+	const int *freq_list;
+	/** Service Specific Info (optional, NULL if not used) */
+	const uint8_t *ssi;
+	/** Length of SSI */
+	size_t ssi_len;
+	/** Time-to-live in seconds (0 = indefinite) */
+	unsigned int ttl;
+	/** Unsolicited publish: periodically broadcast SDF (no listen needed) */
+	bool unsolicited;
+	/** Solicited publish: reply to a received active Subscribe SDF.
+	 *  unsolicited + solicited may both be true (Matter commissionee default);
+	 *  at least one must be true. */
+	bool solicited;
+};
+
+/** NAN Subscribe parameters */
+struct qcom_wifi_nan_subscribe_params {
+	/** Service name (e.g., "_matter") */
+	const char *service_name;
+	/** Service protocol type (e.g., 18 for Matter) */
+	uint8_t srv_proto_type;
+	/** Active subscribe: transmit Subscribe SDFs to solicit replies from
+	 *  solicited publishers. false = passive (listen only). */
+	bool active;
+	/** Time-to-live in seconds the subscribe service stays alive. */
+	unsigned int ttl;
+	/** Listen frequency in MHz (0 = use default NAN_USD_DEFAULT_FREQ=2437).
+	 *  Subscriber listens on this single channel; no multi-channel rotation.
+	 *  This matches upstream wpa_supplicant design: publisher rotates via
+	 *  freq_list, subscriber stays fixed on one channel. */
+	unsigned int freq;
+};
+
+/** NAN Cancel Publish parameters */
+struct qcom_wifi_nan_cancel_publish_params {
+	/** Publish ID to cancel (returned by nan_publish) */
+	int publish_id;
+};
+
+/** NAN Transmit (follow-up) parameters */
+struct qcom_wifi_nan_transmit_params {
+	/** Local instance handle (publish_id or subscribe_id) */
+	int handle;
+	/** Peer NMI (6 bytes) to send the follow-up to */
+	uint8_t peer_addr[6];
+	/** Peer instance id (req_instance_id) from discovery_result/receive */
+	uint8_t req_instance_id;
+	/** Service Specific Info payload (optional, NULL if not used) */
+	const uint8_t *ssi;
+	/** Length of SSI */
+	size_t ssi_len;
 };
 
 #endif

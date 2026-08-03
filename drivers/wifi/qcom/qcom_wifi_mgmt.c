@@ -949,3 +949,89 @@ static int wifi_p2p(uint64_t mgmt_request, struct net_if *iface,
 }
 NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_P2P, wifi_p2p);
 #endif /* CONFIG_WIFI_QCOM_P2P */
+
+/* -- NAN USD management handlers -------------------------------------------- */
+
+static int wifi_nan_publish(uint64_t mgmt_request, struct net_if *iface,
+			    void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_nan_publish_params *params = data;
+
+	if (api == NULL || api->nan_publish == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->nan_publish(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_NAN_PUBLISH, wifi_nan_publish);
+
+static int wifi_nan_subscribe(uint64_t mgmt_request, struct net_if *iface,
+			      void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_nan_subscribe_params *params = data;
+
+	if (api == NULL || api->nan_subscribe == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->nan_subscribe(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_NAN_SUBSCRIBE, wifi_nan_subscribe);
+
+static int wifi_nan_cancel_publish(uint64_t mgmt_request, struct net_if *iface,
+				   void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_nan_cancel_publish_params *params = data;
+
+	if (api == NULL || api->nan_cancel_publish == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->nan_cancel_publish(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_NAN_CANCEL_PUBLISH, wifi_nan_cancel_publish);
+
+static int wifi_nan_transmit(uint64_t mgmt_request, struct net_if *iface,
+			     void *data, size_t len)
+{
+	const struct device *dev = net_if_get_device(iface);
+	const struct qcom_wifi_mgmt_ops *api = get_qcom_wifi_api(iface);
+	struct qcom_wifi_nan_transmit_params *params = data;
+
+	if (api == NULL || api->nan_transmit == NULL) {
+		return -ENOTSUP;
+	}
+	if (!net_if_is_admin_up(iface)) {
+		return -ENETDOWN;
+	}
+	if (!data || len != sizeof(*params)) {
+		return -EINVAL;
+	}
+
+	return api->nan_transmit(dev, params);
+}
+NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_NAN_TRANSMIT, wifi_nan_transmit);
