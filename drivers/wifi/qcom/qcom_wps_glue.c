@@ -7,6 +7,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/wifi_mgmt.h>
+#include <zephyr/net/wifi_utils.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/shell/shell.h>
 #include <string.h>
@@ -199,6 +200,15 @@ static wsc_ie_info_t parse_wsc_ie(const uint8_t *payload, uint8_t payload_len)
 /* Module state                                                         */
 /* ------------------------------------------------------------------ */
 
+/* Pre-WPS connection state — saved in qcom_wps_start_pbc() before
+ * qapi_WLAN_Disconnect clears connect_cmd, restored in qcom_wps_cancel()
+ * on WPS failure so roaming can reconnect to the previous AP. */
+static struct {
+    WMI_CONNECT_CMD        connect_cmd;
+    WMI_SET_PASSPHRASE_CMD passphrase_cmd;
+    bool                   valid;
+} s_pre_wps_conn;
+
 #define WPS_MAX_PBC_REGISTRAR  8
 
 /*
@@ -218,7 +228,7 @@ static wsc_ie_info_t parse_wsc_ie(const uint8_t *payload, uint8_t payload_len)
  *  wps_scan_done              (implicit via scanning) scan round state
  *  struct wps_ap_info *wps_ap target_ap              selected PBC-active AP
  *  num_wps_ap / wps_ap_iter   pbc_uuid[] dedup table distinct registrar tracking
- *  wps_fragment_size          (not needed)           EAP fragmentation in FW
+ *  wps_fragment_size          (not yet implemented)   EAP-WSC fragmentation not handled
  *  wps_freq / known_wps_freq  target_ap.channel      target AP channel
  *  after_wps                  (not needed)           supplicant reconnect logic
  *
@@ -239,12 +249,26 @@ struct wps_cred_entry {
 };
 
 static struct {
+    /* ------------------------------------------------------------------ */
+    /* Interface-lifetime fields — survive qcom_wps_cancel(), never memset */
+    /* ------------------------------------------------------------------ */
+
     /* Device context */
     const struct device    *dev;        /* Zephyr device pointer */
     uint8_t                 device_id;  /* QAPI device ID */
 
-    /* Protocol context (hostap) */
+    /* Protocol context — allocated once in qcom_wps_init(), freed in deinit */
     struct wps_context     *wps_ctx;    /* long-term config (uuid, dev info, callbacks) */
+
+    /* Persistent credential cache — indexed by peer addr, survives sessions */
+    struct wps_cred_entry  *cred_table;
+    uint8_t                 cred_count;
+
+    /* ------------------------------------------------------------------ */
+    /* Session-lifetime fields — cleared by memset in qcom_wps_cancel()   */
+    /* ------------------------------------------------------------------ */
+
+    /* Protocol context (hostap) */
     struct wps_data        *wps_data;   /* per-session M1-M8 state */
 
     /* Session status — mirrors wpa_supplicant */
@@ -273,12 +297,8 @@ static struct {
     /* EAP TX path — ENC_NONE DPM STA entry for EAPOL frame routing */
     bool     eap_sta_added;
     uint8_t  eap_staid;
-    struct l2_packet_data *l2;  /* persistent l2 handle for EAP-WSC session */
+    struct l2_packet_data *l2;  /* EAP-WSC session l2 handle, opened on assoc, closed on cancel */
     bool     ie_injected[WMI_NUM_MGMT_FRAME];
-
-    /* Persistent credential table — multiple P2P groups indexed by peer addr */
-    struct wps_cred_entry  *cred_table;
-    uint8_t                 cred_count;
 
     /* Assoc retry — for P2P GO that hasn't started beaconing yet */
     uint8_t                 assoc_retries;
@@ -341,11 +361,13 @@ static void session_timer_fn(void *eloop_ctx, void *user_ctx)
 static int wps_rf_band_cb(void *ctx)
 {
     ARG_UNUSED(ctx);
-    if (g_wps.target_ap.channel > 0 && g_wps.target_ap.channel <= 14)
+    uint16_t ch = g_wps.target_ap.channel;
+
+    if (wifi_utils_validate_chan_2g(ch))
         return WPS_RF_24GHZ;
-    if (g_wps.target_ap.channel >= 36)
+    if (wifi_utils_validate_chan_5g(ch))
         return WPS_RF_50GHZ;
-    return WPS_RF_24GHZ | WPS_RF_50GHZ;  /* fallback: advertise both */
+    return 0;  /* unknown or no channel yet — omit RF Bands from M1 */
 }
 
 /*
@@ -363,7 +385,7 @@ static int wps_rf_band_cb(void *ctx)
 
 static void scan_stop_handle(struct qcom_he_msg *he)
 {
-    os_free(he);  /* free before calling API — no further use of msg */
+    os_free(he);
     qapi_WLAN_WPS_Scan_Params_t stop = { .op = QAPI_WLAN_WPS_SCAN_STOP_E };
     qapi_WLAN_WPS_Scan(0, &stop);
 }
@@ -494,7 +516,7 @@ static int wps_eap_tx(const uint8_t *bssid, uint8_t eap_id,
         buf[11] = (EAP_VENDOR_WFA      ) & 0xff;
         WPA_PUT_BE32(buf + 12, EAP_VENDOR_TYPE_WSC);
         buf[16] = (u8)op_code;
-        buf[17] = 0x00; /* Flags */
+        buf[17] = 0x00; /* Flags: 0 = single unfragmented frame */
         if (payload && eap_payload_len > 0)
             os_memcpy(buf + 18, wpabuf_head(payload), eap_payload_len);
     }
@@ -538,9 +560,6 @@ static void wps_eap_rx_handle(struct qcom_he_msg *base)
     const uint8_t *eapol_data = m->eapol_data;
     uint16_t       eapol_len  = m->eapol_len;
 
-    LOG_DBG("wps_eap_rx: src=%02x:%02x:%02x len=%u",
-            src_addr[0], src_addr[1], src_addr[2], eapol_len);
-
     if (!g_wps.wps_data) {
         LOG_WRN("wps_eap_rx: wps_data not initialised");
         goto out;
@@ -555,7 +574,6 @@ static void wps_eap_rx_handle(struct qcom_he_msg *base)
     uint16_t eap_len   = WPA_GET_BE16(eapol_data + 2);
 
     if (eapol_type != IEEE802_1X_TYPE_EAP_PACKET) {
-        LOG_DBG("wps_eap_rx: ignoring EAPOL type=0x%02x", eapol_type);
         goto out;
     }
 
@@ -573,7 +591,6 @@ static void wps_eap_rx_handle(struct qcom_he_msg *base)
     LOG_DBG("wps_eap_rx: code=%u id=%u type=0x%02x", eap_code, eap_id, eap_type);
 
     if (eap_code == EAP_CODE_REQUEST && eap_type == EAP_TYPE_IDENTITY) {
-        LOG_DBG("wps_eap_rx: EAP-Request/Identity — sending Response/Identity");
         wps_eap_tx(src_addr, eap_id, WSC_OP_CODE_IDENTITY, NULL);
         goto out;
     }
@@ -674,7 +691,7 @@ static void wps_eap_rx_handle(struct qcom_he_msg *base)
                         cred.key_len > 0 ? cred.key : NULL,
                         (uint8_t)cred.key_len);
 
-                    /* cancel sets wps_success=true so does not auto-disconnect */
+                    /* wps_success was set in wps_cred_cb — cancel reads it to skip auto-disconnect */
                     qapi_WLAN_Disconnect(device_id);
                     qcom_wps_connect_ap(device_id, ap_bssid,
                                         cred.ssid, cred.ssid_len,
@@ -689,7 +706,6 @@ static void wps_eap_rx_handle(struct qcom_he_msg *base)
     }
 
     if (eap_code == EAP_CODE_FAILURE) {
-        LOG_DBG("wps_eap_rx: EAP-Failure received (normal WPS completion)");
         goto out;
     }
 
@@ -822,16 +838,15 @@ void qwifi_wps_scan_event(uint32_t event_id, void *payload, uint32_t payload_len
         if (ap->wsc_ie_len > 0)
             info = parse_wsc_ie(ap->wsc_ie, ap->wsc_ie_len);
 
+        if (!info.pbc_active)
+            break;
+
         LOG_DBG("WPS AP: %02x:%02x:%02x:%02x:%02x:%02x ch=%u RSSI=%d "
-                "SSID=%.*s pbc_active=%d",
+                "SSID=%.*s pbc_active=1",
                 ap->bssid[0], ap->bssid[1], ap->bssid[2],
                 ap->bssid[3], ap->bssid[4], ap->bssid[5],
                 ap->channel, ap->rssi,
-                ap->ssid_len, ap->ssid,
-                info.pbc_active);
-
-        if (!info.pbc_active)
-            break;
+                ap->ssid_len, ap->ssid);
 
         /* BSSID filter: when a target BSSID is specified, ignore all other
          * APs for both overlap counting and connect target selection. */
@@ -953,8 +968,25 @@ int qcom_wps_start_pbc(const struct device *dev,
         return -EINVAL;
 
     if (g_wps.supp_pbc_active) {
-        LOG_WRN("qcom_wps_start_pbc: WPS already in progress");
-        return -EBUSY;
+        /* WSC spec 11.3: re-pressing PBC during Walk Time restarts the session —
+         * cancel the current session and fall through to start a new one.
+         * qcom_wps_cancel() handles disconnect internally (wps_success=false). */
+        qcom_hostap_lock();
+        qcom_wps_cancel(dev);
+        qcom_hostap_unlock();
+    } else {
+        /* Save current connection credentials before qapi_WLAN_Disconnect
+         * clears them. Use the same conditions as qapi_WLAN_Disconnect itself
+         * to determine whether there is an active or in-progress connection. */
+        wlan_vdev_cxt_t *vdev = WLAN_STA_CXT;
+        if (vdev->connected ||
+            vdev->connect_in_progress ||
+            gp_wlan_qapi_cxt->wlan_roaming_started) {
+            s_pre_wps_conn.connect_cmd    = vdev->connect_cmd;
+            s_pre_wps_conn.passphrase_cmd = vdev->passphrase_cmd;
+            s_pre_wps_conn.valid          = true;
+        }
+        qapi_WLAN_Disconnect(QCOM_DEV_STA_ID);
     }
 
     g_wps.dev             = dev;
@@ -981,7 +1013,13 @@ int qcom_wps_start_pbc(const struct device *dev,
     eloop_register_timeout(WPS_PBC_WALK_TIME, 0, pbc_walk_timer_fn, NULL, NULL);
     qcom_hostap_unlock();
 
-    return qcom_wps_scan(dev);
+    int ret = qcom_wps_scan(dev);
+    if (ret != 0) {
+        qcom_hostap_lock();
+        qcom_wps_cancel(dev);
+        qcom_hostap_unlock();
+    }
+    return ret;
 }
 
 int qcom_wps_start_from_bssid(const struct device *dev,
@@ -1016,6 +1054,7 @@ int qcom_wps_start_from_bssid(const struct device *dev,
     eloop_register_timeout(WPS_PBC_WALK_TIME, 0, pbc_walk_timer_fn, NULL, NULL);
     qcom_hostap_unlock();
 
+    qapi_WLAN_Disconnect(QCOM_DEV_STA_ID);
     return qcom_wps_connect(dev, &g_wps.target_ap);
 }
 
@@ -1513,10 +1552,6 @@ void qcom_wps_cancel(const struct device *dev)
         g_wps.l2 = NULL;
     }
 
-    /* Disconnect open WPS association if WPS did not succeed.
-     * Capture wps_success before memset clears g_wps below.
-     * On success the PSK reconnect path has already triggered via
-     * WPS_CONTINUE + state==WPS_FINISHED. */
     bool succeeded = g_wps.wps_success;
 
     /* Clear connect_pending flag in firmware */
@@ -1537,6 +1572,13 @@ void qcom_wps_cancel(const struct device *dev)
 
     if (!succeeded) {
         qapi_WLAN_Disconnect(saved_device_id);
+        /* Restore pre-WPS credentials so roaming can reconnect to the previous AP. */
+        if (s_pre_wps_conn.valid) {
+            wlan_vdev_cxt_t *vdev = WLAN_STA_CXT;
+            vdev->connect_cmd    = s_pre_wps_conn.connect_cmd;
+            vdev->passphrase_cmd = s_pre_wps_conn.passphrase_cmd;
+            wlan_drv_roaming_start();
+        }
     }
 
     LOG_DBG("qcom_wps_cancel: WPS cancelled");
@@ -1564,7 +1606,9 @@ void qcom_wps_assoc_event(const struct device *dev, const uint8_t *bssid,
             return;
         }
         LOG_WRN("qcom_wps_assoc_event: assoc failed, giving up");
+        qcom_hostap_lock();
         qcom_wps_cancel(dev);
+        qcom_hostap_unlock();
         return;
     }
 
@@ -1586,7 +1630,9 @@ void qcom_wps_assoc_event(const struct device *dev, const uint8_t *bssid,
      */
     if (!g_wps.wps_ctx) {
         LOG_ERR("qcom_wps_assoc_event: wps_ctx not initialised");
+        qcom_hostap_lock();
         qcom_wps_cancel(dev);
+        qcom_hostap_unlock();
         return;
     }
 
@@ -1600,7 +1646,9 @@ void qcom_wps_assoc_event(const struct device *dev, const uint8_t *bssid,
         g_wps.wps_data = wps_init(&cfg);
         if (!g_wps.wps_data) {
             LOG_ERR("qcom_wps_assoc_event: wps_init failed");
+            qcom_hostap_lock();
             qcom_wps_cancel(dev);
+            qcom_hostap_unlock();
             return;
         }
         LOG_DBG("qcom_wps_assoc_event: wps_data initialised");
