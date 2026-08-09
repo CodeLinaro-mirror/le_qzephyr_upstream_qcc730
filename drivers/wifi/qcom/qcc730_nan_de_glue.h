@@ -13,6 +13,10 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * Upper API — called by qnan_shell.c.
  *
@@ -51,11 +55,44 @@ int  qcc730_nan_glue_transmit(int handle, const uint8_t *peer_addr,
 void qcc730_nan_glue_cancel_publish(int publish_id);
 
 /*
+ * Receive callback — fired by nan_glue_receive() when a NAN follow-up arrives.
+ * Registered by the Matter WiFiPAF platform layer (FR203519) so that PASE/CASE
+ * frames delivered via NAN follow-up are forwarded into the Matter event loop.
+ * Called from the eloop thread — implementation must PostEventOrDie() to cross
+ * into the Matter thread before touching any Matter APIs.
+ * Pass NULL to unregister.
+ */
+typedef void (*qcc730_nan_receive_cb_t)(int id, int peer_instance_id,
+                                        const uint8_t *ssi, size_t ssi_len,
+                                        const uint8_t *peer_addr);
+
+void qcc730_nan_glue_set_receive_cb(qcc730_nan_receive_cb_t cb);
+
+/*
+ * Allow WiFi connection scans: clear the NAN scan suppression flag so that
+ * the WiFi stack can scan for the AP.  Must be called before initiating a
+ * WiFi association (e.g. from ZephyrWifiDriver::ConnectNetwork).  Safe to
+ * call even if NAN is not active.
+ */
+void qcc730_nan_glue_allow_wifi_scan(void);
+
+/*
+ * Re-enable NAN SDF RX after WiFi connection completes (success or failure).
+ * Must be called after qcc730_nan_glue_allow_wifi_scan() so the next
+ * commissioning cycle can discover subscribers again.
+ */
+void qcc730_nan_glue_resume_nan_rx(void);
+
+/*
  * WMI event entry points — called from qcom_wifi_drv.c.
  * data points to the raw WMI event payload.
  */
 void qcc730_nan_glue_roc_evt(void *data);
 void qcc730_nan_glue_tx_status_evt(void *data);
 void qcc730_nan_glue_rx_sdf_evt(void *data);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* QCC730_NAN_DE_GLUE_H */

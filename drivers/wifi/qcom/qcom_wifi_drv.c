@@ -827,10 +827,33 @@ static int qwifi_drv_scan(const struct device *dev, struct wifi_scan_params *par
         return -EINVAL;
     }
 
+    /* Translate Zephyr band_chan to QCC730 qapi channel_List instead of
+     * rejecting it.  This enables targeted single-channel scans (e.g.
+     * CH6 only during WiFiPAF commissioning) which complete in ~100 ms
+     * instead of the default full-band scan (~10-15 s).  The struct
+     * channel_List[1] holds exactly one entry; multi-channel callers
+     * would need a larger allocation, but the commissioning path only
+     * ever passes one channel hint (AP channel == NAN channel). */
     for (uint8_t i = 0; i < WIFI_MGMT_SCAN_CHAN_MAX_MANUAL; i++) {
 	    if (params->band_chan[i].channel != 0) {
-		LOG_WRN("Currently not supports [-c, --chans] option");
-		return -EINVAL;
+		    scan_param.num_Channels  = 1;
+		    scan_param.channel_List[0] = params->band_chan[i].channel;
+		    LOG_INF("Targeted scan: ch=%u (band=%u)", scan_param.channel_List[0],
+			    params->band_chan[i].band);
+		    /* Warn (don't fail) if the caller passed more than one
+		     * channel hint -- only the first is honored above. */
+		    for (uint8_t j = i + 1; j < WIFI_MGMT_SCAN_CHAN_MAX_MANUAL; j++) {
+			    if (params->band_chan[j].channel != 0) {
+				    LOG_WRN("Targeted scan: multi-channel hint not "
+					    "supported, ignoring ch=%u (band=%u) and "
+					    "beyond; only first hint ch=%u is honored",
+					    params->band_chan[j].channel,
+					    params->band_chan[j].band,
+					    scan_param.channel_List[0]);
+				    break;
+			    }
+		    }
+		    break;
 	    }
     }
 
@@ -850,7 +873,7 @@ static int qwifi_drv_scan(const struct device *dev, struct wifi_scan_params *par
     }
 #endif
 
-    if (scan_param.ssid_Length) {
+    if (scan_param.ssid_Length || scan_param.num_Channels > 0) {
         ret = qapi_WLAN_Start_Scan(deviceId, &scan_param);
     } else {
         ret = qapi_WLAN_Start_Scan(deviceId, NULL);

@@ -69,6 +69,8 @@ static unsigned int g_nan_tx_wait_ms;
  * explicit lock is needed for this simple flag-style state. */
 static unsigned int g_nan_last_tx_freq = 0;  /* freq of most recent TX    */
 static unsigned int g_nan_anchor_freq  = 0;  /* 0 = search phase          */
+static volatile qcc730_nan_receive_cb_t g_nan_receive_cb;  /* Matter WiFiPAF RX callback (FR203519) */
+static int g_nan_active_publish_id = -1;     /* publish_id of current WiFiPAF service */
 
 static void nan_enter_interaction_phase(unsigned int anchor_freq)
 {
@@ -97,6 +99,36 @@ static void nan_reset_to_search_phase(void)
  * nan_callbacks — tx
  * ------------------------------------------------------------------------- */
 
+/* Static pool for NAN SEND_ACTION WMI commands.
+ * wmi_cmd_send() is ASYNCHRONOUS: it stores only the pointer (vo_data) in the
+ * pipe and returns immediately.  The WMI firmware task dereferences the pointer
+ * later.  Using k_malloc + immediate k_free causes a use-after-free: the heap
+ * reuses the buffer before firmware reads it, producing garbage buf_len values.
+ * A pool of NAN_TX_CMD_SLOTS static slots avoids heap involvement entirely.
+ * Slots are consumed round-robin; with 4 slots and firmware processing each
+ * command in <1 ms, a slot is always recycled long before it wraps back.
+ *
+ * NAN_TX_CMD_MAX_BODY: body_len in nan_glue_tx is the full NAN action frame
+ * body AFTER the 802.11 header, i.e. NAN SDF header (~30 B) + PAFTP payload.
+ * With PAFTP MTU = 350 B (negotiated), body_len can reach 380 B.  Set the
+ * limit to 488 B (= firmware's NAN_TX_FRAME_BUF_SZ 512 - 802.11 header 24)
+ * so it never rejects valid large PAFTP fragments (e.g. PAI cert first chunk). */
+#define NAN_TX_CMD_SLOTS     4
+#define NAN_TX_CMD_MAX_BODY  488  /* 512 (fw static buf) - 24 (802.11 hdr) */
+#define NAN_TX_CMD_BUF_SZ    (sizeof(WMI_NAN_SEND_ACTION_CMD) + NAN_TX_CMD_MAX_BODY)
+static uint8_t  s_nan_tx_cmd_pool[NAN_TX_CMD_SLOTS][NAN_TX_CMD_BUF_SZ];
+static atomic_t s_nan_tx_slot;
+/* Number of TX commands submitted to firmware but not yet confirmed via
+ * WMI_NAN_TX_STATUS_EVTID (see qcc730_nan_glue_tx_status_evt()).  Used only
+ * to detect -- not prevent -- the round-robin pool wrapping around before
+ * firmware has finished reading a slot; WMI_NAN_TX_STATUS_EVT does not carry
+ * a slot index, so exact per-slot tracking is not possible without a larger
+ * protocol change.  A slot overwrite this counter cannot catch is unlikely
+ * in practice (firmware processes each command in <1 ms), but a wrap while
+ * >= NAN_TX_CMD_SLOTS commands are still in flight is a real corruption
+ * risk and worth surfacing. */
+static atomic_t s_nan_tx_inflight;
+
 static int nan_glue_tx(void *ctx,
 		       unsigned int freq, unsigned int wait_time,
 		       const u8 *dst, const u8 *src, const u8 *bssid,
@@ -118,13 +150,50 @@ static int nan_glue_tx(void *ctx,
 	}
 
 	size_t body_len = wpabuf_len(buf);
-	size_t cmd_sz   = sizeof(WMI_NAN_SEND_ACTION_CMD) + body_len;
 
-	WMI_NAN_SEND_ACTION_CMD *cmd = k_malloc(cmd_sz);
-	if (!cmd)
-		return -ENOMEM;
+	/* Reject garbage body_len before it reaches firmware.  Valid NAN
+	 * follow-up bodies are ≤ 280 B; anything larger indicates a corrupt
+	 * wpabuf (e.g. freed memory read through a dangling pointer). */
+	if (body_len > NAN_TX_CMD_MAX_BODY) {
+		LOG_ERR("NAN glue: tx body_len=%u too large, dropping", (unsigned)body_len);
+		return -EIO;
+	}
+
+	/* Pick a static slot (round-robin).  No k_malloc/k_free needed:
+	 * wmi_cmd_send() is async and only stores the pointer; the static
+	 * buffer outlives the firmware's access window -- PROVIDED firmware
+	 * finishes reading a slot before it wraps back around.  atomic_inc()
+	 * makes the index update itself race-free; the inflight counter below
+	 * flags (does not prevent) the case where that assumption is violated. */
+	uint32_t slot = (uint32_t)atomic_inc(&s_nan_tx_slot) % NAN_TX_CMD_SLOTS;
+	atomic_val_t inflight = atomic_inc(&s_nan_tx_inflight);
+
+	if (inflight >= NAN_TX_CMD_SLOTS) {
+		/* atomic_inc() returns the pre-increment value; the actual
+		 * in-flight count after this TX is inflight + 1. */
+		LOG_ERR("NAN glue: tx slot %u reused with %d TX still unconfirmed "
+			"(pool has %u slots) -- firmware may still be reading "
+			"this buffer, possible corruption",
+			slot, (int)(inflight + 1), NAN_TX_CMD_SLOTS);
+	}
+	WMI_NAN_SEND_ACTION_CMD *cmd =
+		(WMI_NAN_SEND_ACTION_CMD *)s_nan_tx_cmd_pool[slot];
+	size_t cmd_sz = sizeof(WMI_NAN_SEND_ACTION_CMD) + body_len;
 
 	cmd->freq         = freq;
+	/* In interaction phase, extend the firmware radio dwell so the radio
+	 * stays on the anchor channel across the full PASE computation window.
+	 * nan_de hardcodes wait_time=100 ms for follow-ups; SPAKE2+ on M33
+	 * takes ~188 ms for Pake2, which means the radio's 100 ms dwell ends
+	 * ~88 ms before Pake2 is even sent, and the radio may sleep before
+	 * Pake3 arrives (3 ms after Pake2).  500 ms covers the worst case.
+	 * Publisher announce TXes have wait_time=0 — do NOT override them to
+	 * 500 ms.  The firmware treats wait_time>0 as "stay on channel waiting
+	 * for a unicast reply"; applying this to broadcast SDFs causes the
+	 * firmware to enter a wrong dwell state and silently drop subsequent
+	 * unicast follow-ups (e.g. Pake3). */
+	if (g_nan_anchor_freq != 0 && wait_time > 0)
+		wait_time = 500;
 	cmd->wait_time_ms = wait_time;
 	memcpy(cmd->dst_addr, dst,  6);
 	memcpy(cmd->src_addr, src,  6);
@@ -133,13 +202,21 @@ static int nan_glue_tx(void *ctx,
 	if (body_len > 0)
 		memcpy(cmd->buf, wpabuf_head(buf), body_len);
 
-	LOG_INF("NAN glue: tx freq=%u dst=" MACSTR " body_len=%u wait=%u",
-		freq, MAC2STR(dst), (uint32_t)body_len, wait_time);
+	LOG_INF("NAN: [E] ZEP-TX freq=%u buf=%u wait=%u slot=%u",
+		freq, (unsigned)body_len, wait_time, slot);
 	qapi_Status_t ret = wmi_cmd_send(WMI_NAN_SEND_ACTION_CMDID, cmd,
 					 (uint32_t)cmd_sz);
-	k_free(cmd);
-	if (ret != QAPI_OK)
+	/* NOTE: do NOT free cmd — wmi_cmd_send() stores only the pointer and
+	 * the firmware reads it asynchronously.  The static pool slot is safe
+	 * to reuse after NAN_TX_CMD_SLOTS more commands have been queued. */
+	if (ret != QAPI_OK) {
+		/* Command never reached firmware, so no WMI_NAN_TX_STATUS_EVTID
+		 * will ever arrive to atomic_dec() s_nan_tx_inflight -- undo the
+		 * increment above ourselves or the counter leaks on every send
+		 * failure. */
+		atomic_dec(&s_nan_tx_inflight);
 		return -EIO;
+	}
 
 	/* Remember the dwell nan_de asked for; the tx_status handler arms an
 	 * eloop timeout of this length before calling nan_de_tx_wait_ended(),
@@ -209,6 +286,13 @@ static void nan_glue_replied(void *ctx, int publish_id,
 	 * channel of the most recent TX (the solicited publish reply). */
 	if (g_nan_last_tx_freq != 0)
 		nan_enter_interaction_phase(g_nan_last_tx_freq);
+
+	/* NOTE: do NOT call nan_de_pause_service() here.  Although pausing would
+	 * suppress further solicited TX (preventing DISABLE0 during PAFTP
+	 * handshake), it also stops ROC scheduling — so after the dwell window
+	 * expires, the radio leaves CH6 and the PAFTP SYN is never received.
+	 * The DISABLE0 problem is instead avoided by setting solicited=false in
+	 * _WiFiPAFPublish(), which means this callback is never reached anyway. */
 }
 
 static void nan_glue_publish_terminated(void *ctx, int publish_id,
@@ -220,6 +304,12 @@ static void nan_glue_publish_terminated(void *ctx, int publish_id,
 	/* Publish service ended — reset to search phase so the next publish
 	 * starts fresh with multi-channel rotation. */
 	nan_reset_to_search_phase();
+	/* Clear the tracked ID so a stale value from this session can't be
+	 * used by qcc730_nan_glue_allow_wifi_scan() in a later session --
+	 * nan_de_get_handle() reuses freed service slots, so the next
+	 * publish's ID is not guaranteed to differ from this one. */
+	if (g_nan_active_publish_id == publish_id)
+		g_nan_active_publish_id = -1;
 }
 
 static void nan_glue_subscribe_terminated(void *ctx, int subscribe_id,
@@ -235,8 +325,8 @@ static void nan_glue_receive(void *ctx, int id, int peer_instance_id,
 			     const u8 *peer_addr)
 {
 	ARG_UNUSED(ctx);
-	LOG_INF("NAN: receive id=%d peer_id=%d peer=" MACSTR " ssi_len=%u",
-		id, peer_instance_id, MAC2STR(peer_addr), (uint32_t)ssi_len);
+	LOG_INF("NAN: [C] ZEP-RX id=%d peer=%d ssi=%u",
+		id, peer_instance_id, (unsigned)ssi_len);
 	if (ssi && ssi_len > 0)
 		LOG_HEXDUMP_INF(ssi, ssi_len, "NAN: receive ssi");
 
@@ -246,6 +336,50 @@ static void nan_glue_receive(void *ctx, int id, int peer_instance_id,
 	 * (Active subscriber path is handled in nan_glue_replied.) */
 	if ((!ssi || ssi_len == 0) && g_nan_last_tx_freq != 0)
 		nan_enter_interaction_phase(g_nan_last_tx_freq);
+
+	/* Forward to upper layer (Matter WiFiPAF) if registered. */
+	if (g_nan_receive_cb)
+		g_nan_receive_cb(id, peer_instance_id, ssi, ssi_len, peer_addr);
+}
+
+/* Receive callback registered by Matter WiFiPAF layer (FR203519). */
+void qcc730_nan_glue_set_receive_cb(qcc730_nan_receive_cb_t cb)
+{
+	g_nan_receive_cb = cb;
+}
+
+/* Clear the NAN scan suppression flag so the WiFi connection scan is
+ * allowed.  Called by ZephyrWifiDriver::ConnectNetwork before WiFi
+ * association is initiated (WiFiNetworkEnable commissioning step). */
+void qcc730_nan_glue_allow_wifi_scan(void)
+{
+	/* Step 1: Pause periodic SDF broadcasts on the active publish service.
+	 * This stops nan_de from scheduling new TX/ROC requests, preventing
+	 * dc_begin_scan from suppressing the WiFi association scan.  The
+	 * service slot remains alive so nan_de_transmit() (follow-up TX) can
+	 * still deliver PAF ACKs and the WiFiNetworkEnable response after WiFi
+	 * connects.  We do NOT cancel the NAN ROC here — keeping the existing
+	 * NAN TX windows allows PAFTP ACKs to flow during WiFi connection,
+	 * preventing the chip-tool PAF endpoint from timing out. */
+	if (g_nan_de && g_nan_active_publish_id > 0) {
+		nan_de_pause_service(g_nan_de, g_nan_active_publish_id, 120);
+		LOG_INF("NAN glue: publish id=%d paused for WiFi scan",
+			g_nan_active_publish_id);
+	}
+
+	/* Step 2: Clear the NAN RXP commissioning-period filter guard so the
+	 * WiFi scan probe responses are not filtered out by the NAN RXP. */
+	extern void wlan_nan_rxp_deactivate(void);
+	wlan_nan_rxp_deactivate();
+	LOG_INF("NAN glue: WiFi scan allowed (rxp_active cleared)");
+}
+
+/* Called from ZephyrWifiDriver::OnNetworkConnStatusChanged after WiFi connection
+ * attempt completes (success or failure).  SDF suppression is handled by
+ * nan_de_pause_service() which auto-expires; this is a no-op kept for symmetry. */
+void qcc730_nan_glue_resume_nan_rx(void)
+{
+	LOG_INF("NAN glue: WiFi connection done");
 }
 
 static const struct nan_callbacks g_nan_glue_cbs = {
@@ -381,10 +515,12 @@ int qcc730_nan_glue_publish(const char *service_name, uint8_t srv_proto_type,
 
 	if (id < 0)
 		LOG_ERR("NAN glue: nan_de_publish failed (%d)", id);
-	else
+	else {
+		g_nan_active_publish_id = id;
 		LOG_INF("NAN glue: publish started id=%d svc=%s ttl=%u "
 			"unsol=%d sol=%d",
 			id, service_name, ttl, unsolicited, solicited);
+	}
 	return id;
 }
 
@@ -435,6 +571,10 @@ void qcc730_nan_glue_cancel_publish(int publish_id)
 {
 	if (g_nan_de)
 		nan_de_cancel_publish(g_nan_de, publish_id);
+	/* See nan_glue_publish_terminated() -- clear the tracked ID so a
+	 * stale value can't be reused by allow_wifi_scan() next session. */
+	if (g_nan_active_publish_id == publish_id)
+		g_nan_active_publish_id = -1;
 }
 
 int qcc730_nan_glue_transmit(int handle, const uint8_t *peer_addr,
@@ -567,11 +707,30 @@ static void nan_tx_status_handle(struct qcom_he_msg *m)
 		 * dwell nan_de requested. nan_de holds tx_wait_end_freq until
 		 * then, so it neither sends the next announce nor changes
 		 * channel, and the radio stays on this channel with RX enabled.
-		 * wait==0 means no dwell was requested -> end immediately. */
-		if (g_nan_tx_wait_ms > 0) {
+		 * wait==0 means no dwell was requested.
+		 *
+		 * In interaction phase, also apply a minimum 250 ms dwell for
+		 * publisher announces (wait_time=0).  Without this, an announce
+		 * TX-DONE immediately calls nan_de_tx_wait_ended, which makes
+		 * the NAN DE call listen(CH1/CH11), taking the radio off CH6
+		 * just as chip-tool sends its next PAFTP follow-up
+		 * (ConfigRegulatory arrives ~1 ms after ArmFailSafe response,
+		 * Pake3 arrives ~188 ms after Pake2).  The firmware's
+		 * wait_time_ms stays 0 for announces — only the eloop timer is
+		 * delayed, so the firmware radio stays in its normal RX state.
+		 *
+		 * NOTE: do NOT issue a ROC command here.  Even a ROC for the same
+		 * channel (CH6) holds the WMI pipeline for its full duration,
+		 * causing IMPS cnx timeout callbacks (proced_time ~= dwell_ms)
+		 * that disrupt the firmware radio state and cause subsequent NAN
+		 * follow-ups (Pake3 etc.) to be silently dropped. */
+		unsigned int dwell = g_nan_tx_wait_ms;
+		if (dwell == 0 && g_nan_anchor_freq != 0)
+			dwell = 250;
+		if (dwell > 0) {
 			eloop_cancel_timeout(nan_dwell_timeout, NULL, NULL);
-			eloop_register_timeout(g_nan_tx_wait_ms / 1000,
-					       (g_nan_tx_wait_ms % 1000) * 1000,
+			eloop_register_timeout(dwell / 1000,
+					       (dwell % 1000) * 1000,
 					       nan_dwell_timeout, NULL, NULL);
 		} else {
 			nan_de_tx_wait_ended(g_nan_de);
@@ -583,6 +742,10 @@ static void nan_tx_status_handle(struct qcom_he_msg *m)
 void qcc730_nan_glue_tx_status_evt(void *data)
 {
 	WMI_NAN_TX_STATUS_EVT *evt = (WMI_NAN_TX_STATUS_EVT *)data;
+	/* Firmware has finished reading the TX pool slot for this command
+	 * (successfully or not); see s_nan_tx_inflight in nan_glue_tx(). */
+	atomic_dec(&s_nan_tx_inflight);
+	LOG_INF("NAN: [G] ZEP-TX-STATUS ack=%u freq=%u", evt->ack, evt->freq);
 	struct nan_tx_status_msg *msg = k_malloc(sizeof(*msg));
 
 	if (!msg)
@@ -594,14 +757,45 @@ void qcc730_nan_glue_tx_status_evt(void *data)
 		k_free(msg);
 }
 
+/* Check if a NAN SDF (after the 6-byte 802.11 Public Action header) is a
+ * Subscribe frame.  NAN Service Descriptor attribute layout:
+ *   attr_id (1B = 0x03) | length (2B) | service_id (6B) |
+ *   instance_id (1B) | req_instance_id (1B) | svc_ctrl (1B)
+ * Total minimum length is 12 B; svc_ctrl is at offset 11, not 10.
+ * Service type = svc_ctrl[1:0]: 0=Subscribe, 1=Publish, 2=Follow-up. */
+static bool nan_sdf_is_subscribe(const uint8_t *sdf, uint32_t len)
+{
+	if (len < 12 || sdf[0] != 0x03)
+		return false;
+	return (sdf[11] & 0x03) == 0;
+}
+
 static void nan_rx_sdf_handle(struct qcom_he_msg *m)
 {
 	struct nan_rx_sdf_msg *msg =
 		CONTAINER_OF(m, struct nan_rx_sdf_msg, base);
 
 	if (g_nan_de && msg->body_len > 6) {
-		nan_de_rx_sdf(g_nan_de, msg->src_addr, msg->freq,
-			      msg->body + 6, msg->body_len - 6);
+		const uint8_t *sdf = msg->body + 6;
+		uint32_t sdf_len = msg->body_len - 6;
+
+		/* In interaction phase, filter subscribe SDFs before nan_de sees
+		 * them.  Without this filter, nan_de generates a solicited publish
+		 * TX for every subscribe SDF in the wpa_supplicant flood, each
+		 * producing a DISABLE0=0xffffffff blackout that can drop the PAFTP
+		 * SYN follow-up.  The first subscribe SDF passes through in search
+		 * phase (g_nan_anchor_freq==0), triggering nan_glue_replied() which
+		 * sets the anchor and establishes the 500 ms dwell window for SYN
+		 * reception.  Subsequent subscribe SDFs are suppressed here so they
+		 * never trigger further solicited TX.
+		 * Follow-up SDFs (type=2) carry PAFTP frames and are never filtered. */
+		if (g_nan_anchor_freq != 0 && nan_sdf_is_subscribe(sdf, sdf_len)) {
+			LOG_DBG("NAN glue: subscribe SDF suppressed (interaction phase)");
+			k_free(msg);
+			return;
+		}
+
+		nan_de_rx_sdf(g_nan_de, msg->src_addr, msg->freq, sdf, sdf_len);
 	}
 	k_free(msg);
 }
@@ -609,9 +803,23 @@ static void nan_rx_sdf_handle(struct qcom_he_msg *m)
 void qcc730_nan_glue_rx_sdf_evt(void *data)
 {
 	WMI_NAN_RX_SDF_EVT *evt = (WMI_NAN_RX_SDF_EVT *)data;
+	LOG_INF("NAN: [B] ZEP-RX-EVT len=%u de=%p", evt->buf_len, (void *)g_nan_de);
 
 	if (!g_nan_de || evt->buf_len == 0)
 		return;
+
+	/* In interaction phase, drop subscribe SDFs HERE — before k_malloc and
+	 * qcom_hostap_post — so they never enter the hostap FIFO.  The filter
+	 * in nan_rx_sdf_handle() is a second line of defence, but doing it
+	 * here is critical: the subscribe SDF flood can saturate the FIFO
+	 * (finite capacity), causing qcom_hostap_post() to return non-zero and
+	 * drop the NEXT message — which may be a NOC or PAFTP follow-up.
+	 * g_nan_anchor_freq is unsigned int, atomic on single-core Cortex-M.
+	 * This is called from the WMI dispatch thread; the read is safe. */
+	if (g_nan_anchor_freq != 0 && evt->buf_len > 6 &&
+	    nan_sdf_is_subscribe(evt->buf + 6, evt->buf_len - 6)) {
+		return;
+	}
 
 	struct nan_rx_sdf_msg *msg =
 		k_malloc(sizeof(*msg) + evt->buf_len);

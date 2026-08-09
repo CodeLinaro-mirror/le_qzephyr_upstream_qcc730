@@ -730,6 +730,10 @@ struct qcom_wifi_p2p_params {
 };
 
 /** Wi-Fi management API */
+struct qcom_wifi_nan_publish_params;
+struct qcom_wifi_nan_subscribe_params;
+struct qcom_wifi_nan_cancel_publish_params;
+struct qcom_wifi_nan_transmit_params;
 struct qcom_wifi_mgmt_ops {
 	/** Set TX Power for Wi-Fi networks
 	 *
