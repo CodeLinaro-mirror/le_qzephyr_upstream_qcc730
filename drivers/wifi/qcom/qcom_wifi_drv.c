@@ -562,10 +562,22 @@ static int qwifi_drv_scan(const struct device *dev, struct wifi_scan_params *par
         return -EINVAL;
     }
 
-    if (params->bands > 0) {
-	LOG_WRN("Currently not supports [-b, --bands] option, scanning\
-			different bands separately is not supported. It\
-			supports scanning all 2.4 G and 5G bands at once.");
+    if (params->bands == BIT(WIFI_FREQ_BAND_2_4_GHZ)) {
+	/* Only 2.4 GHz requested: firmware channel table has 2.4 GHz channels
+	 * at indices [0, TOT_2GHZ_CHANNELS) (see wlan_regulatory_unpack()), so
+	 * a coarse band cut is a plain index-range restriction. */
+	scan_param.scan_Type = QAPI_WLAN_SCAN_TYPE_2G_ONLY;
+    } else if (params->bands == BIT(WIFI_FREQ_BAND_5_GHZ)) {
+#ifndef SUPPORT_5GHZ
+	LOG_WRN("5G scan requested but this build has no 5G support");
+	return -ENOTSUP;
+#else
+	scan_param.scan_Type = QAPI_WLAN_SCAN_TYPE_5G_ONLY;
+#endif
+    } else if (params->bands != 0) {
+	LOG_WRN("Currently only supports scanning all bands, 2.4G-only, or\
+			5G-only via [-b, --bands]; combined/6G band\
+			selection is not supported.");
 	return -EINVAL;
     }
 
@@ -607,7 +619,12 @@ static int qwifi_drv_scan(const struct device *dev, struct wifi_scan_params *par
     }
 #endif
 
-    if (scan_param.ssid_Length) {
+    if (scan_param.ssid_Length || scan_param.num_Channels > 0 ||
+            scan_param.scan_Type != QAPI_WLAN_SCAN_TYPE_ALL_BANDS) {
+        /* scan_param must still be passed when only a band restriction
+         * (-b/--bands) or a channel hint (-c/--chans) was requested, even
+         * without an SSID filter, or wlan_set_scan_param() sees a NULL
+         * scan_Params and falls back to scanning every channel. */
         ret = qapi_WLAN_Start_Scan(deviceId, &scan_param);
     } else {
         ret = qapi_WLAN_Start_Scan(deviceId, NULL);
