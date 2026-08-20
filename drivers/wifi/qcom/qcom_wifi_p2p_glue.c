@@ -1043,7 +1043,13 @@ static void qcom_p2p_setup_channels(struct p2p_channels *out)
 
 int qcom_p2p_enable(const struct qcom_p2p_params *params)
 {
-    struct p2p_config p2p;
+    /* struct p2p_config is ~2.3 KB — larger than the whole 2 KB stack of the
+     * Zephyr shell/net_mgmt caller thread (CONFIG_SHELL_STACK_SIZE). Putting it
+     * on the stack overflows into the .bss just below the stack region and
+     * silently corrupts firmware globals (e.g. g_wlan_nan_rxp_active, which
+     * then makes dc_begin_scan() suppress every scan and breaks p2p find).
+     * Allocate on the heap for the brief window until p2p_init() copies it. */
+    struct p2p_config *p2p;
     qapi_WLAN_P2P_Set_Config_t fw_cfg;
 
     if (params == NULL) {
@@ -1092,60 +1098,69 @@ int qcom_p2p_enable(const struct qcom_p2p_params *params)
         memset(s_ctx.wps.uuid, 0, sizeof(s_ctx.wps.uuid));
     }
 
-    memset(&p2p, 0, sizeof(p2p));
-    p2p.cb_ctx          = &s_ctx;
-    p2p.debug_print     = qcom_p2p_debug_print;
-    p2p.p2p_scan        = qcom_p2p_scan;
-    p2p.send_action     = qcom_send_action;
-    p2p.send_action_done = qcom_send_action_done;
-    p2p.go_neg_completed = qcom_go_neg_completed;
-    p2p.go_neg_req_rx   = qcom_go_neg_req_rx;
-    p2p.dev_found       = qcom_dev_found;
-    p2p.dev_lost        = qcom_dev_lost;
-    p2p.find_stopped    = qcom_find_stopped;
-    p2p.start_listen    = qcom_start_listen;
-    p2p.stop_listen     = qcom_stop_listen;
-    p2p.send_probe_resp = qcom_send_probe_resp;
-    p2p.sd_request      = qcom_sd_request;
-    p2p.sd_response     = qcom_sd_response;
-    p2p.prov_disc_req   = qcom_prov_disc_req;
-    p2p.prov_disc_resp  = qcom_prov_disc_resp;
-    p2p.prov_disc_fail  = qcom_prov_disc_fail;
-    p2p.invitation_process  = qcom_invitation_process;
-    p2p.invitation_received = qcom_invitation_received;
-    p2p.invitation_result   = qcom_invitation_result;
-    p2p.get_noa             = qcom_get_noa;
-    p2p.go_connected        = qcom_go_connected;
-    p2p.presence_resp       = qcom_presence_resp;
-    p2p.is_concurrent_session_active = qcom_is_concurrent_session_active;
-    p2p.is_p2p_in_progress  = qcom_p2p_in_progress;
-    p2p.get_persistent_group = qcom_get_persistent_group;
-    p2p.get_go_info         = qcom_get_go_info;
-    p2p.remove_stale_groups = qcom_remove_stale_groups;
-    p2p.p2ps_prov_complete  = qcom_p2ps_prov_complete;
-    p2p.prov_disc_resp_cb   = qcom_prov_disc_resp_cb;
-    p2p.get_pref_freq_list  = qcom_p2p_get_pref_freq_list;
+    p2p = k_malloc(sizeof(*p2p));
+    if (p2p == NULL) {
+        LOG_ERR("p2p_config alloc failed");
+        return -1;
+    }
+    memset(p2p, 0, sizeof(*p2p));
+    p2p->cb_ctx          = &s_ctx;
+    p2p->debug_print     = qcom_p2p_debug_print;
+    p2p->p2p_scan        = qcom_p2p_scan;
+    p2p->send_action     = qcom_send_action;
+    p2p->send_action_done = qcom_send_action_done;
+    p2p->go_neg_completed = qcom_go_neg_completed;
+    p2p->go_neg_req_rx   = qcom_go_neg_req_rx;
+    p2p->dev_found       = qcom_dev_found;
+    p2p->dev_lost        = qcom_dev_lost;
+    p2p->find_stopped    = qcom_find_stopped;
+    p2p->start_listen    = qcom_start_listen;
+    p2p->stop_listen     = qcom_stop_listen;
+    p2p->send_probe_resp = qcom_send_probe_resp;
+    p2p->sd_request      = qcom_sd_request;
+    p2p->sd_response     = qcom_sd_response;
+    p2p->prov_disc_req   = qcom_prov_disc_req;
+    p2p->prov_disc_resp  = qcom_prov_disc_resp;
+    p2p->prov_disc_fail  = qcom_prov_disc_fail;
+    p2p->invitation_process  = qcom_invitation_process;
+    p2p->invitation_received = qcom_invitation_received;
+    p2p->invitation_result   = qcom_invitation_result;
+    p2p->get_noa             = qcom_get_noa;
+    p2p->go_connected        = qcom_go_connected;
+    p2p->presence_resp       = qcom_presence_resp;
+    p2p->is_concurrent_session_active = qcom_is_concurrent_session_active;
+    p2p->is_p2p_in_progress  = qcom_p2p_in_progress;
+    p2p->get_persistent_group = qcom_get_persistent_group;
+    p2p->get_go_info         = qcom_get_go_info;
+    p2p->remove_stale_groups = qcom_remove_stale_groups;
+    p2p->p2ps_prov_complete  = qcom_p2ps_prov_complete;
+    p2p->prov_disc_resp_cb   = qcom_prov_disc_resp_cb;
+    p2p->get_pref_freq_list  = qcom_p2p_get_pref_freq_list;
 
-    memcpy(p2p.dev_addr, params->dev_addr, ETH_ALEN);
-    p2p.dev_name        = (char *)params->device_name;
-    memcpy(p2p.pri_dev_type, params->pri_dev_type, WPS_DEV_TYPE_LEN);
-    memcpy(p2p.country, params->country, 3);
-    p2p.config_methods  = params->config_methods;
-    p2p.reg_class       = params->listen_reg_class;
-    p2p.channel         = params->listen_channel;
-    p2p.channel_forced  = 1;
-    p2p.op_reg_class    = params->op_reg_class;
-    p2p.op_channel      = params->op_channel;
-    p2p.cfg_op_channel  = 1;
-    p2p.max_peers       = 100;
-    p2p.max_listen      = 5000;
-    p2p.passphrase_len  = 8;
-    p2p.p2p_6ghz_disable = params->p2p_6ghz_disable;
+    memcpy(p2p->dev_addr, params->dev_addr, ETH_ALEN);
+    p2p->dev_name        = (char *)params->device_name;
+    memcpy(p2p->pri_dev_type, params->pri_dev_type, WPS_DEV_TYPE_LEN);
+    memcpy(p2p->country, params->country, 3);
+    p2p->config_methods  = params->config_methods;
+    p2p->reg_class       = params->listen_reg_class;
+    p2p->channel         = params->listen_channel;
+    p2p->channel_forced  = 1;
+    p2p->op_reg_class    = params->op_reg_class;
+    p2p->op_channel      = params->op_channel;
+    p2p->cfg_op_channel  = 1;
+    p2p->max_peers       = 100;
+    p2p->max_listen      = 5000;
+    p2p->passphrase_len  = 8;
+    p2p->p2p_6ghz_disable = params->p2p_6ghz_disable;
 
-    qcom_p2p_setup_channels(&p2p.channels);
-    qcom_p2p_setup_channels(&p2p.cli_channels);
+    qcom_p2p_setup_channels(&p2p->channels);
+    qcom_p2p_setup_channels(&p2p->cli_channels);
 
-    s_ctx.handle = p2p_init(&p2p);
+    /* p2p_init() deep-copies cfg (and os_strdup's its string pointers) into
+     * its own allocation, so the heap config is free to release right after. */
+    s_ctx.handle = p2p_init(p2p);
+    k_free(p2p);
+    p2p = NULL;
     if (s_ctx.handle == NULL) {
         LOG_ERR("p2p_init failed");
         return -1;
