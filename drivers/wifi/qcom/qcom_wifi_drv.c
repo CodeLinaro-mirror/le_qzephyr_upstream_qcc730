@@ -1703,7 +1703,6 @@ static int qwifi_drv_get_bmiss_threshold(const struct device *dev, struct qcom_w
 int32_t set_op_mode(struct device *dev, char *opmode, char *hidden_ssid)
 {
     int32_t ret = -1;
-    uint8_t hidden_flag = 0;
     qapi_WLAN_DEV_Mode_e devMode;
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
     uint8_t dev_id = dev_data->active_device;
@@ -1716,13 +1715,7 @@ int32_t set_op_mode(struct device *dev, char *opmode, char *hidden_ssid)
 
     if(!strcmp(opmode,"ap")) {
         devMode = DEV_MODE_AP_E;
-        if(strcmp(hidden_ssid,"hidden") == 0) {
-            hidden_flag = 1;
-        }
-        else if(strcmp(hidden_ssid,"0") == 0 || strlen(hidden_ssid) == 0) {
-            hidden_flag = 0;
-        }
-        else {
+        if(strcmp(hidden_ssid,"hidden") != 0 && strcmp(hidden_ssid,"0") != 0 && strlen(hidden_ssid) != 0) {
             LOG_ERR("Invalid hidden_ssid value: %s", hidden_ssid);
             return -EINVAL;
         }
@@ -1758,19 +1751,12 @@ int32_t set_op_mode(struct device *dev, char *opmode, char *hidden_ssid)
 		info_printf("set mode %s fail\n", opmode);
 		return -EINVAL;
 	}
-	
-	if(devMode == DEV_MODE_AP_E) {
-		ret = qapi_WLAN_Set_Param(dev_id, 
-								__QAPI_WLAN_PARAM_GROUP_WIRELESS,
-								__QAPI_WLAN_PARAM_GROUP_WIRELESS_AP_ENABLE_HIDDEN_MODE,
-								&hidden_flag,
-								sizeof(hidden_flag),
-								FALSE);
-		if(ret != 0) {
-			LOG_INF("Not able to set hidden mode for AP \r\n");
-			return -EINVAL;
-		}
-	}
+
+	/*
+	 * WIRELESS_AP_ENABLE_HIDDEN_MODE is set in ap_enable() once SSID/channel/
+	 * passphrase are configured; setting it here fails firmware validation
+	 * on the very first `set_operation_mode ap`.
+	 */
 	return ret;
 }
 
