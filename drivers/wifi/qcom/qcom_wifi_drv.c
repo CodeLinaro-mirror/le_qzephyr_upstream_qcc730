@@ -528,6 +528,173 @@ static void qwifi_disconnect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t
     }
 }
 
+#ifdef SUPPORT_TWT_STA
+/* Mirrors wlan_twt_setup_evt_t / wlan_twt_teardown_evt_t in
+ * prop/libwifiqcc730/sme/inc/nt_twt.h (not on driver include path). */
+typedef struct {
+    uint16_t msg_id;
+    uint8_t  network_id;
+    uint8_t  status;
+    uint16_t reserved_1;
+    uint8_t  dialog_id;
+    uint8_t  negotiation_type;
+    uint32_t wake_duration;
+    uint32_t wake_interval;
+    uint32_t twt_start_tsf_lo;
+    uint32_t twt_start_tsf_hi;
+    uint8_t  flow_type;
+    uint8_t  trigger_type;
+    uint8_t  reason_code;
+    uint8_t  flow_id;
+} __attribute__((packed)) qwifi_twt_setup_evt_t;
+
+typedef struct {
+    uint16_t msg_id;
+    uint8_t  network_id;
+    uint8_t  status;
+    uint8_t  flow_id;          /* negotiated individual TWT flow ID */
+    uint8_t  host_initiated;
+    uint8_t  dialog_id;
+    uint8_t  reason_code;
+} __attribute__((packed)) qwifi_twt_teardown_evt_t;
+
+enum qwifi_twt_evt_status {
+    QWIFI_TWT_EVT_STATUS_OK = 0,
+    QWIFI_TWT_EVT_DIALOG_ID_NOT_EXIST = 1,
+    QWIFI_TWT_EVT_INVALID_PARAM = 2,
+    QWIFI_TWT_EVT_NO_RESOURCE = 3,
+    QWIFI_TWT_EVT_FW_NOT_READY = 4,
+    QWIFI_TWT_EVT_NO_ACK = 5,
+    QWIFI_TWT_EVT_NO_RESPONSE = 6,
+    QWIFI_TWT_EVT_DENIED = 7,
+    QWIFI_TWT_EVT_UNKNOWN_ERROR = 8,
+    QWIFI_TWT_EVT_STA_NOT_ASSOCIATED = 9,
+    QWIFI_TWT_EVT_SETUP_IN_PROGRESS = 10,
+    QWIFI_TWT_EVT_SESSION_ALREADY_EXISTS = 11,
+};
+
+static void qwifi_twt_setup_event(struct device *dev, void *private)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    struct net_if *iface = dev_data->iface;
+    qwifi_twt_setup_evt_t *evt = (qwifi_twt_setup_evt_t *)private;
+    struct wifi_twt_params twt_params = {0};
+
+    if (!iface || !evt) {
+        LOG_ERR("TWT setup event: invalid iface/private");
+        return;
+    }
+
+    twt_params.operation = WIFI_TWT_SETUP;
+    twt_params.dialog_token = evt->dialog_id;
+    twt_params.flow_id = evt->flow_id;
+    twt_params.negotiation_type = (evt->negotiation_type == 0) ?
+                                  WIFI_TWT_INDIVIDUAL : WIFI_TWT_BROADCAST;
+
+    switch (evt->reason_code) {
+    case QWIFI_TWT_EVT_STATUS_OK:
+        twt_params.resp_status = WIFI_TWT_RESP_RECEIVED;
+        twt_params.setup_cmd = WIFI_TWT_SETUP_CMD_ACCEPT;
+        break;
+    case QWIFI_TWT_EVT_DENIED:
+        twt_params.resp_status = WIFI_TWT_RESP_RECEIVED;
+        twt_params.setup_cmd = WIFI_TWT_SETUP_CMD_REJECT;
+        twt_params.fail_reason = WIFI_TWT_FAIL_UNSPECIFIED;
+        break;
+    case QWIFI_TWT_EVT_NO_ACK:
+    case QWIFI_TWT_EVT_NO_RESPONSE:
+        twt_params.resp_status = WIFI_TWT_RESP_NOT_RECEIVED;
+        twt_params.setup_cmd = WIFI_TWT_SETUP_CMD_REJECT;
+        twt_params.fail_reason = WIFI_TWT_FAIL_CMD_EXEC_FAIL;
+        break;
+    case QWIFI_TWT_EVT_STA_NOT_ASSOCIATED:
+        twt_params.resp_status = WIFI_TWT_RESP_NOT_RECEIVED;
+        twt_params.setup_cmd = WIFI_TWT_SETUP_CMD_REJECT;
+        twt_params.fail_reason = WIFI_TWT_FAIL_DEVICE_NOT_CONNECTED;
+        break;
+    case QWIFI_TWT_EVT_SETUP_IN_PROGRESS:
+    case QWIFI_TWT_EVT_FW_NOT_READY:
+        twt_params.resp_status = WIFI_TWT_RESP_NOT_RECEIVED;
+        twt_params.setup_cmd = WIFI_TWT_SETUP_CMD_REJECT;
+        twt_params.fail_reason = WIFI_TWT_FAIL_OPERATION_IN_PROGRESS;
+        break;
+    case QWIFI_TWT_EVT_SESSION_ALREADY_EXISTS:
+    case QWIFI_TWT_EVT_NO_RESOURCE:
+        twt_params.resp_status = WIFI_TWT_RESP_NOT_RECEIVED;
+        twt_params.setup_cmd = WIFI_TWT_SETUP_CMD_REJECT;
+        twt_params.fail_reason = WIFI_TWT_FAIL_FLOW_ALREADY_EXISTS;
+        break;
+    case QWIFI_TWT_EVT_DIALOG_ID_NOT_EXIST:
+        twt_params.resp_status = WIFI_TWT_RESP_NOT_RECEIVED;
+        twt_params.setup_cmd = WIFI_TWT_SETUP_CMD_REJECT;
+        twt_params.fail_reason = WIFI_TWT_FAIL_INVALID_FLOW_ID;
+        break;
+    case QWIFI_TWT_EVT_INVALID_PARAM:
+    case QWIFI_TWT_EVT_UNKNOWN_ERROR:
+    default:
+        twt_params.resp_status = WIFI_TWT_RESP_NOT_RECEIVED;
+        twt_params.setup_cmd = WIFI_TWT_SETUP_CMD_REJECT;
+        twt_params.fail_reason = WIFI_TWT_FAIL_CMD_EXEC_FAIL;
+        break;
+    }
+
+    /* lib reports wake_duration/interval in us; Zephyr expects us. */
+    twt_params.setup.twt_wake_interval = evt->wake_duration;
+    twt_params.setup.twt_interval = (uint64_t)evt->wake_interval;
+    twt_params.setup.announce = (evt->flow_type == 0);
+    twt_params.setup.trigger  = (evt->trigger_type != 0);
+    twt_params.setup.implicit = true;
+    twt_params.setup.responder = false;
+
+    LOG_INF("TWT setup evt: dlg=%d flow=%d neg=%d wake_dur_us=%u interval_us=%llu status=%d",
+            evt->dialog_id, evt->flow_id, evt->negotiation_type,
+            twt_params.setup.twt_wake_interval,
+            twt_params.setup.twt_interval, evt->reason_code);
+
+    wifi_mgmt_raise_twt_event(iface, &twt_params);
+}
+
+static void qwifi_twt_teardown_event(struct device *dev, void *private)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    struct net_if *iface = dev_data->iface;
+    qwifi_twt_teardown_evt_t *evt = (qwifi_twt_teardown_evt_t *)private;
+    struct wifi_twt_params twt_params = {0};
+
+    if (!iface || !evt) {
+        LOG_ERR("TWT teardown event: invalid iface/private");
+        return;
+    }
+
+    twt_params.operation = WIFI_TWT_TEARDOWN;
+    twt_params.dialog_token = evt->dialog_id;
+    twt_params.flow_id = evt->flow_id;
+    twt_params.negotiation_type = WIFI_TWT_INDIVIDUAL;
+    twt_params.teardown_status = (evt->reason_code == 0) ?
+                                 WIFI_TWT_TEARDOWN_SUCCESS :
+                                 WIFI_TWT_TEARDOWN_FAILED;
+
+    LOG_INF("TWT teardown evt: dlg=%d host_init=%d status=%d",
+            evt->dialog_id, evt->host_initiated, evt->reason_code);
+
+    wifi_mgmt_raise_twt_event(iface, &twt_params);
+}
+
+static void qwifi_twt_ext_wakeup_event(struct device *dev, void *private)
+{
+    qapi_WLAN_TWT_Ext_Wakeup_Evt_t *evt =
+            (qapi_WLAN_TWT_Ext_Wakeup_Evt_t *)private;
+
+    if (!dev || !evt) {
+        LOG_ERR("TWT external wake event: invalid device/payload");
+        return;
+    }
+
+    LOG_INF("TWT external wake event: enable=%d status=%d",
+            evt->enable, evt->reason_code);
+}
+#endif /* SUPPORT_TWT_STA */
+
 static void qwifi_drv_event_handler(uint8_t dev_id, uint32_t event, void *context, void *private, uint32_t length)
 {
     struct device *target_dev = NULL;
@@ -556,6 +723,17 @@ static void qwifi_drv_event_handler(uint8_t dev_id, uint32_t event, void *contex
     case QAPI_WLAN_WPS_SCAN_AP_CB_E:
     case QAPI_WLAN_WPS_SCAN_COMP_CB_E:
         qwifi_wps_scan_event(event, private, length);
+        break;
+#endif
+#ifdef SUPPORT_TWT_STA
+    case QAPI_WLAN_TWT_SETUP_CB_E:
+        qwifi_twt_setup_event(target_dev, private);
+        break;
+    case QAPI_WLAN_TWT_TEARDOWN_CB_E:
+        qwifi_twt_teardown_event(target_dev, private);
+        break;
+    case QAPI_WLAN_TWT_EXT_WAKEUP_CB_E:
+        qwifi_twt_ext_wakeup_event(target_dev, private);
         break;
 #endif
     default:
@@ -2158,6 +2336,13 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
         break;
     }
 
+#ifdef SUPPORT_TWT_STA
+    /* QCC730 FW supports TWT over 11n (HT20) connections; Zephyr's TWT
+     * pre-check requires link_mode >= WIFI_6 and twt_capable — bypass. */
+    status->link_mode = WIFI_6;
+    status->twt_capable = true;
+#endif
+
     /* security */
     switch (wifi_status.auth_mode) {
     case QAPI_WLAN_AUTH_WPA3_SAE_E:
@@ -3201,6 +3386,44 @@ static int qwifi_drv_dev_init(const struct device *dev)
     return 0;
 }
 
+/* TWT setup/teardown (2026-07-08): map Zephyr wifi_twt_params to the lib
+ * WMI_TWT_SETUP_CMD / WMI_TWT_TEARDOWN_CMD and forward via qapi. lib
+ * (nt_twt_setup_cmd_hdl) supports individual + unannounced only; wake_duration
+ * >= 2ms, wake_interval >= wake_duration, dialog_id >= 1, twt_start_tsf = 0 =>
+ * FW decides. Despite the "in ms" comment on wlan_twt_setup_cmd_t in nt_twt.h,
+ * nt_twt_setup_cmd_hdl's MIN_TWT_WAKEUP_DURATION check and twt_wake_tu division
+ * (nt_twt.c:770/854) confirm the field is actually raw microseconds, same unit
+ * Zephyr uses — pass through unscaled (2026-07-09, confirmed via UART debug log
+ * showing MIN_TWT_WAKEUP_DURATION=2000us rejecting a wrongly us->ms-scaled 65).
+ * Event up-link not wired yet. */
+static int qwifi_drv_set_twt(const struct device *dev, struct wifi_twt_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+
+    if (params->operation == WIFI_TWT_SETUP) {
+        WMI_TWT_SETUP_CMD cmd = {0};
+        cmd.dialog_id        = params->dialog_token;
+        cmd.negotiation_type = 0;                                       /* individual */
+        cmd.wake_duration    = params->setup.twt_wake_interval;         /* us (SP) */
+        cmd.wake_interval    = (uint32_t)params->setup.twt_interval;    /* us (SI) */
+        cmd.flow_type        = 1;                                       /* unannounced */
+        cmd.trigger_type     = params->setup.trigger ? 1 : 0;
+        cmd.twt_start_tsf_lo = 0;
+        cmd.twt_start_tsf_hi = 0;
+        LOG_ERR("TWT setup dbg: wake_interval_us=%u twt_interval_us=%llu -> wake_duration=%u wake_interval=%u",
+                params->setup.twt_wake_interval, params->setup.twt_interval,
+                cmd.wake_duration, cmd.wake_interval);
+        return qapi_WLAN_Twt_Setup(deviceId, &cmd);
+    } else if (params->operation == WIFI_TWT_TEARDOWN) {
+        WMI_TWT_TEARDOWN_CMD cmd = {0};
+        cmd.dialog_id = params->dialog_token;
+        return qapi_WLAN_Twt_Teardown(deviceId, &cmd);
+    }
+
+    return -ENOTSUP;
+}
+
 static const struct wifi_mgmt_ops qwifi_drv_mgmt = {
     .scan = qwifi_drv_scan,
     .connect = qwifi_drv_connect,
@@ -3214,6 +3437,7 @@ static const struct wifi_mgmt_ops qwifi_drv_mgmt = {
     .ap_config_params = ap_config_params,
     .set_power_save = qwifi_power_save,
     .get_power_save_config = qwifi_get_power_save,
+    .set_twt = qwifi_drv_set_twt,
 #if defined(CONFIG_WIFI_QCOM_ENTERPRISE) && defined(CONFIG_WIFI_NM_WPA_SUPPLICANT_CRYPTO_ENTERPRISE)
     .enterprise_creds = supplicant_add_enterprise_creds,
 #endif
