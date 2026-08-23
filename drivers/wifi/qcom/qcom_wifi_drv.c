@@ -56,6 +56,9 @@ struct qwifi_bss_status_t {
 struct qwifi_ap_status_t {
     int status;
     char ssid[WIFI_SSID_MAX_LEN + 1];
+    enum wifi_frequency_bands band;
+    unsigned int channel;
+    enum wifi_security_type security;
 };
 
 struct qwifi_drv_dev_data_t {
@@ -798,8 +801,13 @@ static int ap_enable(const struct device *dev, struct wifi_connect_req_params *p
         return -EAGAIN;
     }
 
-    /* save ssid for `wifi ap status` command. */
+    /* save ssid/band/channel/security for `wifi ap status` command — the
+     * shared qapi WIFI_STATUS query used for STA is link-centric and does
+     * not reflect the SAP's own config, so stash what we set it up with. */
     strlcpy(ap_status->ssid, params->ssid, sizeof(ap_status->ssid));
+    ap_status->band = params->band;
+    ap_status->channel = params->channel;
+    ap_status->security = params->security;
 
     return 0;
 }
@@ -1842,6 +1850,13 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
         struct net_linkaddr *link_addr = net_if_get_link_addr(dev_data->iface);
         memcpy(status->bssid, link_addr->addr, sizeof(status->bssid));
         strlcpy(status->ssid, ap_status->ssid, sizeof(status->ssid));
+        /* band/channel/security come from what `ap enable` was actually
+         * configured with — the qapi WIFI_STATUS query below is the STA's
+         * own link state and has no AP-mode meaning, so don't let it
+         * clobber these. */
+        status->band = ap_status->band;
+        status->channel = ap_status->channel;
+        status->security = ap_status->security;
     } else {
         LOG_ERR("%s:%d unknown mode %d.", __func__, __LINE__, dev_mode);
         return -EINVAL;
@@ -1857,57 +1872,64 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
         return ret;
     }
 
-    /** link mode */
-    switch (wifi_status.link_mode) {
-    case MODE_11B:
-        status->link_mode = WIFI_1;
-        break;
-    case MODE_11A_ONLY:
-        status->link_mode = WIFI_2;
-        break;
-    case MODE_11G:
-        status->link_mode = WIFI_3;
-        break;
-    case MODE_11A_HT20:
-    case MODE_11NG_HT20:
-    case MODE_11ABGN_HT20:
-        status->link_mode = WIFI_4;
-        break;
-    default:
-        status->link_mode = WIFI_LINK_MODE_UNKNOWN;
-        break;
-    }
-
-    /* security */
-    switch (wifi_status.auth_mode) {
-    case QAPI_WLAN_AUTH_WPA3_SAE_E:
-        if (dev_data->cfg_connect.security == WIFI_SECURITY_TYPE_SAE_H2E ||
-                dev_data->cfg_connect.security == WIFI_SECURITY_TYPE_SAE_HNP ||
-                dev_data->cfg_connect.security == WIFI_SECURITY_TYPE_SAE_AUTO) {
-            status->security = dev_data->cfg_connect.security;
-        } else {
-            status->security = WIFI_SECURITY_TYPE_SAE;
+    /** The rest of this qapi WIFI_STATUS data (link mode, security, rssi,
+     * dtim/beacon interval, band/channel) is the STA's own link state —
+     * it has no AP-mode meaning, so only apply it for the STA branch. The
+     * AP branch above already populated band/channel/security from its
+     * own config. */
+    if (dev_mode == DEV_MODE_STATION_E) {
+        /** link mode */
+        switch (wifi_status.link_mode) {
+        case MODE_11B:
+            status->link_mode = WIFI_1;
+            break;
+        case MODE_11A_ONLY:
+            status->link_mode = WIFI_2;
+            break;
+        case MODE_11G:
+            status->link_mode = WIFI_3;
+            break;
+        case MODE_11A_HT20:
+        case MODE_11NG_HT20:
+        case MODE_11ABGN_HT20:
+            status->link_mode = WIFI_4;
+            break;
+        default:
+            status->link_mode = WIFI_LINK_MODE_UNKNOWN;
+            break;
         }
-        break;
-    case QAPI_WLAN_AUTH_WPA2_PSK_E:
-        status->security = WIFI_SECURITY_TYPE_PSK;
-        break;
-    case QAPI_WLAN_AUTH_WPA_PSK_E:
-        status->security = WIFI_SECURITY_TYPE_WPA_PSK;
-        break;
-    case QAPI_WLAN_AUTH_NONE_E:
-        status->security = WIFI_SECURITY_TYPE_NONE;
-        break;
-    default:
-        status->security = WIFI_SECURITY_TYPE_UNKNOWN;
-        break;
-    }
 
-    status->rssi = wifi_status.rssi;
-    status->dtim_period = wifi_status.dtim_period;
-    status->beacon_interval = wifi_status.beacon_interval;
-    status->band = wifi_status.band;
-    status->channel = wifi_status.channel;
+        /* security */
+        switch (wifi_status.auth_mode) {
+        case QAPI_WLAN_AUTH_WPA3_SAE_E:
+            if (dev_data->cfg_connect.security == WIFI_SECURITY_TYPE_SAE_H2E ||
+                    dev_data->cfg_connect.security == WIFI_SECURITY_TYPE_SAE_HNP ||
+                    dev_data->cfg_connect.security == WIFI_SECURITY_TYPE_SAE_AUTO) {
+                status->security = dev_data->cfg_connect.security;
+            } else {
+                status->security = WIFI_SECURITY_TYPE_SAE;
+            }
+            break;
+        case QAPI_WLAN_AUTH_WPA2_PSK_E:
+            status->security = WIFI_SECURITY_TYPE_PSK;
+            break;
+        case QAPI_WLAN_AUTH_WPA_PSK_E:
+            status->security = WIFI_SECURITY_TYPE_WPA_PSK;
+            break;
+        case QAPI_WLAN_AUTH_NONE_E:
+            status->security = WIFI_SECURITY_TYPE_NONE;
+            break;
+        default:
+            status->security = WIFI_SECURITY_TYPE_UNKNOWN;
+            break;
+        }
+
+        status->rssi = wifi_status.rssi;
+        status->dtim_period = wifi_status.dtim_period;
+        status->beacon_interval = wifi_status.beacon_interval;
+        status->band = wifi_status.band;
+        status->channel = wifi_status.channel;
+    }
 
     rate_cfg.rate_staid = dev_id;
     ret = qapi_WLAN_Get_Rate(&rate_cfg);
