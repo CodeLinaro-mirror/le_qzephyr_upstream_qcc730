@@ -73,6 +73,17 @@ void qcom_hostap_unlock(void)
 	k_mutex_unlock(&g_he_lock);
 }
 
+void qcom_hostap_wake(void)
+{
+    /* Writing to the same eventfd event_socket_handler() reads forces
+     * eloop_run()'s select() to return and recompute its timeout from
+     * the updated timer list. */
+    if (g_he_eventfd >= 0) {
+        zvfs_eventfd_t one = 1;
+        (void)zvfs_eventfd_write(g_he_eventfd, one);
+    }
+}
+
 int qcom_hostap_post(struct qcom_he_msg *msg)
 {
 	zvfs_eventfd_t one = 1;

@@ -377,8 +377,7 @@ static int station_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *
     /* WPS flow: firmware open assoc → EAP hook → M1-M8 → PSK reconnect.
      * qcom_wps_connect_in_progress() returns true only during the connect
      * phase (PBC active, scan complete), so the check is precise. */
-    if (info->reason_code == RECEIVED_ASSOC_RESP &&
-        qcom_wps_connect_in_progress()) {
+    if (qcom_wps_connect_in_progress()) {
         qcom_wps_assoc_event(dev, info->bssid,
                              connect_status == WIFI_STATUS_CONN_SUCCESS,
                              dev_data->active_device);

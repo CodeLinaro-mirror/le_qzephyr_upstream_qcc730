@@ -60,4 +60,15 @@ void qcom_hostap_eloop_release(void);
 void qcom_hostap_lock(void);
 void qcom_hostap_unlock(void);
 
+/* Wake the eloop thread so it re-evaluates its next select() timeout.
+ *
+ * eloop_register_timeout() only edits the timer list — it doesn't wake an
+ * eloop thread already blocked in select() on a longer timeout. Call this
+ * after qcom_hostap_unlock() whenever registering a timeout directly from a
+ * non-eloop thread, or the new timeout can sit unserviced for a long time.
+ * Not needed after eloop_cancel_timeout() — cancelling can only make eloop
+ * wait longer, never miss a deadline.
+ */
+void qcom_hostap_wake(void);
+
 #endif /* QCOM_HOSTAP_ELOOP_H_ */

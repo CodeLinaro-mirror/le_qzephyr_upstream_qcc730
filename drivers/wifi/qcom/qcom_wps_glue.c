@@ -93,6 +93,7 @@ extern int nt_dpm_delete_sta(uint8_t staid);
 static int qcom_wps_scan(const struct device *dev);
 static void reset_scan_state(void);
 static int  wps_rf_band_cb(void *ctx);
+static void wps_assoc_retry_fn(void *eloop_ctx, void *timeout_ctx);
 
 static void wps_event_cb(void *ctx, enum wps_event event,
                           union wps_event_data *data)
@@ -989,6 +990,8 @@ int qcom_wps_start_pbc(const struct device *dev,
         qapi_WLAN_Disconnect(QCOM_DEV_STA_ID);
     }
 
+    wlan_drv_roaming_disable();
+
     g_wps.dev             = dev;
     g_wps.supp_pbc_active = true;
     g_wps.wps_success     = false;
@@ -1012,6 +1015,7 @@ int qcom_wps_start_pbc(const struct device *dev,
     qcom_hostap_lock();
     eloop_register_timeout(WPS_PBC_WALK_TIME, 0, pbc_walk_timer_fn, NULL, NULL);
     qcom_hostap_unlock();
+    qcom_hostap_wake();
 
     int ret = qcom_wps_scan(dev);
     if (ret != 0) {
@@ -1053,6 +1057,7 @@ int qcom_wps_start_from_bssid(const struct device *dev,
     qcom_hostap_lock();
     eloop_register_timeout(WPS_PBC_WALK_TIME, 0, pbc_walk_timer_fn, NULL, NULL);
     qcom_hostap_unlock();
+    qcom_hostap_wake();
 
     qapi_WLAN_Disconnect(QCOM_DEV_STA_ID);
     return qcom_wps_connect(dev, &g_wps.target_ap);
@@ -1530,7 +1535,8 @@ void qcom_wps_cancel(const struct device *dev)
      *      acquire lock first. Callers are responsible for this.
      */
     eloop_cancel_timeout(pbc_walk_timer_fn, ELOOP_ALL_CTX, ELOOP_ALL_CTX);
-    eloop_cancel_timeout(session_timer_fn,  ELOOP_ALL_CTX, ELOOP_ALL_CTX);
+    eloop_cancel_timeout(session_timer_fn, ELOOP_ALL_CTX, ELOOP_ALL_CTX);
+    eloop_cancel_timeout(wps_assoc_retry_fn, ELOOP_ALL_CTX, ELOOP_ALL_CTX);
 
     nt_dpm_set_eap_enterprise_hook(NULL);
 
@@ -1570,6 +1576,8 @@ void qcom_wps_cancel(const struct device *dev)
     g_wps.cred_table = saved_cred_table;
     g_wps.cred_count = saved_cred_count;
 
+    wlan_drv_roaming_enable();
+
     if (!succeeded) {
         qapi_WLAN_Disconnect(saved_device_id);
         /* Restore pre-WPS credentials so roaming can reconnect to the previous AP. */
@@ -1595,6 +1603,12 @@ static void wps_assoc_retry_fn(void *eloop_ctx, void *timeout_ctx)
 void qcom_wps_assoc_event(const struct device *dev, const uint8_t *bssid,
                            bool success, uint8_t device_id)
 {
+    if (!g_wps.wps_ctx) {
+        LOG_ERR("qcom_wps_assoc_event: wps_ctx not initialised");
+        post_deferred_cancel();
+        return;
+    }
+
     if (!success) {
         if (g_wps.assoc_retries < 4 && g_wps.target_found) {
             g_wps.assoc_retries++;
@@ -1603,12 +1617,11 @@ void qcom_wps_assoc_event(const struct device *dev, const uint8_t *bssid,
             qcom_hostap_lock();
             eloop_register_timeout(0, 200000, wps_assoc_retry_fn, NULL, NULL);
             qcom_hostap_unlock();
+            qcom_hostap_wake();
             return;
         }
         LOG_WRN("qcom_wps_assoc_event: assoc failed, giving up");
-        qcom_hostap_lock();
-        qcom_wps_cancel(dev);
-        qcom_hostap_unlock();
+        post_deferred_cancel();
         return;
     }
 
@@ -1623,19 +1636,7 @@ void qcom_wps_assoc_event(const struct device *dev, const uint8_t *bssid,
      * Initialise per-session wps_data via hostap wps_init().
      * wps_ctx was created in qcom_wps_init() and holds device info + callbacks.
      * wps_data must be non-NULL before the EAP hook processes incoming frames.
-     *
-     * UUID-E: derive from interface MAC address (RFC 4122 name-based variant).
-     * For now use the MAC address bytes directly padded to 16 bytes — a proper
-     * uuid_gen_mac_addr() derivation can replace this later.
      */
-    if (!g_wps.wps_ctx) {
-        LOG_ERR("qcom_wps_assoc_event: wps_ctx not initialised");
-        qcom_hostap_lock();
-        qcom_wps_cancel(dev);
-        qcom_hostap_unlock();
-        return;
-    }
-
     {
         struct wps_config cfg = {0};
         cfg.wps  = g_wps.wps_ctx;
@@ -1725,6 +1726,7 @@ void qcom_wps_assoc_event(const struct device *dev, const uint8_t *bssid,
     qcom_hostap_lock();
     eloop_register_timeout(WPS_PBC_WALK_TIME, 0, session_timer_fn, NULL, NULL);
     qcom_hostap_unlock();
+    qcom_hostap_wake();
 
     LOG_DBG("qcom_wps_assoc_event: EAP hook registered, waiting for WSC_Start");
 }
