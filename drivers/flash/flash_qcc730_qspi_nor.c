@@ -347,7 +347,7 @@ static int drv_flash_read_reg_internal(uint8_t reg_opcode, uint8_t len, uint8_t 
 		LOG_DBG("drv_flash_read_reg_internal: wrong parameter obtained");
 		return -EINVAL;
 	}
-#if CONFIG_FLASH_QCC730_XIP_MODE
+#if defined(CONFIG_FLASH_QCC730_XIP_MODE)
 	if (QSPI_TRANS_MODE == QSPI_PIO_MODE_E) {
 		drv_qspi_disable_xip_mode();
 	}
@@ -361,7 +361,7 @@ static int drv_flash_read_reg_internal(uint8_t reg_opcode, uint8_t len, uint8_t 
 		res = -ENODEV;
 	}
 
-#ifdef CONFIG_FLASH_QCC730_XIP_MODE
+#if defined(CONFIG_FLASH_QCC730_XIP_MODE)
 	if (QSPI_TRANS_MODE == QSPI_PIO_MODE_E) {
 		drv_qspi_restore_xip_mode();
 	}
@@ -519,7 +519,7 @@ static int drv_flash_write_reg_internal(const struct device *dev, uint8_t reg_op
 		return -EINVAL;
 	}
 
-#if CONFIG_FLASH_QCC730_XIP_MODE
+#if defined(CONFIG_FLASH_QCC730_XIP_MODE)
 	if (QSPI_TRANS_MODE == QSPI_PIO_MODE_E) {
 		drv_qspi_disable_xip_mode();
 	}
@@ -539,7 +539,7 @@ static int drv_flash_write_reg_internal(const struct device *dev, uint8_t reg_op
 		ret = -ENODEV;
 	}
 
-#if CONFIG_FLASH_QCC730_XIP_MODE
+#if defined(CONFIG_FLASH_QCC730_XIP_MODE)
 	if (QSPI_TRANS_MODE == QSPI_PIO_MODE_E) {
 		drv_qspi_restore_xip_mode();
 	}
@@ -802,13 +802,13 @@ int flash_qcc730_qspi_nor_erase(const struct device *dev, off_t offset, size_t s
 	k_sem_take(&data->sem, FLASH_SEM_TIMEOUT);
 #endif
 
-#if CONFIG_FLASH_QCC730_XIP_MODE
+#if defined(CONFIG_FLASH_QCC730_XIP_MODE)
 	if (QSPI_TRANS_MODE == QSPI_PIO_MODE_E) {
 		drv_qspi_disable_xip_mode();
 	}
 #endif
 
-#if CONFIG_FLASH_QCC730_XIP_MODE
+#if defined(CONFIG_FLASH_QCC730_XIP_MODE)
 	/* Signal the HW write operation is ongoing. Needed for XIP. */
 	if (data->flash_ctx_data.config->suspend_program_opcode > 0 &&
 	    data->flash_ctx_data.config->resume_program_opcode > 0) {
@@ -971,7 +971,7 @@ int flash_qcc730_qspi_nor_erase(const struct device *dev, off_t offset, size_t s
 	}
 
 cleanup:
-#if CONFIG_FLASH_QCC730_XIP_MODE
+#if defined(CONFIG_FLASH_QCC730_XIP_MODE)
 	(void)drv_qspi_xip_set_pe_state(false);
 	if (QSPI_TRANS_MODE == QSPI_PIO_MODE_E) {
 		drv_qspi_restore_xip_mode();
@@ -1016,7 +1016,7 @@ int flash_qcc730_qspi_nor_write(const struct device *dev, off_t offset, const vo
 	k_sem_take(&data->sem, FLASH_SEM_TIMEOUT);
 #endif
 
-#if CONFIG_FLASH_QCC730_XIP_MODE
+#if defined(CONFIG_FLASH_QCC730_XIP_MODE)
 	if (QSPI_TRANS_MODE == QSPI_PIO_MODE_E) {
 		drv_qspi_disable_xip_mode();
 	}
@@ -1028,7 +1028,7 @@ int flash_qcc730_qspi_nor_write(const struct device *dev, off_t offset, const vo
 				   (qspi_mode_t)data->flash_ctx_data.config->write_addr_mode,
 				   (qspi_mode_t)data->flash_ctx_data.config->write_data_mode, true);
 
-#if CONFIG_FLASH_QCC730_XIP_MODE
+#if defined(CONFIG_FLASH_QCC730_XIP_MODE)
 	/* Signle the HW write operation is ongoing. Needed for XIP. */
 	if (data->flash_ctx_data.config->suspend_program_opcode > 0 &&
 	    data->flash_ctx_data.config->resume_program_opcode > 0) {
@@ -1072,7 +1072,7 @@ int flash_qcc730_qspi_nor_write(const struct device *dev, off_t offset, const vo
 		len -= transfer_size;
 	}
 
-#if CONFIG_FLASH_QCC730_XIP_MODE
+#if defined(CONFIG_FLASH_QCC730_XIP_MODE)
 	(void)drv_qspi_xip_set_pe_state(false);
 	if (QSPI_TRANS_MODE == QSPI_PIO_MODE_E) {
 		drv_qspi_restore_xip_mode();
@@ -1117,7 +1117,7 @@ int flash_qcc730_qspi_nor_read(const struct device *dev, off_t offset, void *rea
 	k_sem_take(&data->sem, FLASH_SEM_TIMEOUT);
 #endif
 
-#if CONFIG_FLASH_QCC730_XIP_MODE
+#if defined(CONFIG_FLASH_QCC730_XIP_MODE)
 	if (QSPI_TRANS_MODE == QSPI_PIO_MODE_E) {
 		drv_qspi_disable_xip_mode();
 	}
@@ -1131,7 +1131,7 @@ int flash_qcc730_qspi_nor_read(const struct device *dev, off_t offset, void *rea
 				   (qspi_mode_t)data->flash_ctx_data.config->read_data_mode, false);
 
 	if (!drv_qspi_run_cmd(&qspi_read_cmd, offset, read_buff, len, QSPI_TRANS_MODE)) {
-#if CONFIG_FLASH_QCC730_XIP_MODE
+#if defined(CONFIG_FLASH_QCC730_XIP_MODE)
 		if (QSPI_TRANS_MODE == QSPI_PIO_MODE_E) {
 			(void)drv_qspi_restore_xip_mode();
 		}
@@ -1141,7 +1141,7 @@ int flash_qcc730_qspi_nor_read(const struct device *dev, off_t offset, void *rea
 		return -ECOMM;
 	}
 
-#if CONFIG_FLASH_QCC730_XIP_MODE
+#if defined(CONFIG_FLASH_QCC730_XIP_MODE)
 	if (QSPI_TRANS_MODE == QSPI_PIO_MODE_E) {
 		(void)drv_qspi_restore_xip_mode();
 	}
