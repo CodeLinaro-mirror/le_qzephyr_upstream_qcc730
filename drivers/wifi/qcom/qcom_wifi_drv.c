@@ -71,6 +71,26 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 /* Make sure the waiting time is less than 30ms to make zephyr policy block the suspending process when slab is exhausted.*/
 #define WAIT_TIME_FOR_ALLOC_RX_BUF_MS 20
 
+/* RSN Capabilities bits defined by IEEE 802.11.  Keep these local to the
+ * driver because the public QAPI status exposes the raw FW RSN capability
+ * value, while Zephyr exposes the derived MFP policy enum. */
+#define QCOM_RSN_CAP_MFPR 0x0040U
+#define QCOM_RSN_CAP_MFPC 0x0080U
+
+static enum wifi_mfp_options qcom_rsn_cap_to_mfp(uint16_t rsn_cap)
+{
+    /* MFPR implies that PMF is required; check it before MFPC. */
+    if (rsn_cap & QCOM_RSN_CAP_MFPR) {
+        return WIFI_MFP_REQUIRED;
+    }
+
+    if (rsn_cap & QCOM_RSN_CAP_MFPC) {
+        return WIFI_MFP_OPTIONAL;
+    }
+
+    return WIFI_MFP_DISABLE;
+}
+
 struct qwifi_bss_status_t {
     bool connected;
     uint8_t bssid[NET_ETH_ADDR_LEN];
@@ -2385,6 +2405,10 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
     status->band = wifi_status.band;
     status->channel = wifi_status.channel;
 
+    /* Report the MFP policy actually used by FW to build the local RSN IE.
+     * This avoids reporting the requested -w value when FW used a different
+     * effective policy. */
+    status->mfp = qcom_rsn_cap_to_mfp(wifi_status.rsn_cap);
     rate_cfg.rate_staid = dev_id;
     ret = qapi_WLAN_Get_Rate(&rate_cfg);
     if (ret != QAPI_OK) {
