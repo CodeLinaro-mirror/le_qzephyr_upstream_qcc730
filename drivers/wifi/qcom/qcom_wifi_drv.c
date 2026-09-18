@@ -2378,8 +2378,12 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
         break;
     }
 
+#if defined(CONFIG_QCC730_RCP_BUS_QCSPI)
     /* Firmware reports RSSI as a positive magnitude; real dBm = value - 100 */
     status->rssi = (int)wifi_status.rssi - 100;
+#else
+    status->rssi = wifi_status.rssi;
+#endif
     status->dtim_period = wifi_status.dtim_period;
     status->beacon_interval = wifi_status.beacon_interval;
     status->band = wifi_status.band;
