@@ -12,6 +12,8 @@ manifest:
       url-base: ssh://review-android.quicinc.com:29418/qzephyr/prop
     - name: oss
       url-base: ssh://review-android.quicinc.com:29418/qccsdk/oss
+    - name: root
+      url-base: ssh://review-android.quicinc.com:29418
     - name: zephyrproject-rtos
       url-base: ssh://review-android.quicinc.com:29418/qzephyr/zephyrproject-rtos
   defaults:
@@ -38,10 +40,18 @@ manifest:
       remote: oss
       revision: 3rdparty.qzephyr.1.0.r1-rel
       path: modules/lib/qtcapy
+    - name: qrcp
+      remote: root
+      revision: qrcp.qzephyr.1.0.r1-rel
+      path: qrcp
     - name: matter
       remote: oss
       revision: 3rdparty.qzephyr.1.0.r1-rel
       path: connectedhomeip
+    - name: nanopb
+      remote: zephyrproject-rtos
+      revision: nanopb.qzephyr.1.0.r1-rel
+      path: modules/lib/nanopb
     - name: mbedtls
       remote: zephyrproject-rtos
       revision: mbedtls.qzephyr.2.0.r1-rel
