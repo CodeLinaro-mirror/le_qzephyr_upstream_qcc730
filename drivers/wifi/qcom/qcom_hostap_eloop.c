@@ -42,7 +42,7 @@
 
 LOG_MODULE_REGISTER(qcom_hostap_eloop, LOG_LEVEL_INF);
 
-#define QCOM_HE_THREAD_STACK_SIZE 4096
+#define QCOM_HE_THREAD_STACK_SIZE 6144
 #define QCOM_HE_THREAD_PRIO       K_PRIO_PREEMPT(7)
 
 /* ------------------------------- state ------------------------------- */
@@ -73,6 +73,17 @@ void qcom_hostap_unlock(void)
 	k_mutex_unlock(&g_he_lock);
 }
 
+void qcom_hostap_wake(void)
+{
+    /* Writing to the same eventfd event_socket_handler() reads forces
+     * eloop_run()'s select() to return and recompute its timeout from
+     * the updated timer list. */
+    if (g_he_eventfd >= 0) {
+        zvfs_eventfd_t one = 1;
+        (void)zvfs_eventfd_write(g_he_eventfd, one);
+    }
+}
+
 int qcom_hostap_post(struct qcom_he_msg *msg)
 {
 	zvfs_eventfd_t one = 1;
@@ -91,6 +102,14 @@ int qcom_hostap_post(struct qcom_he_msg *msg)
 	 */
 	(void)zvfs_eventfd_write(g_he_eventfd, one);
 	return 0;
+}
+
+void qcom_hostap_wakeup(void)
+{
+	if (!g_he_running || g_he_eventfd < 0)
+		return;
+	zvfs_eventfd_t one = 1;
+	(void)zvfs_eventfd_write(g_he_eventfd, one);
 }
 
 /* ----------------------------- dispatch ------------------------------ */

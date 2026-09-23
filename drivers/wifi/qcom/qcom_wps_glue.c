@@ -1,0 +1,1732 @@
+/*
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/net/wifi_mgmt.h>
+#include <zephyr/net/wifi_utils.h>
+#include <zephyr/net/net_if.h>
+#include <zephyr/shell/shell.h>
+#include <string.h>
+
+#include "qcom_wps_glue.h"
+#include "qcom_hostap_eloop.h"
+#ifdef CONFIG_WIFI_QCOM_P2P
+#include "qcom_wifi_p2p.h"           /* qcom_p2p_build_assoc_req_ie */
+#endif
+#include "qapi_wlan_base.h"
+#include "qapi_wlan_param_group.h"   /* __QAPI_WLAN_PARAM_GROUP_WIRELESS_APP_IE */
+#include "wlan_drv.h"                /* WMI_FRAME_PROBE_REQ, QCOM_DEV_STA_ID */
+#include "wlan_qapi_helper.h"        /* wlan_clear_privacy */
+
+/* hostap WPS + eloop + l2_packet layer */
+#include "wps/wps.h"
+#include "wps/wps_i.h"
+#include "wps/wps_defs.h"
+#include "wps/wps_attr_parse.h"
+#include "eap_common/eap_wsc_common.h"  /* WSC_FLAGS_MF, WSC_FLAGS_LF, EAP_VENDOR_TYPE_WSC */
+#include "eap_common/eap_defs.h"        /* EAP_CODE_*, EAP_TYPE_*, EAP_VENDOR_WFA */
+#include "common/eapol_common.h"        /* EAPOL_VERSION, IEEE802_1X_TYPE_*, ieee802_1x_hdr */
+#include "utils/eloop.h"
+#include "utils/common.h"   /* WPA_GET_BE16, WPA_PUT_BE16, WPA_PUT_BE32, ETH_P_EAPOL */
+#include "l2_packet/l2_packet.h"
+#include "crypto/dh_group5.h"
+
+LOG_MODULE_REGISTER(qcom_wps_glue, CONFIG_WIFI_LOG_LEVEL);
+
+/* EAP/EAPOL protocol constants — sourced from hostap headers:
+ *   EAPOL_VERSION                : eapol_common.h
+ *   IEEE802_1X_TYPE_EAP_PACKET   : eapol_common.h  (== 0x00)
+ *   IEEE802_1X_TYPE_EAPOL_START  : eapol_common.h  (== 0x01)
+ *   sizeof(struct ieee802_1x_hdr): eapol_common.h  (== 4)
+ *   sizeof(struct eap_hdr)       : eap_defs.h      (== 4)
+ *   WSC_FLAGS_MF / WSC_FLAGS_LF  : eap_wsc_common.h
+ *   EAP_VENDOR_TYPE_WSC          : eap_wsc_common.h
+ */
+#define EAPOL_HEADER_LEN        ((int)sizeof(struct ieee802_1x_hdr))
+#define EAP_HEADER_LEN          ((int)sizeof(struct eap_hdr))
+
+/* EAP-WSC (Wi-Fi Simple Configuration) frame layout */
+#define WSC_OP_CODE_IDENTITY    0xFF    /* local marker: EAP-Response/Identity */
+
+/* Offsets within the EAP payload for Expanded type fields */
+#define WSC_EAP_TYPE_OFFSET     (EAP_HEADER_LEN)                        /* 4  */
+#define WSC_EAP_OUI_OFFSET      (EAP_HEADER_LEN + 1)                    /* 5  */
+#define WSC_EAP_VTYPE_OFFSET    (EAP_HEADER_LEN + 1 + 3)                /* 8  */
+#define WSC_EAP_OPCODE_OFFSET   (EAP_HEADER_LEN + 1 + 3 + 4)            /* 12 */
+#define WSC_EAP_FLAGS_OFFSET    (EAP_HEADER_LEN + 1 + 3 + 4 + 1)        /* 13 */
+#define WSC_EAP_BASE_HDR_LEN    (EAP_HEADER_LEN + 1 + 3 + 4 + 1 + 1)   /* 14 */
+#define WSC_EAP_LEN_FIELD_LEN   2       /* extra bytes when FLAGS_LEN_PRESENT */
+
+/* ------------------------------------------------------------------ */
+/* Forward declarations                                                 */
+/* ------------------------------------------------------------------ */
+
+extern void nt_dpm_set_eap_enterprise_hook(void (*fn)(const uint8_t *src_addr,
+                                                       const uint8_t *eapol_data,
+                                                       uint16_t eapol_len));
+
+/*
+ * Mirror of sta_config_t from prop/libwifiqcc730/dpm/inc/mlme_al.h.
+ * Layout must stay in sync (all uint8_t — no padding).
+ * sec_mode: NONE=0, WEP40=1, WEP104=2, AES=3, TKIP=4
+ */
+typedef struct {
+    uint8_t bssid[WIFI_MAC_ADDR_LEN];
+    uint8_t IsAP;
+    uint8_t sta_mac_address[WIFI_MAC_ADDR_LEN];
+    uint8_t sta_sig;
+    uint8_t dpu_sig;
+    uint8_t qos_sta;
+    uint8_t sec_mode;
+    uint8_t rmf;
+    uint8_t ht;
+} wps_sta_cfg_t;
+
+extern int nt_dpm_add_sta(void *sta_config, uint8_t *staid, uint8_t hal_sta_idx);
+extern int nt_dpm_delete_sta(uint8_t staid);
+
+/* Internal functions defined later in this file */
+static int qcom_wps_scan(const struct device *dev);
+static void reset_scan_state(void);
+static int  wps_rf_band_cb(void *ctx);
+static void wps_assoc_retry_fn(void *eloop_ctx, void *timeout_ctx);
+
+static void wps_event_cb(void *ctx, enum wps_event event,
+                          union wps_event_data *data)
+{
+    ARG_UNUSED(ctx);
+    switch (event) {
+    case WPS_EV_M2D: {
+        u16 cfg_err = data ? data->m2d.config_error : 0;
+        const char *reason;
+        switch (cfg_err) {
+        case WPS_CFG_NO_ERROR:
+            reason = "AP waiting for user confirmation";
+            break;
+        case WPS_CFG_MULTIPLE_PBC_DETECTED:
+            reason = "PBC overlap detected by AP";
+            break;
+        case WPS_CFG_SETUP_LOCKED:
+            reason = "AP setup locked (too many failures)";
+            break;
+        case WPS_CFG_DEVICE_BUSY:
+            reason = "AP device busy";
+            break;
+        default:
+            reason = "see config_error code";
+            break;
+        }
+        LOG_WRN("wps_event_cb: M2D config_error=%u (%s)", cfg_err, reason);
+        break;
+    }
+    case WPS_EV_FAIL: {
+        u16 cfg_err = data ? data->fail.config_error : 0;
+        int msg     = data ? data->fail.msg : 0;
+        LOG_WRN("wps_event_cb: WPS_FAIL msg=%d config_error=%u", msg, cfg_err);
+        break;
+    }
+    case WPS_EV_SUCCESS:
+        LOG_INF("wps_event_cb: WPS_SUCCESS");
+        break;
+    case WPS_EV_PBC_OVERLAP:
+        LOG_WRN("wps_event_cb: PBC overlap — multiple APs with WPS button active");
+        break;
+    default:
+        LOG_DBG("wps_event_cb: event=%d", (int)event);
+        break;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* WSC IE parse result                                                  */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    bool    valid;
+    bool    pbc_active;       /* wps_is_selected_pbc_registrar() result */
+    bool    has_uuid;
+    uint8_t uuid[WPS_UUID_LEN];
+} wsc_ie_info_t;
+
+/*
+ * Parse WSC IE payload:
+ *   - pbc_active  : via wps_is_selected_pbc_registrar() (hostap)
+ *   - uuid_e      : via wps_parse_msg() for UUID dedup
+ *
+ * safe_len truncation prevents partial-TLV parse failure when firmware
+ * caps the IE at WMI_WPS_SCAN_IE_MAX_LEN (210 bytes).
+ */
+static wsc_ie_info_t parse_wsc_ie(const uint8_t *payload, uint8_t payload_len)
+{
+    wsc_ie_info_t info = {0};
+    struct wpabuf buf;
+
+    /* Find last complete TLV */
+    uint16_t safe_len = 0;
+    uint16_t pos = 0;
+    while (pos + 4 <= payload_len) {
+        uint16_t attr_len = WPA_GET_BE16(payload + pos + 2);
+        uint16_t tlv_end  = pos + 4 + attr_len;
+        if (tlv_end > payload_len)
+            break;
+        safe_len = tlv_end;
+        pos = tlv_end;
+    }
+    if (safe_len == 0)
+        return info;
+
+    wpabuf_set(&buf, payload, safe_len);
+
+    /* PBC active check — reuse hostap's wps_is_selected_pbc_registrar() */
+    info.pbc_active = (wps_is_selected_pbc_registrar(&buf) == 1);
+
+    /* UUID-E extraction for overlap dedup — requires full attr parse */
+    struct wps_parse_attr attr;
+    if (wps_parse_msg(&buf, &attr) == 0) {
+        info.valid = true;
+        if (attr.uuid_e) {
+            info.has_uuid = true;
+            memcpy(info.uuid, attr.uuid_e, WPS_UUID_LEN);
+        }
+    }
+
+    return info;
+}
+
+/* ------------------------------------------------------------------ */
+/* Module state                                                         */
+/* ------------------------------------------------------------------ */
+
+/* Pre-WPS connection state — saved in qcom_wps_start_pbc() before
+ * qapi_WLAN_Disconnect clears connect_cmd, restored in qcom_wps_cancel()
+ * on WPS failure so roaming can reconnect to the previous AP. */
+static struct {
+    WMI_CONNECT_CMD        connect_cmd;
+    WMI_SET_PASSPHRASE_CMD passphrase_cmd;
+    bool                   valid;
+} s_pre_wps_conn;
+
+#define WPS_MAX_PBC_REGISTRAR  8
+
+/*
+ * g_wps — WPS enrollee session state for QCC730.
+ *
+ * Design mirrors wpa_supplicant's WPS-related fields, stripped to
+ * enrollee-only needs:
+ *
+ *  wpa_supplicant field       g_wps equivalent       Notes
+ *  ─────────────────────────  ─────────────────────  ──────────────────────
+ *  struct wps_context *wps    wps_ctx                long-term WPS config
+ *  (wps_data via wps_init())  wps_data               per-session protocol state
+ *  wps_success                wps_success            M8 completed flag
+ *  wps_run                    (not needed)           session counter, unused here
+ *  supp_pbc_active            supp_pbc_active        PBC session in progress
+ *  wps_overlap                wps_overlap            PBC overlap flag
+ *  wps_scan_done              (implicit via scanning) scan round state
+ *  struct wps_ap_info *wps_ap target_ap              selected PBC-active AP
+ *  num_wps_ap / wps_ap_iter   pbc_uuid[] dedup table distinct registrar tracking
+ *  wps_fragment_size          (not yet implemented)   EAP-WSC fragmentation not handled
+ *  wps_freq / known_wps_freq  target_ap.channel      target AP channel
+ *  after_wps                  (not needed)           supplicant reconnect logic
+ *
+ * Fields not in wpa_supplicant but needed here:
+ *  dev / device_id            Zephyr device + QAPI device ID
+ *  cred_cb                    (removed)              wps_context.cred_cb handles this
+ *  scanning                   scan round in progress flag
+ *  pbc_uuid[] / counts        UUID dedup (wpa_supplicant uses wps_ap_info array)
+ */
+
+#define WPS_CRED_TABLE_SIZE 4
+
+struct wps_cred_entry {
+    bool                  valid;
+    uint8_t               peer_addr[WIFI_MAC_ADDR_LEN];
+    uint32_t              last_used;
+    struct wps_credential cred;
+};
+
+static struct {
+    /* ------------------------------------------------------------------ */
+    /* Interface-lifetime fields — survive qcom_wps_cancel(), never memset */
+    /* ------------------------------------------------------------------ */
+
+    /* Device context */
+    const struct device    *dev;        /* Zephyr device pointer */
+    uint8_t                 device_id;  /* QAPI device ID */
+
+    /* Protocol context — allocated once in qcom_wps_init(), freed in deinit */
+    struct wps_context     *wps_ctx;    /* long-term config (uuid, dev info, callbacks) */
+
+    /* Persistent credential cache — indexed by peer addr, survives sessions */
+    struct wps_cred_entry  *cred_table;
+    uint8_t                 cred_count;
+
+    /* ------------------------------------------------------------------ */
+    /* Session-lifetime fields — cleared by memset in qcom_wps_cancel()   */
+    /* ------------------------------------------------------------------ */
+
+    /* Protocol context (hostap) */
+    struct wps_data        *wps_data;   /* per-session M1-M8 state */
+
+    /* Session status — mirrors wpa_supplicant */
+    bool    supp_pbc_active;    /* PBC session started (wpa_supplicant::supp_pbc_active) */
+    bool    wps_success;        /* M8 done, credentials received (wpa_supplicant::wps_success) */
+    bool    wps_overlap;        /* PBC overlap detected (wpa_supplicant::wps_overlap) */
+
+    /* Scan phase — per-round, reset before each new scan */
+    bool    scanning;           /* scan round in progress */
+
+    /* Target AP selected during scan (mirrors wps_ap_info) */
+    struct qcom_wps_scan_result target_ap;
+    bool                        target_found;
+
+    /* UUID dedup table for PBC overlap (mirrors wps_ap_info array + iter) */
+    uint8_t  pbc_uuid[WPS_MAX_PBC_REGISTRAR][WPS_UUID_LEN];
+    uint8_t  pbc_uuid_count;       /* entries with valid UUID */
+    uint8_t  pbc_no_uuid_count;    /* PBC-active APs without UUID (conservative) */
+
+    /*
+     * Connected AP BSSID — set in qcom_wps_connect(), used in
+     * qcom_wps_assoc_event() to verify the assoc event is for our target.
+     */
+    uint8_t  ap_bssid[WIFI_MAC_ADDR_LEN];
+
+    /* EAP TX path — ENC_NONE DPM STA entry for EAPOL frame routing */
+    bool     eap_sta_added;
+    uint8_t  eap_staid;
+    struct l2_packet_data *l2;  /* EAP-WSC session l2 handle, opened on assoc, closed on cancel */
+    bool     ie_injected[WMI_NUM_MGMT_FRAME];
+
+    /* Assoc retry — for P2P GO that hasn't started beaconing yet */
+    uint8_t                 assoc_retries;
+
+    /* Optional scan filter — set by qcom_wps_start_pbc(), persists for the
+     * full PBC session (all rescan rounds).  Cleared by qcom_wps_cancel()
+     * via memset.  channel_count==0 and all-zero bssid means no filter. */
+    qapi_WLAN_WPS_Scan_Params_t scan_params;
+
+    /*
+     * Timers via hostap eloop (callbacks run on eloop thread):
+     *   pbc_walk_timer : 120 s — WSC spec 11.1 PBC walk time window
+     *   session_timer  : 120 s — M1-M8 exchange deadline after assoc
+     * No struct fields needed — eloop tracks timers by handler pointer.
+     */
+} g_wps;
+
+/* Returns total distinct PBC registrars seen this round */
+static uint8_t distinct_pbc_count(void)
+{
+    return g_wps.pbc_uuid_count + g_wps.pbc_no_uuid_count;
+}
+
+/* Reset per-round scan state — called before each new scan */
+static void reset_scan_state(void)
+{
+    g_wps.scanning           = false;
+    g_wps.wps_overlap        = false;
+    g_wps.target_found       = false;
+    g_wps.pbc_uuid_count     = 0;
+    g_wps.pbc_no_uuid_count  = 0;
+    memset(&g_wps.target_ap,  0, sizeof(g_wps.target_ap));
+    memset(g_wps.pbc_uuid,    0, sizeof(g_wps.pbc_uuid));
+}
+
+/* ------------------------------------------------------------------ */
+/* Timer callbacks (run on eloop thread)                                */
+/* ------------------------------------------------------------------ */
+
+static void pbc_walk_timer_fn(void *eloop_ctx, void *user_ctx)
+{
+    ARG_UNUSED(eloop_ctx);
+    ARG_UNUSED(user_ctx);
+    LOG_WRN("pbc_walk_timer: PBC walk time (%d s) expired", WPS_PBC_WALK_TIME);
+    qcom_wps_cancel(g_wps.dev);
+}
+
+static void session_timer_fn(void *eloop_ctx, void *user_ctx)
+{
+    ARG_UNUSED(eloop_ctx);
+    ARG_UNUSED(user_ctx);
+    LOG_WRN("session_timer: M1-M8 session timeout (%d s) expired", WPS_PBC_WALK_TIME);
+    qcom_wps_cancel(g_wps.dev);
+}
+
+/* rf_band_cb — return current RF band for the enrollee connection.
+ * Called by wps_build_m1() to set the RF Bands attribute in M1.
+ * WPS_RF_24GHZ=0x01, WPS_RF_50GHZ=0x02 (wps_defs.h)
+ */
+static int wps_rf_band_cb(void *ctx)
+{
+    ARG_UNUSED(ctx);
+    uint16_t ch = g_wps.target_ap.channel;
+
+    if (wifi_utils_validate_chan_2g(ch))
+        return WPS_RF_24GHZ;
+    if (wifi_utils_validate_chan_5g(ch))
+        return WPS_RF_50GHZ;
+    return 0;  /* unknown or no channel yet — omit RF Bands from M1 */
+}
+
+/*
+ * Deferred callbacks — posted via qcom_hostap_post() from
+ * qwifi_wps_scan_event() which runs under wlan_qapi_cxt_mutex.  Calling
+ * qapi_WLAN_WPS_Scan() directly from that context would deadlock because
+ * wmi_wps_scan() tries to acquire the same mutex.  qcom_hostap_post()
+ * enqueues the message into g_he_fifo and wakes the eloop thread via
+ * eventfd; the handler runs on the eloop thread after the mutex is released.
+ *
+ * Each message struct embeds qcom_he_msg as its first member (required by
+ * qcom_hostap_post / CONTAINER_OF convention).  The handler frees the
+ * allocation before returning.
+ */
+
+static void scan_stop_handle(struct qcom_he_msg *he)
+{
+    os_free(he);
+    qapi_WLAN_WPS_Scan_Params_t stop = { .op = QAPI_WLAN_WPS_SCAN_STOP_E };
+    qapi_WLAN_WPS_Scan(0, &stop);
+}
+
+static void rescan_handle(struct qcom_he_msg *he)
+{
+    os_free(he);
+    reset_scan_state();
+    qcom_wps_scan(g_wps.dev);
+}
+
+static void cancel_handle(struct qcom_he_msg *he)
+{
+    os_free(he);
+    qcom_wps_cancel(g_wps.dev);
+}
+
+static void connect_handle(struct qcom_he_msg *he)
+{
+    os_free(he);
+    qcom_wps_connect(g_wps.dev, &g_wps.target_ap);
+}
+
+static void post_deferred_scan_stop(void)
+{
+    struct qcom_he_msg *msg = os_zalloc(sizeof(*msg));
+    if (!msg) {
+        LOG_ERR("post_deferred_scan_stop: out of memory");
+        return;
+    }
+    msg->handle = scan_stop_handle;
+    if (qcom_hostap_post(msg) != 0) {
+        LOG_ERR("post_deferred_scan_stop: post failed");
+        os_free(msg);
+    }
+}
+
+static void post_deferred_rescan(void)
+{
+    struct qcom_he_msg *msg = os_zalloc(sizeof(*msg));
+    if (!msg) {
+        LOG_ERR("post_deferred_rescan: out of memory");
+        return;
+    }
+    msg->handle = rescan_handle;
+    if (qcom_hostap_post(msg) != 0) {
+        LOG_ERR("post_deferred_rescan: post failed");
+        os_free(msg);
+    }
+}
+
+static void post_deferred_cancel(void)
+{
+    struct qcom_he_msg *msg = os_zalloc(sizeof(*msg));
+    if (!msg) {
+        LOG_ERR("post_deferred_cancel: out of memory");
+        return;
+    }
+    msg->handle = cancel_handle;
+    if (qcom_hostap_post(msg) != 0) {
+        LOG_ERR("post_deferred_cancel: post failed");
+        os_free(msg);
+    }
+}
+
+static void post_deferred_connect(void)
+{
+    struct qcom_he_msg *msg = os_zalloc(sizeof(*msg));
+    if (!msg) {
+        LOG_ERR("post_deferred_connect: out of memory");
+        return;
+    }
+    msg->handle = connect_handle;
+    if (qcom_hostap_post(msg) != 0) {
+        LOG_ERR("post_deferred_connect: post failed");
+        os_free(msg);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* EAP frame TX                                                         */
+/* ------------------------------------------------------------------ */
+
+static int wps_eap_tx(const uint8_t *bssid, uint8_t eap_id,
+                      enum wsc_op_code op_code, const struct wpabuf *payload)
+{
+    /*
+     * Build EAP-Response/WSC_MSG (or WSC_Done/WSC_NACK):
+     *   EAPOL header (4B) + EAP header (4B) + Expanded type (8B) +
+     *   Op-Code (1B) + Flags (1B) + WSC payload
+     *
+     * For EAP-Response/Identity (no WSC payload):
+     *   EAPOL header + EAP header + Identity string
+     */
+    size_t eap_payload_len = payload ? wpabuf_len(payload) : 0;
+    bool is_identity = (op_code == WSC_OP_CODE_IDENTITY);
+
+    size_t eap_data_len;
+    if (is_identity) {
+        eap_data_len = EAP_HEADER_LEN + 1 + WSC_ID_ENROLLEE_LEN;
+    } else {
+        eap_data_len = EAP_HEADER_LEN + 8 + 2 + eap_payload_len;
+    }
+    size_t total = EAPOL_HEADER_LEN + eap_data_len;
+
+    u8 *buf = os_zalloc(total);
+    if (!buf)
+        return -ENOMEM;
+
+    /* EAPOL header */
+    buf[0] = EAPOL_VERSION;
+    buf[1] = IEEE802_1X_TYPE_EAP_PACKET;
+    WPA_PUT_BE16(buf + 2, (u16)eap_data_len);
+
+    /* EAP header */
+    buf[4] = (u8)EAP_CODE_RESPONSE;
+    buf[5] = eap_id;
+    WPA_PUT_BE16(buf + 6, (u16)eap_data_len);
+
+    if (is_identity) {
+        buf[8] = (u8)EAP_TYPE_IDENTITY;
+        os_memcpy(buf + 9, WSC_ID_ENROLLEE, WSC_ID_ENROLLEE_LEN);
+    } else {
+        /* Expanded type: Vendor-Id=00:37:2a, Vendor-Type=00000001 */
+        buf[8]  = (u8)EAP_TYPE_EXPANDED;
+        buf[9]  = (EAP_VENDOR_WFA >> 16) & 0xff;
+        buf[10] = (EAP_VENDOR_WFA >>  8) & 0xff;
+        buf[11] = (EAP_VENDOR_WFA      ) & 0xff;
+        WPA_PUT_BE32(buf + 12, EAP_VENDOR_TYPE_WSC);
+        buf[16] = (u8)op_code;
+        buf[17] = 0x00; /* Flags: 0 = single unfragmented frame */
+        if (payload && eap_payload_len > 0)
+            os_memcpy(buf + 18, wpabuf_head(payload), eap_payload_len);
+    }
+
+    int ret = -EIO;
+
+    if (g_wps.l2) {
+        ret = l2_packet_send(g_wps.l2, bssid, ETH_P_EAPOL, buf, total);
+        LOG_DBG("wps_eap_tx: op_code=%u len=%zu ret=%d", op_code, total, ret);
+    } else {
+        LOG_ERR("wps_eap_tx: l2 handle not initialised");
+    }
+
+    os_free(buf);
+    return ret;
+}
+
+/* ------------------------------------------------------------------ */
+/* EAP frame RX hook — called by firmware for every EAP frame          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * wps_eap_rx_msg — eloop-thread message carrying a copied EAPOL frame.
+ * The DPM thread allocates this, copies src_addr + eapol_data, and posts
+ * it via qcom_hostap_post().  The eloop thread runs wps_eap_rx_handle()
+ * which does the actual crypto work (DH key gen, M1-M8) on its 80 KB stack.
+ */
+struct wps_eap_rx_msg {
+    struct qcom_he_msg  base;           /* MUST be first member */
+    uint8_t             src_addr[WIFI_MAC_ADDR_LEN];
+    uint16_t            eapol_len;
+    uint8_t             eapol_data[];   /* flexible array, allocated inline */
+};
+
+static int qcom_wps_set_ie(uint8_t device_id, uint8_t frame_type, bool inject);
+
+static void wps_eap_rx_handle(struct qcom_he_msg *base)
+{
+    struct wps_eap_rx_msg *m = CONTAINER_OF(base, struct wps_eap_rx_msg, base);
+    const uint8_t *src_addr   = m->src_addr;
+    const uint8_t *eapol_data = m->eapol_data;
+    uint16_t       eapol_len  = m->eapol_len;
+
+    if (!g_wps.wps_data) {
+        LOG_WRN("wps_eap_rx: wps_data not initialised");
+        goto out;
+    }
+
+    if (eapol_len < EAPOL_HEADER_LEN) {
+        LOG_WRN("wps_eap_rx: frame too short (%u)", eapol_len);
+        goto out;
+    }
+
+    uint8_t eapol_type = eapol_data[1];
+    uint16_t eap_len   = WPA_GET_BE16(eapol_data + 2);
+
+    if (eapol_type != IEEE802_1X_TYPE_EAP_PACKET) {
+        goto out;
+    }
+
+    if (eapol_len < EAPOL_HEADER_LEN + eap_len || eap_len < EAP_HEADER_LEN) {
+        LOG_WRN("wps_eap_rx: invalid EAP length eap_len=%u eapol_len=%u",
+                eap_len, eapol_len);
+        goto out;
+    }
+
+    const uint8_t *eap = eapol_data + EAPOL_HEADER_LEN;
+    uint8_t eap_code = eap[0];
+    uint8_t eap_id   = eap[1];
+    uint8_t eap_type = (eap_len > EAP_HEADER_LEN) ? eap[EAP_HEADER_LEN] : 0;
+
+    LOG_DBG("wps_eap_rx: code=%u id=%u type=0x%02x", eap_code, eap_id, eap_type);
+
+    if (eap_code == EAP_CODE_REQUEST && eap_type == EAP_TYPE_IDENTITY) {
+        wps_eap_tx(src_addr, eap_id, WSC_OP_CODE_IDENTITY, NULL);
+        goto out;
+    }
+
+    if (eap_code == EAP_CODE_REQUEST && eap_type == EAP_TYPE_EXPANDED) {
+        if (eap_len < WSC_EAP_BASE_HDR_LEN) {
+            LOG_WRN("wps_eap_rx: EAP-WSC too short");
+            goto out;
+        }
+        uint8_t op_code = eap[WSC_EAP_OPCODE_OFFSET];
+        uint8_t flags   = eap[WSC_EAP_FLAGS_OFFSET];
+
+        size_t hdr_size = WSC_EAP_BASE_HDR_LEN;
+        if (flags & WSC_FLAGS_LF) hdr_size += WSC_EAP_LEN_FIELD_LEN;
+
+        const uint8_t *wsc_data     = eap + hdr_size;
+        size_t         wsc_data_len = (eap_len > hdr_size) ? eap_len - hdr_size : 0;
+
+        LOG_DBG("wps_eap_rx: WSC op_code=0x%02x wsc_data_len=%zu",
+                op_code, wsc_data_len);
+
+        if (op_code == WSC_Start) {
+            LOG_DBG("wps_eap_rx: WSC_Start received — building M1");
+            enum wsc_op_code tx_op;
+            struct wpabuf *m1 = wps_get_msg(g_wps.wps_data, &tx_op);
+            if (m1) {
+                LOG_INF("wps_eap_rx: M1 built OK len=%zu — sending", wpabuf_len(m1));
+                wps_eap_tx(src_addr, eap_id, tx_op, m1);
+                wpabuf_free(m1);
+            } else {
+                LOG_ERR("wps_eap_rx: wps_get_msg(M1) returned NULL");
+                qcom_wps_cancel(g_wps.dev);
+            }
+            goto out;
+        }
+
+        struct wpabuf *msg = wpabuf_alloc_copy(wsc_data, wsc_data_len);
+        if (!msg) goto out;
+
+        enum wps_process_res res = wps_process_msg(
+                g_wps.wps_data, (enum wsc_op_code)op_code, msg);
+        wpabuf_free(msg);
+
+        LOG_DBG("wps_eap_rx: wps_process_msg res=%d state=%d",
+                (int)res, g_wps.wps_data->state);
+
+        if (res == WPS_FAILURE) {
+            LOG_WRN("wps_eap_rx: WPS_FAILURE");
+            qcom_wps_cancel(g_wps.dev);
+            goto out;
+        }
+
+        if (res == WPS_CONTINUE) {
+            enum wsc_op_code tx_op;
+            struct wpabuf *resp = wps_get_msg(g_wps.wps_data, &tx_op);
+            if (resp) {
+                LOG_DBG("wps_eap_rx: sending op_code=0x%02x len=%zu",
+                        tx_op, wpabuf_len(resp));
+                wps_eap_tx(src_addr, eap_id, tx_op, resp);
+                wpabuf_free(resp);
+
+                /* After WSC_Done is sent (state=WPS_FINISHED), trigger
+                 * PSK reconnect with the credentials saved in wps_cred_cb. */
+                if (g_wps.wps_data &&
+                    g_wps.wps_data->state == WPS_FINISHED &&
+                    g_wps.cred_count > 0) {
+
+                    struct wps_cred_entry *latest = NULL;
+                    for (uint8_t ci = 0; ci < WPS_CRED_TABLE_SIZE; ci++) {
+                        if (g_wps.cred_table[ci].valid &&
+                            (!latest || g_wps.cred_table[ci].last_used > latest->last_used))
+                            latest = &g_wps.cred_table[ci];
+                    }
+                    if (!latest) goto out;
+
+                    struct wps_credential cred       = latest->cred;
+                    uint8_t               device_id  = g_wps.device_id;
+                    uint16_t              ap_channel = g_wps.target_ap.channel;
+                    uint8_t               ap_bssid[WIFI_MAC_ADDR_LEN];
+                    memcpy(ap_bssid, g_wps.ap_bssid, WIFI_MAC_ADDR_LEN);
+
+                    qcom_wps_cancel(g_wps.dev);
+
+                    LOG_INF("wps_eap_rx: PSK reconnect SSID=%.*s "
+                            "auth=0x%x key_len=%zu ch=%u",
+                            (int)cred.ssid_len, cred.ssid,
+                            cred.auth_type, cred.key_len, ap_channel);
+
+                    enum wifi_security_type sec =
+                        (cred.auth_type & WPS_AUTH_WPA2PSK) ?
+                            WIFI_SECURITY_TYPE_WPA_AUTO_PERSONAL :
+                        (cred.auth_type & WPS_AUTH_WPAPSK) ?
+                            WIFI_SECURITY_TYPE_WPA_PSK :
+                            WIFI_SECURITY_TYPE_NONE;
+                    qwifi_wps_sync_connect_params(
+                        g_wps.dev,
+                        cred.ssid, cred.ssid_len, sec,
+                        cred.key_len > 0 ? cred.key : NULL,
+                        (uint8_t)cred.key_len);
+
+                    /* wps_success was set in wps_cred_cb — cancel reads it to skip auto-disconnect */
+                    qapi_WLAN_Disconnect(device_id);
+                    qcom_wps_connect_ap(device_id, ap_bssid,
+                                        cred.ssid, cred.ssid_len,
+                                        ap_channel, &cred);
+                    goto out;
+                }
+            } else {
+                LOG_WRN("wps_eap_rx: wps_get_msg returned NULL");
+            }
+        }
+        goto out;
+    }
+
+    if (eap_code == EAP_CODE_FAILURE) {
+        goto out;
+    }
+
+    LOG_DBG("wps_eap_rx: unhandled EAP code=%u type=0x%02x", eap_code, eap_type);
+
+out:
+    os_free(m);
+}
+
+/*
+ * wps_eap_rx — called directly by the DPM thread (firmware data path).
+ * Must NOT do any crypto here (DPM stack is too small for DH key gen).
+ * Deep-copy the frame and post to the eloop thread for actual processing.
+ */
+static void wps_eap_rx(const uint8_t *src_addr,
+                        const uint8_t *eapol_data,
+                        uint16_t eapol_len)
+{
+    struct wps_eap_rx_msg *m = os_malloc(sizeof(*m) + eapol_len);
+    if (!m) {
+        LOG_ERR("wps_eap_rx: out of memory (len=%u)", eapol_len);
+        return;
+    }
+    os_memcpy(m->src_addr, src_addr, WIFI_MAC_ADDR_LEN);
+    m->eapol_len = eapol_len;
+    os_memcpy(m->eapol_data, eapol_data, eapol_len);
+    m->base.handle = wps_eap_rx_handle;
+
+    if (qcom_hostap_post(&m->base) != 0) {
+        LOG_ERR("wps_eap_rx: qcom_hostap_post failed");
+        os_free(m);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Credential callback                                                  */
+/* ------------------------------------------------------------------ */
+
+static void cred_table_upsert(const struct wps_credential *cred)
+{
+    if (!g_wps.cred_table) {
+        g_wps.cred_table = k_malloc(sizeof(struct wps_cred_entry) * WPS_CRED_TABLE_SIZE);
+        if (!g_wps.cred_table) {
+            LOG_ERR("cred_table_upsert: OOM");
+            return;
+        }
+        memset(g_wps.cred_table, 0,
+               sizeof(struct wps_cred_entry) * WPS_CRED_TABLE_SIZE);
+        g_wps.cred_count = 0;
+    }
+
+    uint32_t now = k_uptime_get_32();
+    struct wps_cred_entry *slot = NULL;
+
+    for (uint8_t i = 0; i < WPS_CRED_TABLE_SIZE; i++) {
+        if (g_wps.cred_table[i].valid &&
+            memcmp(g_wps.cred_table[i].peer_addr, cred->mac_addr, WIFI_MAC_ADDR_LEN) == 0) {
+            slot = &g_wps.cred_table[i];
+            break;
+        }
+    }
+
+    if (!slot) {
+        for (uint8_t i = 0; i < WPS_CRED_TABLE_SIZE; i++) {
+            if (!g_wps.cred_table[i].valid) {
+                slot = &g_wps.cred_table[i];
+                break;
+            }
+        }
+    }
+
+    if (!slot) {
+        slot = &g_wps.cred_table[0];
+        for (uint8_t i = 1; i < WPS_CRED_TABLE_SIZE; i++) {
+            if (g_wps.cred_table[i].last_used < slot->last_used)
+                slot = &g_wps.cred_table[i];
+        }
+    }
+
+    slot->valid = true;
+    memcpy(slot->peer_addr, cred->mac_addr, WIFI_MAC_ADDR_LEN);
+    slot->last_used = now;
+    slot->cred = *cred;
+
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < WPS_CRED_TABLE_SIZE; i++) {
+        if (g_wps.cred_table[i].valid)
+            count++;
+    }
+    g_wps.cred_count = count;
+}
+
+static int wps_cred_cb(void *ctx, const struct wps_credential *cred)
+{
+    ARG_UNUSED(ctx);
+
+    LOG_INF("wps_cred_cb: SSID=%.*s auth=0x%04x encr=0x%04x key_len=%zu",
+            (int)cred->ssid_len, cred->ssid,
+            cred->auth_type, cred->encr_type, cred->key_len);
+
+    g_wps.wps_success = true;
+
+    cred_table_upsert(cred);
+
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* qwifi_wps_scan_event — overrides __weak stub in qcom_wifi_drv.c    */
+/* ------------------------------------------------------------------ */
+
+void qwifi_wps_scan_event(uint32_t event_id, void *payload, uint32_t payload_len)
+{
+    switch (event_id) {
+
+    case QAPI_WLAN_WPS_SCAN_AP_CB_E: {
+        if (!payload || payload_len < sizeof(qapi_WLAN_WPS_Scan_AP_Result_t))
+            break;
+        if (!g_wps.scanning)
+            break;
+
+        const qapi_WLAN_WPS_Scan_AP_Result_t *ap = payload;
+
+        /* Already found overlap this round — ignore further AP events */
+        if (g_wps.wps_overlap)
+            break;
+
+        /* Parse WSC IE */
+        wsc_ie_info_t info = {0};
+        if (ap->wsc_ie_len > 0)
+            info = parse_wsc_ie(ap->wsc_ie, ap->wsc_ie_len);
+
+        if (!info.pbc_active)
+            break;
+
+        LOG_DBG("WPS AP: %02x:%02x:%02x:%02x:%02x:%02x ch=%u RSSI=%d "
+                "SSID=%.*s pbc_active=1",
+                ap->bssid[0], ap->bssid[1], ap->bssid[2],
+                ap->bssid[3], ap->bssid[4], ap->bssid[5],
+                ap->channel, ap->rssi,
+                ap->ssid_len, ap->ssid);
+
+        /* BSSID filter: when a target BSSID is specified, ignore all other
+         * APs for both overlap counting and connect target selection. */
+        if (!is_zero_ether_addr(g_wps.scan_params.bssid) &&
+            memcmp(ap->bssid, g_wps.scan_params.bssid, __QAPI_WLAN_MAC_LEN) != 0)
+            break;
+
+        /* Channel filter: when a channel list is specified, ignore APs on
+         * other channels.  This is a host-side safety check that mirrors
+         * the firmware-side dc_clear_scan_list/dc_update_scan_list filter
+         * applied in wmi_start_wps_scan_cmd — both must agree on which
+         * channels are valid to avoid inconsistent overlap detection. */
+        if (g_wps.scan_params.channel_count > 0) {
+            bool ch_match = false;
+            for (uint8_t i = 0; i < g_wps.scan_params.channel_count; i++) {
+                if (ap->channel == g_wps.scan_params.channels[i]) {
+                    ch_match = true;
+                    break;
+                }
+            }
+            if (!ch_match) {
+                LOG_DBG("WPS AP ch=%u not in channel list, skipping", ap->channel);
+                break;
+            }
+        }
+
+        /* UUID dedup */
+        if (!info.has_uuid) {
+            /* No UUID — treat as distinct registrar (conservative) */
+            g_wps.pbc_no_uuid_count++;
+        } else {
+            bool dup = false;
+            for (uint8_t i = 0; i < g_wps.pbc_uuid_count; i++) {
+                if (memcmp(g_wps.pbc_uuid[i], info.uuid, WPS_UUID_LEN) == 0) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup && g_wps.pbc_uuid_count < WPS_MAX_PBC_REGISTRAR) {
+                memcpy(g_wps.pbc_uuid[g_wps.pbc_uuid_count],
+                       info.uuid, WPS_UUID_LEN);
+                g_wps.pbc_uuid_count++;
+            }
+        }
+
+        /* Store first PBC-active AP as connect target */
+        if (!g_wps.target_found) {
+            memcpy(g_wps.target_ap.bssid, ap->bssid, WIFI_MAC_ADDR_LEN);
+            g_wps.target_ap.ssid_len = ap->ssid_len;
+            memcpy(g_wps.target_ap.ssid, ap->ssid, ap->ssid_len);
+            g_wps.target_ap.channel  = ap->channel;
+            g_wps.target_ap.rssi     = ap->rssi;
+            g_wps.target_found = true;
+        }
+
+        /* Check overlap immediately after each new PBC AP */
+        if (distinct_pbc_count() >= 2) {
+            LOG_WRN("WPS PBC overlap detected (%u registrars), stopping scan",
+                    distinct_pbc_count());
+            g_wps.wps_overlap = true;
+            /*
+             * Cannot call qapi_WLAN_WPS_Scan(STOP) here — running under
+             * wlan_qapi_cxt_mutex which wmi_wps_scan() also acquires.
+             * Post to eloop thread via qcom_hostap_post() so the call
+             * happens after the mutex is released.
+             */
+            post_deferred_scan_stop();
+        }
+        break;
+    }
+
+    case QAPI_WLAN_WPS_SCAN_COMP_CB_E: {
+        if (!g_wps.scanning)
+            break;
+
+        g_wps.scanning = false;
+
+        if (g_wps.wps_overlap) {
+            LOG_WRN("WPS scan complete: OVERLAP — %u distinct PBC registrars, "
+                    "aborting per WSC spec", distinct_pbc_count());
+            post_deferred_cancel();
+            break;
+        }
+
+        if (!g_wps.target_found) {
+            /* NOT_FOUND — post rescan to eloop thread (mutex constraint) */
+            LOG_DBG("WPS scan complete: NOT_FOUND, retrying scan");
+            post_deferred_rescan();
+            break;
+        }
+
+        /* FOUND — post connect to eloop thread (mutex constraint) */
+        LOG_INF("WPS scan complete: FOUND AP %02x:%02x:%02x:%02x:%02x:%02x "
+                "SSID=%.*s ch=%u",
+                g_wps.target_ap.bssid[0], g_wps.target_ap.bssid[1],
+                g_wps.target_ap.bssid[2], g_wps.target_ap.bssid[3],
+                g_wps.target_ap.bssid[4], g_wps.target_ap.bssid[5],
+                g_wps.target_ap.ssid_len,  g_wps.target_ap.ssid,
+                g_wps.target_ap.channel);
+        post_deferred_connect();
+        break;
+    }
+
+    default:
+        break;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Public API                                                           */
+/* ------------------------------------------------------------------ */
+
+int qcom_wps_start_pbc(const struct device *dev,
+                        const uint8_t  *bssid,
+                        const uint16_t *channels,
+                        uint8_t         channel_count)
+{
+    if (!dev)
+        return -EINVAL;
+
+    if (g_wps.supp_pbc_active) {
+        /* WSC spec 11.3: re-pressing PBC during Walk Time restarts the session —
+         * cancel the current session and fall through to start a new one.
+         * qcom_wps_cancel() handles disconnect internally (wps_success=false). */
+        qcom_hostap_lock();
+        qcom_wps_cancel(dev);
+        qcom_hostap_unlock();
+    } else {
+        /* Save current connection credentials before qapi_WLAN_Disconnect
+         * clears them. Use the same conditions as qapi_WLAN_Disconnect itself
+         * to determine whether there is an active or in-progress connection. */
+        wlan_vdev_cxt_t *vdev = WLAN_STA_CXT;
+        if (vdev->connected ||
+            vdev->connect_in_progress ||
+            gp_wlan_qapi_cxt->wlan_roaming_started) {
+            s_pre_wps_conn.connect_cmd    = vdev->connect_cmd;
+            s_pre_wps_conn.passphrase_cmd = vdev->passphrase_cmd;
+            s_pre_wps_conn.valid          = true;
+        }
+        qapi_WLAN_Disconnect(QCOM_DEV_STA_ID);
+    }
+
+    wlan_drv_roaming_disable();
+
+    g_wps.dev             = dev;
+    g_wps.supp_pbc_active = true;
+    g_wps.wps_success     = false;
+
+    /* Build scan_params — persists for the full PBC session (all rescan rounds) */
+    memset(&g_wps.scan_params, 0, sizeof(g_wps.scan_params));
+    g_wps.scan_params.op = QAPI_WLAN_WPS_SCAN_START_PBC_E;
+    if (bssid)
+        memcpy(g_wps.scan_params.bssid, bssid, __QAPI_WLAN_MAC_LEN);
+    if (channels && channel_count > 0) {
+        uint8_t n = (channel_count > QAPI_WLAN_WPS_SCAN_MAX_CHANNELS)
+                    ? QAPI_WLAN_WPS_SCAN_MAX_CHANNELS : channel_count;
+        g_wps.scan_params.channel_count = n;
+        memcpy(g_wps.scan_params.channels, channels, n * sizeof(uint16_t));
+    }
+
+    /* Start PBC walk timer — covers entire scan + connect + M1-M8 window.
+     * eloop_register_timeout modifies eloop internals without locking,
+     * so acquire the hostap glue lock when calling from non-eloop thread.
+     */
+    qcom_hostap_lock();
+    eloop_register_timeout(WPS_PBC_WALK_TIME, 0, pbc_walk_timer_fn, NULL, NULL);
+    qcom_hostap_unlock();
+    qcom_hostap_wake();
+
+    int ret = qcom_wps_scan(dev);
+    if (ret != 0) {
+        qcom_hostap_lock();
+        qcom_wps_cancel(dev);
+        qcom_hostap_unlock();
+    }
+    return ret;
+}
+
+int qcom_wps_start_from_bssid(const struct device *dev,
+                               const uint8_t *bssid,
+                               const uint8_t *ssid, uint8_t ssid_len,
+                               uint16_t channel)
+{
+    if (!dev || !bssid || !ssid || ssid_len == 0 || ssid_len > 32)
+        return -EINVAL;
+
+    if (g_wps.supp_pbc_active) {
+        LOG_WRN("qcom_wps_start_from_bssid: WPS already in progress");
+        return -EBUSY;
+    }
+
+    g_wps.dev             = dev;
+    g_wps.supp_pbc_active = true;
+    g_wps.wps_success     = false;
+    g_wps.scanning        = false;  /* no scan phase */
+    g_wps.assoc_retries   = 0;
+
+    /* Fill target_ap so wps_rf_band_cb() reads the correct channel for M1
+     * RF Bands, and qcom_wps_assoc_event() has bssid to verify against. */
+    memset(&g_wps.target_ap, 0, sizeof(g_wps.target_ap));
+    memcpy(g_wps.target_ap.bssid, bssid, WIFI_MAC_ADDR_LEN);
+    memcpy(g_wps.target_ap.ssid,  ssid,  ssid_len);
+    g_wps.target_ap.ssid_len = ssid_len;
+    g_wps.target_ap.channel  = channel;
+    g_wps.target_found       = true;
+
+    qcom_hostap_lock();
+    eloop_register_timeout(WPS_PBC_WALK_TIME, 0, pbc_walk_timer_fn, NULL, NULL);
+    qcom_hostap_unlock();
+    qcom_hostap_wake();
+
+    qapi_WLAN_Disconnect(QCOM_DEV_STA_ID);
+    return qcom_wps_connect(dev, &g_wps.target_ap);
+}
+
+static struct wps_cred_entry *cred_table_find(const uint8_t *peer_addr,
+                                              const uint8_t *ssid,
+                                              uint8_t ssid_len)
+{
+    if (!g_wps.cred_table || g_wps.cred_count == 0)
+        return NULL;
+
+    if (peer_addr && !is_zero_ether_addr(peer_addr)) {
+        for (uint8_t i = 0; i < WPS_CRED_TABLE_SIZE; i++) {
+            if (g_wps.cred_table[i].valid &&
+                memcmp(g_wps.cred_table[i].peer_addr, peer_addr, WIFI_MAC_ADDR_LEN) == 0)
+                return &g_wps.cred_table[i];
+        }
+    }
+
+    if (ssid && ssid_len > 0) {
+        for (uint8_t i = 0; i < WPS_CRED_TABLE_SIZE; i++) {
+            if (g_wps.cred_table[i].valid &&
+                g_wps.cred_table[i].cred.ssid_len == ssid_len &&
+                memcmp(g_wps.cred_table[i].cred.ssid, ssid, ssid_len) == 0)
+                return &g_wps.cred_table[i];
+        }
+    }
+
+    return NULL;
+}
+
+bool qcom_wps_has_persistent_cred(const uint8_t *peer_addr,
+                                   const uint8_t *ssid, uint8_t ssid_len)
+{
+    return cred_table_find(peer_addr, ssid, ssid_len) != NULL;
+}
+
+int qcom_wps_connect_ap(uint8_t device_id, const uint8_t *bssid,
+                        const uint8_t *ssid, uint8_t ssid_len,
+                        uint16_t channel, struct wps_credential *cred)
+{
+    /* cred==NULL: connect open/NONE (no security) */
+    if (!ssid || ssid_len == 0 || !bssid)
+        return -EINVAL;
+
+    qapi_WLAN_Auth_Mode_e  qapi_auth   = QAPI_WLAN_AUTH_NONE_E;
+    qapi_WLAN_Crypt_Type_e qapi_cipher = QAPI_WLAN_CRYPT_NONE_E;
+    const uint8_t         *psk         = NULL;
+    uint8_t                psk_len     = 0;
+    uint8_t                psk_bin[WIFI_PSK_MAX_LEN] = {0};
+
+    if (cred) {
+        if (cred->auth_type & WPS_AUTH_WPA2PSK)
+            qapi_auth = QAPI_WLAN_AUTH_WPA_WPA2_SAE_MIXED_E;
+        else if (cred->auth_type & WPS_AUTH_WPAPSK)
+            qapi_auth = QAPI_WLAN_AUTH_WPA_PSK_E;
+        else
+            qapi_auth = QAPI_WLAN_AUTH_NONE_E;
+
+        if (cred->encr_type & WPS_ENCR_AES)
+            qapi_cipher = QAPI_WLAN_CRYPT_AES_CRYPT_E;
+        else if (cred->encr_type & WPS_ENCR_TKIP)
+            qapi_cipher = QAPI_WLAN_CRYPT_TKIP_CRYPT_E;
+        else
+            qapi_cipher = QAPI_WLAN_CRYPT_NONE_E;
+
+        psk     = cred->key;
+        psk_len = (uint8_t)cred->key_len;
+
+        if (cred->key_len == WIFI_PSK_MAX_LEN) {
+            if (hexstr2bin((const char *)cred->key,
+                           psk_bin, WIFI_PSK_MAX_LEN / 2) == 0) {
+                psk = psk_bin;
+                /* psk_len stays WIFI_PSK_MAX_LEN — firmware uses this to
+                 * detect PMK-raw path in wmi_set_passphrase_cmd() */
+            } else {
+                LOG_ERR("qcom_wps_connect_ap: invalid 64-char PSK");
+                return -EINVAL;
+            }
+        }
+    }
+
+    if (qapi_auth != QAPI_WLAN_AUTH_NONE_E && psk_len > 0) {
+        qapi_WLAN_Set_Param(device_id,
+                            __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
+                            __QAPI_WLAN_PARAM_GROUP_SECURITY_AUTH_MODE,
+                            &qapi_auth, sizeof(qapi_auth), false);
+        qapi_WLAN_Set_Param(device_id,
+                            __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
+                            __QAPI_WLAN_PARAM_GROUP_SECURITY_ENCRYPTION_TYPE,
+                            &qapi_cipher, sizeof(qapi_cipher), false);
+        qapi_WLAN_Set_Param(device_id,
+                            __QAPI_WLAN_PARAM_GROUP_WIRELESS_SECURITY,
+                            __QAPI_WLAN_PARAM_GROUP_SECURITY_PASSPHRASE,
+                            psk, psk_len, false);
+    } else {
+        wlan_clear_privacy(device_id);
+    }
+
+    qapi_WLAN_Set_Param(device_id,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_SSID,
+                        ssid, ssid_len, false);
+
+    qapi_WLAN_Set_Param(device_id,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                        __QAPI_WLAN_PARAM_GROUP_WIRELESS_BSSID,
+                        (void *)bssid, WIFI_MAC_ADDR_LEN, false);
+
+    if (channel > 0) {
+        uint32_t ch_param[2] = { channel, FALSE };
+        qapi_WLAN_Set_Param(device_id,
+                            __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                            __QAPI_WLAN_PARAM_GROUP_WIRELESS_CHANNEL,
+                            ch_param, sizeof(ch_param), false);
+    }
+
+    qapi_WLAN_Commit(device_id);
+
+    memset(psk_bin, 0, sizeof(psk_bin));
+    return 0;
+}
+
+int qcom_wps_connect_persistent(const uint8_t *bssid,
+                                const uint8_t *ssid, uint8_t ssid_len,
+                                uint16_t channel)
+{
+    if (!ssid || ssid_len == 0 || !bssid)
+        return -EINVAL;
+
+    struct wps_cred_entry *entry = cred_table_find(bssid, ssid, ssid_len);
+    if (!entry)
+        return -ENOENT;
+
+    entry->last_used = k_uptime_get_32();
+
+    LOG_INF("qcom_wps_connect_persistent: SSID=%.*s ch=%u auth=0x%x "
+            "peer=%02x:%02x:%02x:%02x:%02x:%02x",
+            (int)entry->cred.ssid_len, (const char *)entry->cred.ssid,
+            channel, entry->cred.auth_type,
+            entry->peer_addr[0], entry->peer_addr[1], entry->peer_addr[2],
+            entry->peer_addr[3], entry->peer_addr[4], entry->peer_addr[5]);
+
+    qapi_WLAN_Disconnect(g_wps.device_id);
+
+    return qcom_wps_connect_ap(g_wps.device_id, bssid,
+                               entry->cred.ssid, entry->cred.ssid_len,
+                               channel, &entry->cred);
+}
+
+/* ------------------------------------------------------------------ */
+/* WPS Probe Request IE inject / remove                                 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * qcom_wps_set_ie() — inject or remove a WPS IE for a given management frame.
+ *
+ * inject=true : build the WSC IE via hostap and send it to firmware.
+ *               PROBE_REQ uses wps_build_probe_req_ie (full device info).
+ *               ASSOC_REQ uses wps_build_assoc_req_ie (RequestType only).
+ * inject=false: send a single 0xdd byte to remove the IE from firmware.
+ */
+static int qcom_wps_set_ie(uint8_t device_id, uint8_t frame_type, bool inject)
+{
+    if (!g_wps.wps_ctx) {
+        LOG_ERR("qcom_wps_set_ie: WPS not initialised");
+        return -EINVAL;
+    }
+
+    if (frame_type >= WMI_NUM_MGMT_FRAME) {
+        LOG_ERR("qcom_wps_set_ie: invalid frame_type=%u", frame_type);
+        return -EINVAL;
+    }
+
+    if (g_wps.ie_injected[frame_type] == inject)
+        return 0;
+
+    qapi_WLAN_App_Ie_Params_t ie = {0};
+    ie.mgmt_Frame_Type = frame_type;
+
+    struct wpabuf *ie_buf = NULL;
+    uint8_t combined[255];
+    uint8_t combined_len = 0;
+
+    if (inject) {
+        if (frame_type == WMI_FRAME_PROBE_REQ) {
+            ie_buf = wps_build_probe_req_ie(DEV_PW_PUSHBUTTON,
+                                            &g_wps.wps_ctx->dev,
+                                            g_wps.wps_ctx->uuid,
+                                            WPS_REQ_ENROLLEE, 0, NULL);
+        } else {
+            ie_buf = wps_build_assoc_req_ie(WPS_REQ_ENROLLEE);
+        }
+        if (!ie_buf) {
+            LOG_ERR("qcom_wps_set_ie: build IE failed (frame_type=%u)", frame_type);
+            return -ENOMEM;
+        }
+        combined_len = (uint8_t)wpabuf_len(ie_buf);
+        memcpy(combined, wpabuf_head(ie_buf), combined_len);
+
+#ifdef CONFIG_WIFI_QCOM_P2P
+        /* P2P GC association to a GO needs a P2P IE (Capability + Device
+         * Info) alongside the WSC IE. The GO's WPS registrar parses this
+         * to recover our P2P Device Address and match it against the
+         * Enrollee it authorized during GO Negotiation — without it the
+         * address is unknown and the GO treats us as an unexpected/second
+         * PBC session, replying M2D config_error=12 even though the real
+         * cause has nothing to do with an actual PBC overlap. */
+        if (frame_type != WMI_FRAME_PROBE_REQ) {
+            int p2p_ie_len = qcom_p2p_build_assoc_req_ie(
+                g_wps.ap_bssid, combined + combined_len,
+                sizeof(combined) - combined_len);
+            if (p2p_ie_len > 0) {
+                combined_len += (uint8_t)p2p_ie_len;
+            }
+        }
+#endif
+        ie.ie_Info = combined;
+        ie.ie_Len  = combined_len;
+    } else {
+        static const uint8_t clear_ie[] = { 0xdd };
+        ie.ie_Info = (uint8_t *)clear_ie;
+        ie.ie_Len  = 1;
+    }
+
+    qapi_Status_t ret = qapi_WLAN_Set_Param(device_id,
+                                             __QAPI_WLAN_PARAM_GROUP_WIRELESS,
+                                             __QAPI_WLAN_PARAM_GROUP_WIRELESS_APP_IE,
+                                             &ie, sizeof(ie), false);
+    wpabuf_free(ie_buf);
+
+    if (ret != QAPI_OK) {
+        LOG_ERR("qcom_wps_set_ie: failed (frame_type=%u inject=%d ret=%d)",
+                frame_type, (int)inject, ret);
+        return -EIO;
+    }
+    g_wps.ie_injected[frame_type] = inject;
+    LOG_DBG("WPS IE %s (frame_type=%u bytes=%u)",
+            inject ? "injected" : "removed", frame_type, ie.ie_Len);
+    return 0;
+}
+
+static int qcom_wps_scan(const struct device *dev)
+{
+    if (!dev)
+        return -EINVAL;
+
+    if (g_wps.scanning) {
+        LOG_WRN("qcom_wps_scan: scan already in progress");
+        return -EBUSY;
+    }
+
+    g_wps.dev      = dev;
+    g_wps.scanning = true;
+
+    /* Inject WPS PBC Probe Request IE — must be set before starting scan */
+    if (qcom_wps_set_ie(QCOM_DEV_STA_ID, WMI_FRAME_PROBE_REQ, true) < 0) {
+        g_wps.scanning = false;
+        return -EIO;
+    }
+
+    qapi_Status_t ret = qapi_WLAN_WPS_Scan(0, &g_wps.scan_params);
+    if (ret != QAPI_OK) {
+        g_wps.scanning = false;
+        qcom_wps_set_ie(QCOM_DEV_STA_ID, WMI_FRAME_PROBE_REQ, false);
+        LOG_ERR("qcom_wps_scan: qapi_WLAN_WPS_Scan failed (%d)", ret);
+        return -EIO;
+    }
+
+    return 0;
+}
+
+int qcom_wps_connect(const struct device *dev,
+                     const struct qcom_wps_scan_result *result)
+{
+    if (!dev || !result)
+        return -EINVAL;
+
+    /* WPS enrollee always uses the STA device */
+    const uint8_t device_id = QCOM_DEV_STA_ID;
+
+    /* Force-clear stale firmware BSS state from a prior connection.
+     * Without this, firmware walks into the roaming/handoff path when
+     * the same BSSID reappears with a different SSID (Huawei rotates
+     * the group SSID on every new P2P session). */
+    qapi_WLAN_Disconnect(device_id);
+
+    memcpy(g_wps.ap_bssid, result->bssid, WIFI_MAC_ADDR_LEN);
+    g_wps.device_id = device_id;
+
+    LOG_INF("qcom_wps_connect: BSSID=%02x:%02x:%02x:%02x:%02x:%02x "
+            "SSID=%.*s ch=%u",
+            result->bssid[0], result->bssid[1], result->bssid[2],
+            result->bssid[3], result->bssid[4], result->bssid[5],
+            result->ssid_len, result->ssid, result->channel);
+
+    /* Set connect_pending flag in firmware so discovery.c bypasses strict
+     * profile matching during WPS open association. */
+    wlan_set_wps_open_connect(device_id, result->channel);
+
+    /*
+     * Inject WSC IE into Association Request — required by WSC 2.0 spec
+     * section 7.2.  Must be set BEFORE qapi_WLAN_Commit() so firmware
+     * includes it in the Assoc Request frame.
+     */
+    if (qcom_wps_set_ie(device_id, WMI_FRAME_ASSOC_REQ, true) < 0) {
+        LOG_ERR("qcom_wps_connect: assoc req IE inject failed, aborting");
+        return -EIO;
+    }
+
+    return qcom_wps_connect_ap(device_id, result->bssid,
+                               result->ssid, result->ssid_len,
+                               result->channel, NULL);
+}
+
+bool qcom_wps_connect_in_progress(void)
+{
+    return g_wps.supp_pbc_active && !g_wps.scanning;
+}
+
+int qcom_wps_init(const struct device *dev)
+{
+    if (g_wps.wps_ctx) {
+        LOG_WRN("qcom_wps_init: already initialised");
+        return 0;
+    }
+
+    struct wps_context *wps = os_zalloc(sizeof(*wps));
+    if (!wps) {
+        LOG_ERR("qcom_wps_init: out of memory");
+        return -ENOMEM;
+    }
+
+    /* Enrollee-only — AP and registrar roles not used */
+    wps->ap        = 0;
+    wps->registrar = NULL;
+
+    /* WPS state: CONFIGURED means the device already has network credentials */
+    wps->wps_state = WPS_STATE_CONFIGURED;
+
+    /* config_methods: include all PBC variants so modern APs accept M1.
+     * WSC 2.0 APs expect Virtual or Physical PushButton (0x0280 or 0x0480).
+     * Legacy PBC (0x0080) alone causes some APs to respond with M2D.
+     */
+    wps->config_methods = WPS_CONFIG_PUSHBUTTON |
+                          WPS_CONFIG_VIRT_PUSHBUTTON |
+                          WPS_CONFIG_PHY_PUSHBUTTON;
+
+    /* Security: WPA2-PSK / AES */
+    wps->auth_types = WPS_AUTH_WPA2PSK;
+    wps->encr_types = WPS_ENCR_AES;
+
+    /*
+     * Device info — configurable via Kconfig (WIFI_QCOM_WPS sub-options).
+     * These strings appear in the WPS IE and M1 message sent to the AP.
+     * os_strdup() is used because wps_device_data fields are char* (not
+     * const char*), and Kconfig strings are string literals — consistent
+     * with how wpas_wps_init() sets these fields in wpa_supplicant.
+     */
+    wps->dev.device_name   = os_strdup(CONFIG_WPS_DEVICE_NAME);
+    wps->dev.manufacturer  = os_strdup(CONFIG_WPS_MANUFACTURER);
+    wps->dev.model_name    = os_strdup(CONFIG_WPS_MODEL_NAME);
+    wps->dev.model_number  = os_strdup(CONFIG_WPS_MODEL_NUMBER);
+    wps->dev.serial_number = os_strdup(CONFIG_WPS_SERIAL_NUMBER);
+
+    if (!wps->dev.device_name || !wps->dev.manufacturer ||
+        !wps->dev.model_name  || !wps->dev.model_number ||
+        !wps->dev.serial_number) {
+        LOG_ERR("qcom_wps_init: out of memory for device info");
+        os_free(wps->dev.device_name);
+        os_free(wps->dev.manufacturer);
+        os_free(wps->dev.model_name);
+        os_free(wps->dev.model_number);
+        os_free(wps->dev.serial_number);
+        os_free(wps);
+        return -ENOMEM;
+    }
+
+    /*
+     * UUID-E: RFC 4122 version 5 (name-based SHA-1), derived from the
+     * station MAC address via uuid_gen_mac_addr().  This is the same
+     * method used by wpa_supplicant (wpas_wps_init).
+     * Also copy MAC into dev.mac_addr so M1 carries the correct address.
+     */
+    {
+        struct net_if *iface = net_if_get_first_wifi();
+        if (iface) {
+            const struct net_linkaddr *la = net_if_get_link_addr(iface);
+            if (la && la->len == ETH_ALEN) {
+                uuid_gen_mac_addr(la->addr, wps->uuid);
+                os_memcpy(wps->dev.mac_addr, la->addr, ETH_ALEN);
+            }
+        }
+    }
+
+    /* Callbacks — wps_cred_cb, wps_event_cb, rf_band_cb are static in this file */
+    wps->cred_cb     = wps_cred_cb;
+    wps->event_cb    = wps_event_cb;
+    wps->rf_band_cb  = wps_rf_band_cb;
+    wps->cb_ctx      = (void *)dev;
+
+    /*
+     * RF bands supported by QCC730: 2.4 GHz + 5 GHz.
+     * WPS_RF_24GHZ = 0x01, WPS_RF_50GHZ = 0x02 (wps_defs.h)
+     * This is the default advertised in M1; the actual band used
+     * for the current connection is returned by rf_band_cb at build time.
+     */
+    wps->dev.rf_bands = WPS_RF_24GHZ | WPS_RF_50GHZ;
+
+    /* Sync config_methods to wps_device_data so wps_build_probe_req_ie
+     * and wps_build_assoc_req_ie pick them up correctly.               */
+    wps->dev.config_methods = wps->config_methods;
+
+    g_wps.wps_ctx = wps;
+    g_wps.dev     = dev;
+
+    LOG_DBG("qcom_wps_init: WPS context initialised");
+    return 0;
+}
+
+void qcom_wps_deinit(const struct device *dev)
+{
+    ARG_UNUSED(dev);
+
+    /* Cancel any in-progress session first.
+     * Acquire hostap lock because qcom_wps_cancel calls eloop_cancel_timeout
+     * which is not thread-safe — must run under g_he_lock from non-eloop thread.
+     */
+    if (g_wps.supp_pbc_active) {
+        qcom_hostap_lock();
+        qcom_wps_cancel(dev);
+        qcom_hostap_unlock();
+    }
+
+    if (g_wps.wps_ctx) {
+        /* Free os_strdup'd device info strings */
+        os_free(g_wps.wps_ctx->dev.device_name);
+        os_free(g_wps.wps_ctx->dev.manufacturer);
+        os_free(g_wps.wps_ctx->dev.model_name);
+        os_free(g_wps.wps_ctx->dev.model_number);
+        os_free(g_wps.wps_ctx->dev.serial_number);
+        os_free(g_wps.wps_ctx);
+        g_wps.wps_ctx = NULL;
+    }
+
+    LOG_DBG("qcom_wps_deinit: WPS context freed");
+}
+
+void qcom_wps_cancel(const struct device *dev)
+{
+    ARG_UNUSED(dev);
+
+    if (!g_wps.supp_pbc_active) {
+        return;
+    }
+
+    /* Stop firmware WPS scan if one is in progress */
+    if (g_wps.scanning) {
+        g_wps.scanning = false;
+        qapi_WLAN_WPS_Scan_Params_t stop = { .op = QAPI_WLAN_WPS_SCAN_STOP_E };
+        qapi_WLAN_WPS_Scan(0, &stop);
+    }
+
+    /* Remove WPS IEs from both Probe Request and Association Request */
+    qcom_wps_set_ie(g_wps.device_id, WMI_FRAME_PROBE_REQ, false);
+    qcom_wps_set_ie(g_wps.device_id, WMI_FRAME_ASSOC_REQ, false);
+
+    /*
+     * eloop_cancel_timeout modifies eloop internals without locking.
+     * qcom_wps_cancel is called from two contexts:
+     *   a) eloop thread (cancel_handle): g_he_lock already held — do NOT
+     *      call qcom_hostap_lock() again (non-recursive mutex, would deadlock)
+     *   b) non-eloop thread (qwifi_drv_wps_config, qcom_wps_deinit): must
+     *      acquire lock first. Callers are responsible for this.
+     */
+    eloop_cancel_timeout(pbc_walk_timer_fn, ELOOP_ALL_CTX, ELOOP_ALL_CTX);
+    eloop_cancel_timeout(session_timer_fn, ELOOP_ALL_CTX, ELOOP_ALL_CTX);
+    eloop_cancel_timeout(wps_assoc_retry_fn, ELOOP_ALL_CTX, ELOOP_ALL_CTX);
+
+    nt_dpm_set_eap_enterprise_hook(NULL);
+
+    /* Remove ENC_NONE DPM STA entry if it was added */
+    if (g_wps.eap_sta_added) {
+        nt_dpm_delete_sta(g_wps.eap_staid);
+        g_wps.eap_sta_added = false;
+        g_wps.eap_staid = 0;
+        LOG_DBG("qcom_wps_cancel: ENC_NONE DPM STA removed");
+    }
+
+    if (g_wps.wps_data) {
+        wps_deinit(g_wps.wps_data);
+        g_wps.wps_data = NULL;
+    }
+
+    if (g_wps.l2) {
+        l2_packet_deinit(g_wps.l2);
+        g_wps.l2 = NULL;
+    }
+
+    bool succeeded = g_wps.wps_success;
+
+    /* Clear connect_pending flag in firmware */
+    wlan_clear_wps_open_connect();
+
+    /* Preserve wps_ctx — it lives for the interface lifetime (qcom_wps_deinit) */
+    struct wps_context *saved_ctx = g_wps.wps_ctx;
+    const struct device *saved_dev = g_wps.dev;
+    uint8_t saved_device_id = g_wps.device_id;
+    struct wps_cred_entry *saved_cred_table = g_wps.cred_table;
+    uint8_t saved_cred_count = g_wps.cred_count;
+    memset(&g_wps, 0, sizeof(g_wps));
+    g_wps.wps_ctx    = saved_ctx;
+    g_wps.dev        = saved_dev;
+    g_wps.device_id  = saved_device_id;
+    g_wps.cred_table = saved_cred_table;
+    g_wps.cred_count = saved_cred_count;
+
+    wlan_drv_roaming_enable();
+
+    if (!succeeded) {
+        qapi_WLAN_Disconnect(saved_device_id);
+        /* Restore pre-WPS credentials so roaming can reconnect to the previous AP. */
+        if (s_pre_wps_conn.valid) {
+            wlan_vdev_cxt_t *vdev = WLAN_STA_CXT;
+            vdev->connect_cmd    = s_pre_wps_conn.connect_cmd;
+            vdev->passphrase_cmd = s_pre_wps_conn.passphrase_cmd;
+            wlan_drv_roaming_start();
+        }
+    }
+
+    LOG_DBG("qcom_wps_cancel: WPS cancelled");
+}
+
+static void wps_assoc_retry_fn(void *eloop_ctx, void *timeout_ctx)
+{
+    (void)eloop_ctx; (void)timeout_ctx;
+    if (g_wps.supp_pbc_active && g_wps.target_found) {
+        qcom_wps_connect(g_wps.dev, &g_wps.target_ap);
+    }
+}
+
+void qcom_wps_assoc_event(const struct device *dev, const uint8_t *bssid,
+                           bool success, uint8_t device_id)
+{
+    if (!g_wps.wps_ctx) {
+        LOG_ERR("qcom_wps_assoc_event: wps_ctx not initialised");
+        post_deferred_cancel();
+        return;
+    }
+
+    if (!success) {
+        if (g_wps.assoc_retries < 4 && g_wps.target_found) {
+            g_wps.assoc_retries++;
+            LOG_WRN("qcom_wps_assoc_event: assoc failed, retry %u/4",
+                    g_wps.assoc_retries);
+            qcom_hostap_lock();
+            eloop_register_timeout(0, 200000, wps_assoc_retry_fn, NULL, NULL);
+            qcom_hostap_unlock();
+            qcom_hostap_wake();
+            return;
+        }
+        LOG_WRN("qcom_wps_assoc_event: assoc failed, giving up");
+        post_deferred_cancel();
+        return;
+    }
+
+    g_wps.dev       = dev;
+    g_wps.device_id = device_id;
+    memcpy(g_wps.ap_bssid, bssid, WIFI_MAC_ADDR_LEN);
+
+    LOG_INF("qcom_wps_assoc_event: associated to %02x:%02x:%02x:%02x:%02x:%02x",
+            bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+
+    /*
+     * Initialise per-session wps_data via hostap wps_init().
+     * wps_ctx was created in qcom_wps_init() and holds device info + callbacks.
+     * wps_data must be non-NULL before the EAP hook processes incoming frames.
+     */
+    {
+        struct wps_config cfg = {0};
+        cfg.wps  = g_wps.wps_ctx;
+        cfg.pbc  = 1;
+        cfg.registrar = 0;
+        cfg.peer_addr = bssid;
+
+        g_wps.wps_data = wps_init(&cfg);
+        if (!g_wps.wps_data) {
+            LOG_ERR("qcom_wps_assoc_event: wps_init failed");
+            qcom_hostap_lock();
+            qcom_wps_cancel(dev);
+            qcom_hostap_unlock();
+            return;
+        }
+        LOG_DBG("qcom_wps_assoc_event: wps_data initialised");
+    }
+
+    /* Register EAP hook — from this point firmware delivers EAP-WSC frames */
+    nt_dpm_set_eap_enterprise_hook(wps_eap_rx);
+
+    /*
+     * Add temporary ENC_NONE DPM STA entry so outbound EAPOL frames
+     * (EAPOL-Start, EAP-Response) can be routed over-the-air.
+     * Without this entry, nt_dpm_process_eth_packet_from_stack() cannot
+     * find a matching STA and drops all EAPOL TX frames silently.
+     * Mirrors qcom_ent_open_eap_tx() in qcom_wifi_enterprise_glue.c.
+     */
+    {
+        wps_sta_cfg_t cfg = {0};
+        memcpy(cfg.bssid,           bssid, sizeof(cfg.bssid));
+        cfg.IsAP = 1;
+        memcpy(cfg.sta_mac_address, bssid, sizeof(cfg.sta_mac_address));
+        cfg.qos_sta = 1;
+        cfg.sec_mode = NONE_CRYPT;
+        cfg.ht = 1;
+        int err = nt_dpm_add_sta(&cfg, &g_wps.eap_staid, 0);
+        if (err == 0) {
+            g_wps.eap_sta_added = true;
+            LOG_DBG("qcom_wps_assoc_event: ENC_NONE DPM STA added staid=%u",
+                    g_wps.eap_staid);
+        } else {
+            LOG_ERR("qcom_wps_assoc_event: nt_dpm_add_sta failed err=%d", err);
+        }
+    }
+
+    /*
+     * Send EAPOL-Start to trigger AP to initiate EAP exchange.
+     * WSC 2.0 spec section 7.4.1: after successful assoc, enrollee SHALL
+     * send EAPOL-Start.  AP responds with EAP-Request/Identity, then
+     * EAP-Request/WSC_Start.
+     *
+     * Use l2_packet (AF_PACKET raw socket) — the same mechanism wpa_supplicant
+     * uses for EAPOL TX.  net_if_send_data() walks the IP stack and cannot
+     * carry Ethertype 0x888E frames directly.
+     *
+     * EAPOL-Start frame payload (after Ethernet header):
+     *   Version=0x02, Type=0x01(Start), Length=0x0000
+     */
+    {
+        static const u8 eapol_start[] = { EAPOL_VERSION, IEEE802_1X_TYPE_EAPOL_START, 0x00, 0x00 };
+        char ifname[16] = {0};
+        struct net_if *iface = net_if_get_first_wifi();
+
+        if (iface && net_if_get_name(iface, ifname, sizeof(ifname)) > 0) {
+            /* Initialise persistent l2 handle for the EAP-WSC session.
+             * Reused by wps_eap_tx() for all M1-M8 responses; freed in
+             * qcom_wps_cancel() when the session ends. */
+            g_wps.l2 = l2_packet_init(ifname, NULL, ETH_P_EAPOL,
+                                       NULL, NULL, 0);
+            if (g_wps.l2) {
+                int ret = l2_packet_send(g_wps.l2, bssid, ETH_P_EAPOL,
+                                         eapol_start, sizeof(eapol_start));
+                if (ret < 0)
+                    LOG_ERR("qcom_wps_assoc_event: EAPOL-Start send failed ret=%d", ret);
+                else
+                    LOG_DBG("qcom_wps_assoc_event: EAPOL-Start sent via l2_packet (%s)", ifname);
+            } else {
+                LOG_ERR("qcom_wps_assoc_event: l2_packet_init failed for iface=%s", ifname);
+            }
+        } else {
+            LOG_ERR("qcom_wps_assoc_event: cannot get wifi iface name");
+        }
+    }
+
+    /* Start session timer — acquire hostap lock (non-eloop thread) */
+    qcom_hostap_lock();
+    eloop_register_timeout(WPS_PBC_WALK_TIME, 0, session_timer_fn, NULL, NULL);
+    qcom_hostap_unlock();
+    qcom_hostap_wake();
+
+    LOG_DBG("qcom_wps_assoc_event: EAP hook registered, waiting for WSC_Start");
+}

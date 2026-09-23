@@ -89,7 +89,7 @@ static int spi_qcc730_spis_release(const struct device *dev, const struct spi_co
 }
 
 /* Forward declaration for ring service handler */
-#ifdef CONFIG_RING_SERVICE
+#if defined(CONFIG_RING_SERVICE) || defined(CONFIG_QCC730_RCP_BUS_QCSPI)
 extern void ring_rx_handler(void);
 extern bool ring_all_tx_consumed(void);
 #endif
@@ -135,16 +135,22 @@ static void spi_qcc730_spis_isr(const struct device *dev)
 #endif
 
 	if (int_status & QCSPI_SLAVE_HOST_INT0_MASK) {
-#ifdef CONFIG_RING_SERVICE
-	/* Notify ring service if enabled */
-	ring_rx_handler();
+#if defined(CONFIG_RING_SERVICE) || defined(CONFIG_QCC730_RCP_BUS_QCSPI)
+		/* Notify ring/RCP service on HOST_INT0 */
+		ring_rx_handler();
 #endif
 	}
 
 	/* HOST_INT1: host has read data from ring, check if pm_device_busy can be cleared */
 	if (int_status & QCSPI_SLAVE_HOST_INT1_MASK) {
 		regs->QCSPI_SLAVE_R_SPI_SLAVE_IRQ_CLR.bit.HOST_INT1_IRQ_CLR = 1U;
-#if defined(CONFIG_PM_DEVICE) && defined(CONFIG_RING_SERVICE)
+#ifdef CONFIG_QCC730_RCP_BUS_QCSPI
+		if (ring_all_tx_consumed()) {
+	#ifdef CONFIG_PM_DEVICE
+				pm_device_busy_clear(dev);
+	#endif
+		}
+#elif defined(CONFIG_PM_DEVICE) && defined(CONFIG_RING_SERVICE)
 		if (!spi_is_ext_wakeup()) {
 			if (ring_all_tx_consumed()) {
 				pm_device_busy_clear(dev);

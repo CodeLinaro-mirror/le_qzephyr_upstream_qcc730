@@ -13,8 +13,11 @@
 #include <zephyr/net/dhcpv4.h>
 #include <zephyr/logging/log.h>
 
+#include <mbedtls/sha256.h>
+
 #include "driver_zephyr.h"
 #include "supp_api.h"
+#include "crypto/tls.h"
 
 #include <qwifi_api.h>
 
@@ -38,6 +41,14 @@ extern void nt_dpm_set_eap_enterprise_hook(void (*fn)(const uint8_t *src_addr,
 extern void wmi_clear_enterprise_pmk_ready(void);
 /* Delivers EAP-derived PMK directly to firmware supplicant (no QAPI reconnect). */
 extern void wmi_set_enterprise_pmk(uint8_t vdev_id, const uint8_t *pmk, uint32_t pmk_len);
+/*
+ * Force-clears firmware's cached enterprise PMKSA entry for a BSSID so the
+ * next connect attempt runs a full EAP exchange instead of a PMKSA
+ * cache-hit.  Called synchronously (direct call, not via WMI cmd queue) —
+ * mirrors wmi_set_enterprise_pmk().
+ * Defined in prop/libwifiqcc730/wmi/src/wlan_wmi.c.
+ */
+extern void wmi_invalidate_ent_pmksa(const uint8_t *bssid);
 
 /*
  * Mirror of sta_config_t from prop/libwifiqcc730/dpm/inc/mlme_al.h.
@@ -183,6 +194,94 @@ struct qcom_ent_ctx {
 };
 
 static struct qcom_ent_ctx g_ent_ctx;
+
+/*
+ * Host-side credential fingerprint cache — one entry per SSID this host has
+ * configured enterprise credentials for.  Used to detect "same SSID, new
+ * credentials" (identity/password/AKM changed) so the stale firmware
+ * enterprise PMKSA cache entry for the BSSID we were last associated with on
+ * this SSID can be invalidated before firmware's mlme_set_auth_alg() gets a
+ * chance to hit that cache and skip EAP entirely with a PMK derived from the
+ * previous (possibly now-wrong) credentials.
+ *
+ * Keyed by SSID rather than BSSID: qcom_ent_setup_supplicant() runs before
+ * qapi_WLAN_Commit(), i.e. before firmware has even scanned/selected a BSSID
+ * — params->bssid is all-zero at this point for the common "wifi connect"
+ * flow (no explicit -m <bssid>).  This is also the ONLY host-side hook that
+ * runs before firmware's mlme_set_auth_alg() (PMKSA cache-hit decision) —
+ * qcom_ent_assoc_event() fires only after assoc-resp is received, which is
+ * already too late to affect the current connect attempt.
+ *
+ * Invalidation therefore targets g_ent_ctx.bssid, i.e. the BSSID from the
+ * *previous* association on this interface (not cleared by disconnect — see
+ * qcom_ent_assoc_event()).  For the bug's actual repro shape (disconnect,
+ * then reconnect to the same AP with different credentials) this is exactly
+ * the right target.  Known limitation: if the SSID roams to a *different*,
+ * never-before-seen BSSID in the same step as a credential change, that new
+ * BSSID's firmware PMKSA cache (if any) is not proactively invalidated here
+ * — no regression versus pre-fix behavior (which never invalidated anything),
+ * just not a fix for that specific combination.
+ */
+#define QCOM_ENT_FP_TABLE_MAX 5   /* == NT_PMKSA_MAX, prop/libwifiqcc730/mlm/include/wlan_dev.h */
+
+struct qcom_ent_cred_fp_entry {
+	uint8_t ssid[SSID_MAX_LEN];
+	uint8_t ssid_len;
+	uint8_t fp[32];   /* SHA-256 digest of identity || password || wpa3_ent_mode */
+	bool    valid;
+};
+
+static struct qcom_ent_cred_fp_entry g_ent_fp_table[QCOM_ENT_FP_TABLE_MAX];
+
+/* SHA256(identity || password || wpa3_ent_mode) — wpa3_ent_mode is folded in
+ * so a credential-identical reconnect under a DIFFERENT negotiated AKM
+ * (e.g. WPA2-Enterprise vs WPA3-Enterprise-Only on the same SSID) still
+ * produces a distinct fingerprint, forcing a fresh EAP exchange rather than
+ * risking a PMKSA cache-hit keyed under the other AKM's KDF. */
+static void qcom_ent_compute_cred_fp(const uint8_t *identity, size_t id_len,
+				     const uint8_t *password, size_t pw_len,
+				     uint8_t wpa3_ent_mode, uint8_t *fp_out)
+{
+	mbedtls_sha256_context ctx;
+
+	mbedtls_sha256_init(&ctx);
+	mbedtls_sha256_starts(&ctx, 0 /* SHA-256, not SHA-224 */);
+	if (identity && id_len) {
+		mbedtls_sha256_update(&ctx, identity, id_len);
+	}
+	if (password && pw_len) {
+		mbedtls_sha256_update(&ctx, password, pw_len);
+	}
+	mbedtls_sha256_update(&ctx, &wpa3_ent_mode, sizeof(wpa3_ent_mode));
+	mbedtls_sha256_finish(&ctx, fp_out);
+	mbedtls_sha256_free(&ctx);
+}
+
+/* Finds the fingerprint table slot for an SSID, allocating a free slot on
+ * first use.  Returns NULL only if the table is full and this SSID has
+ * never been seen (table sized to NT_PMKSA_MAX, matching firmware's own
+ * cache capacity, so this should not happen in practice). */
+static struct qcom_ent_cred_fp_entry *qcom_ent_fp_table_lookup(const uint8_t *ssid, uint8_t ssid_len)
+{
+	int free_idx = -1;
+
+	for (int i = 0; i < QCOM_ENT_FP_TABLE_MAX; i++) {
+		if (g_ent_fp_table[i].valid &&
+		    g_ent_fp_table[i].ssid_len == ssid_len &&
+		    memcmp(g_ent_fp_table[i].ssid, ssid, ssid_len) == 0) {
+			return &g_ent_fp_table[i];
+		}
+		if (free_idx < 0 && !g_ent_fp_table[i].valid) {
+			free_idx = i;
+		}
+	}
+	if (free_idx >= 0) {
+		memcpy(g_ent_fp_table[free_idx].ssid, ssid, ssid_len);
+		g_ent_fp_table[free_idx].ssid_len = ssid_len;
+		return &g_ent_fp_table[free_idx];
+	}
+	return NULL;
+}
 
 /* ---------- hs_compl_evt wrapper (--wrap=hs_compl_evt) ----------
  *
@@ -1001,6 +1100,45 @@ int qcom_ent_setup_supplicant(const struct device *dev,
 	 * the configured network when EVENT_ASSOC is delivered. */
 	g_ent_ctx.ssid_len = (uint8_t)MIN((int)params->ssid_length, (int)SSID_MAX_LEN);
 	memcpy(g_ent_ctx.ssid, params->ssid, g_ent_ctx.ssid_len);
+
+	/*
+	 * Credential-change detection (fixes stale-PMKSA-cache bypass): compare
+	 * this connect's credential fingerprint against the one recorded the
+	 * last time this SSID's credentials were configured.  Different (or
+	 * first time — table entry not yet valid) => firmware's cached
+	 * enterprise PMKSA entry for g_ent_ctx.bssid (the BSSID from our
+	 * previous association on this interface, if any — not cleared by
+	 * disconnect) may have been derived from different/no credentials.
+	 * Invalidate it now, synchronously, BEFORE qapi_WLAN_Commit() below —
+	 * this runs strictly before firmware's mlme_set_auth_alg() PMKSA
+	 * cache-hit decision for the upcoming connect, which is the only
+	 * window in which invalidating still affects THIS connect attempt.
+	 *
+	 * Same fingerprint => do nothing, preserving the existing zero-EAP
+	 * PMKSA cache-hit fast-reauth path (TC006/TC016).
+	 */
+	{
+		uint8_t new_fp[32];
+		struct qcom_ent_cred_fp_entry *fp_entry =
+			qcom_ent_fp_table_lookup(g_ent_ctx.ssid, g_ent_ctx.ssid_len);
+
+		qcom_ent_compute_cred_fp(params->eap_identity, params->eap_id_length,
+					 params->eap_password, params->eap_passwd_length,
+					 (uint8_t)params->wpa3_ent_mode, new_fp);
+
+		if (fp_entry == NULL) {
+			LOG_WRN("setup_supplicant: credential fp table full — skipping "
+				"PMKSA invalidate check for this SSID");
+		} else if (!fp_entry->valid || memcmp(fp_entry->fp, new_fp, sizeof(new_fp)) != 0) {
+			LOG_INF("setup_supplicant: credential fp changed (or first connect) "
+				"for this SSID — invalidating firmware PMKSA cache for prior BSSID "
+				"and host TLS session cache");
+			wmi_invalidate_ent_pmksa(g_ent_ctx.bssid);
+			tls_global_session_cache_invalidate();
+			memcpy(fp_entry->fp, new_fp, sizeof(new_fp));
+			fp_entry->valid = true;
+		}
+	}
 
 	int ret = supplicant_config_enterprise_network(dev, params);
 

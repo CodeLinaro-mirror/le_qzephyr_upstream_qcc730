@@ -44,6 +44,14 @@ struct qcom_he_msg {
  */
 int qcom_hostap_post(struct qcom_he_msg *msg);
 
+/* Wake the eloop thread immediately (write to eventfd). Use this after
+ * registering a new eloop_timeout() from outside the eloop thread (e.g.
+ * after nan_de_publish/subscribe) so eloop_run() picks up the new timeout
+ * rather than blocking until the eventfd is written by some other event.
+ * Safe to call from any thread; no-op if the thread is not running.
+ */
+void qcom_hostap_wakeup(void);
+
 /* Reference-counted thread lifecycle. The first acquirer runs eloop_init()
  * and starts the thread; the last releaser terminates it, joins, and runs
  * eloop_destroy(). Both are idempotent and serialised against each other,
@@ -59,5 +67,16 @@ void qcom_hostap_eloop_release(void);
  */
 void qcom_hostap_lock(void);
 void qcom_hostap_unlock(void);
+
+/* Wake the eloop thread so it re-evaluates its next select() timeout.
+ *
+ * eloop_register_timeout() only edits the timer list — it doesn't wake an
+ * eloop thread already blocked in select() on a longer timeout. Call this
+ * after qcom_hostap_unlock() whenever registering a timeout directly from a
+ * non-eloop thread, or the new timeout can sit unserviced for a long time.
+ * Not needed after eloop_cancel_timeout() — cancelling can only make eloop
+ * wait longer, never miss a deadline.
+ */
+void qcom_hostap_wake(void);
 
 #endif /* QCOM_HOSTAP_ELOOP_H_ */

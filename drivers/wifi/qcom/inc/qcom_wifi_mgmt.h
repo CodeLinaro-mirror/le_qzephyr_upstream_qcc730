@@ -14,6 +14,7 @@
 #include <zephyr/net/ethernet.h>
 #include <zephyr/net/offloaded_netdev.h>
 #include "qapi_wlan_misc.h"
+#include "qcom_wifi_p2p.h"
 
 /** @brief Qcom Wi-Fi management commands */
 enum qcom_net_request_wifi_cmd {
@@ -96,6 +97,23 @@ enum qcom_net_request_wifi_cmd {
 	NET_REQUEST_WIFI_CMD_QCOM_SET_CTS_TO_SELF,
 	/** Set RSP Rate */
 	NET_REQUEST_WIFI_CMD_QCOM_SET_RSP_RATE,
+	/** Enter or exit WNM Sleep Mode */
+	NET_REQUEST_WIFI_CMD_QCOM_WNM_SLEEP,
+	/** Query WNM sleep status and statistics */
+	NET_REQUEST_WIFI_CMD_QCOM_WNM_STATUS,
+	/** Enable or disable WNM Sleep Mode */
+	NET_REQUEST_WIFI_CMD_QCOM_WNM_SET_ENABLE,
+	/** Set BSS Max Idle Period (seconds) */
+	NET_REQUEST_WIFI_CMD_QCOM_WNM_SET_BSS_MAX_IDLE,
+	NET_REQUEST_WIFI_CMD_QCOM_P2P,
+	/** NAN USD Publish */
+	NET_REQUEST_WIFI_CMD_QCOM_NAN_PUBLISH,
+	/** NAN USD Subscribe */
+	NET_REQUEST_WIFI_CMD_QCOM_NAN_SUBSCRIBE,
+	/** NAN USD Cancel Publish */
+	NET_REQUEST_WIFI_CMD_QCOM_NAN_CANCEL_PUBLISH,
+	/** NAN USD Transmit (follow-up) */
+	NET_REQUEST_WIFI_CMD_QCOM_NAN_TRANSMIT,
 	NET_REQUEST_WIFI_CMD_QCOM_MAX,
 };
 
@@ -295,6 +313,50 @@ NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_CTS_TO_SELF);
 #define NET_REQUEST_WIFI_QCOM_SET_RSP_RATE					\
 	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_SET_RSP_RATE)
 NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_SET_RSP_RATE);
+
+/** WNM Sleep Mode control (enter / exit) */
+#define NET_REQUEST_WIFI_QCOM_WNM_SLEEP					\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_WNM_SLEEP)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_WNM_SLEEP);
+
+/** Query WNM Sleep Mode status and statistics */
+#define NET_REQUEST_WIFI_QCOM_WNM_STATUS				\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_WNM_STATUS)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_WNM_STATUS);
+
+/** Enable or disable WNM Sleep Mode */
+#define NET_REQUEST_WIFI_QCOM_WNM_SET_ENABLE				\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_WNM_SET_ENABLE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_WNM_SET_ENABLE);
+
+/** Set BSS Max Idle Period (seconds) */
+#define NET_REQUEST_WIFI_QCOM_WNM_SET_BSS_MAX_IDLE			\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_WNM_SET_BSS_MAX_IDLE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_WNM_SET_BSS_MAX_IDLE);
+
+#define NET_REQUEST_WIFI_QCOM_P2P						\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_P2P)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_P2P);
+
+/** NAN USD Publish */
+#define NET_REQUEST_WIFI_QCOM_NAN_PUBLISH				\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_NAN_PUBLISH)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_NAN_PUBLISH);
+
+/** NAN USD Subscribe */
+#define NET_REQUEST_WIFI_QCOM_NAN_SUBSCRIBE				\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_NAN_SUBSCRIBE)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_NAN_SUBSCRIBE);
+
+/** NAN USD Cancel Publish */
+#define NET_REQUEST_WIFI_QCOM_NAN_CANCEL_PUBLISH			\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_NAN_CANCEL_PUBLISH)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_NAN_CANCEL_PUBLISH);
+
+/** NAN USD Transmit (follow-up) */
+#define NET_REQUEST_WIFI_QCOM_NAN_TRANSMIT				\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_QCOM_NAN_TRANSMIT)
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_QCOM_NAN_TRANSMIT);
 
 /** Set TX Power parameters */
 struct qcom_wifi_set_tx_power_params{
@@ -565,7 +627,113 @@ struct qcom_wifi_set_rsp_rate_params {
 	uint8_t rate_idx;
 };
 
+/** WNM Sleep action */
+enum wifi_wnm_sleep_action {
+	WIFI_WNM_SLEEP_ENTER = 0,
+	WIFI_WNM_SLEEP_EXIT  = 1,
+};
+
+/** WNM Sleep request parameters */
+struct wifi_wnm_sleep_params {
+	enum wifi_wnm_sleep_action action;
+	/** Sleep interval in ms; 0 = keep current configuration */
+	uint32_t interval_ms;
+};
+
+/** WNM Sleep status and statistics */
+struct wifi_wnm_status {
+	bool    enabled;
+	bool    sleeping;
+	bool    ap_capable;
+	uint32_t interval_ms;
+	uint32_t enter_req_sent;
+	uint32_t enter_rsp_rcvd;
+	uint32_t exit_req_sent;
+	uint32_t exit_rsp_rcvd;
+	uint32_t wakeup_sta_data;
+	uint32_t wakeup_tim;
+	uint32_t wakeup_bss_idle_timer;
+};
+
+enum qcom_p2p_subcmd {
+	P2P_SUBCMD_ENABLE,
+	P2P_SUBCMD_DISABLE,
+	P2P_SUBCMD_APPLY_CFG,
+	P2P_SUBCMD_APPLY_DISC_INT,
+	P2P_SUBCMD_FIND,
+	P2P_SUBCMD_STOP_FIND,
+	P2P_SUBCMD_LISTEN,
+	P2P_SUBCMD_CANCEL,
+	P2P_SUBCMD_FLUSH,
+	P2P_SUBCMD_PEERS_DUMP,
+	P2P_SUBCMD_PEER_DUMP,
+	P2P_SUBCMD_CONNECT,
+	P2P_SUBCMD_REJECT,
+	P2P_SUBCMD_AUTH_INVITE,
+	P2P_SUBCMD_INVITE,
+};
+
+struct qcom_wifi_p2p_params {
+	enum qcom_p2p_subcmd subcmd;
+	union {
+		struct {
+			struct qcom_p2p_params cfg;
+		} enable;
+		struct {
+			struct qcom_p2p_params cfg;
+		} apply_cfg;
+		struct {
+			int min_disc_int;
+			int max_disc_int;
+			int max_disc_tu;
+		} apply_disc_int;
+		struct {
+			unsigned int timeout;
+		} find;
+		struct {
+			unsigned int timeout;
+		} listen;
+		struct {
+			qcom_p2p_print_cb cb;
+			void *cb_ctx;
+			int n;
+		} peers_dump;
+		struct {
+			uint8_t mac[QCOM_P2P_MAC_LEN];
+			qcom_p2p_print_cb cb;
+			void *cb_ctx;
+		} peer_dump;
+		struct {
+			uint8_t mac[QCOM_P2P_MAC_LEN];
+			enum qcom_p2p_wps_method wps_method;
+			int go_intent;
+			int persistent;
+			int auth;
+		} connect;
+		struct {
+			uint8_t mac[QCOM_P2P_MAC_LEN];
+		} reject;
+		struct {
+			uint8_t mac[QCOM_P2P_MAC_LEN];
+			bool clear;
+		} auth_invite;
+		struct {
+			uint8_t mac[QCOM_P2P_MAC_LEN];
+			enum qcom_p2p_invite_role role;
+			const uint8_t *bssid;
+			const uint8_t *ssid;
+			size_t ssid_len;
+			unsigned int freq;
+			int persistent_group;
+		} invite;
+	};
+};
+
 /** Wi-Fi management API */
+struct qcom_wifi_nan_publish_params;
+struct qcom_wifi_nan_subscribe_params;
+struct qcom_wifi_nan_cancel_publish_params;
+struct qcom_wifi_nan_transmit_params;
 struct qcom_wifi_mgmt_ops {
 	/** Set TX Power for Wi-Fi networks
 	 *
@@ -1141,7 +1309,7 @@ struct qcom_wifi_mgmt_ops {
 	 * @brief Set Rsp rate to 6Mbps on the active WLAN device.
 	 *
 	 * Set Rsp rate to 6Mbps via qapi_WLAN_Set_Param for the currently active
-	 * WLAN interface. 
+	 * WLAN interface.
 	 *
 	 * @param dev Pointer to the driver device instance.
 	 * @param params Rsp rate index:
@@ -1151,6 +1319,150 @@ struct qcom_wifi_mgmt_ops {
 	 */
 	int (*set_rsp_rate)(const struct device *dev,
 			struct qcom_wifi_set_rsp_rate_params *params);
+
+	/** Enter or exit WNM Sleep Mode.
+	 *
+	 * @param dev   Pointer to the device structure for the driver instance.
+	 * @param params WNM sleep action and optional interval.
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*wnm_sleep)(const struct device *dev,
+			struct wifi_wnm_sleep_params *params);
+
+	/** Query WNM sleep status and statistics.
+	 *
+	 * @param dev    Pointer to the device structure for the driver instance.
+	 * @param status Output struct filled with current WNM state and counters.
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*wnm_status)(const struct device *dev,
+			struct wifi_wnm_status *status);
+
+	/** Enable or disable WNM Sleep Mode.
+	 *
+	 * @param dev    Pointer to the device structure for the driver instance.
+	 * @param enable 1 to enable, 0 to disable.
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*wnm_set_enable)(const struct device *dev, uint32_t enable);
+
+	/** Set BSS Max Idle Period.
+	 *
+	 * @param dev     Pointer to the device structure for the driver instance.
+	 * @param seconds BSS Max Idle Period in seconds (0–3600).
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*wnm_set_bss_max_idle)(const struct device *dev, uint32_t seconds);
+
+	/** NAN USD Publish
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param params NAN publish parameters
+	 *
+	 * @return publish_id (>0) if ok, < 0 if error
+	 */
+	int (*nan_publish)(const struct device *dev,
+			struct qcom_wifi_nan_publish_params *params);
+
+	/** NAN USD Subscribe
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param params NAN subscribe parameters
+	 *
+	 * @return subscribe_id (>0) if ok, < 0 if error
+	 */
+	int (*nan_subscribe)(const struct device *dev,
+			struct qcom_wifi_nan_subscribe_params *params);
+
+	/** NAN USD Cancel Publish
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param params NAN cancel publish parameters (publish_id)
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*nan_cancel_publish)(const struct device *dev,
+			struct qcom_wifi_nan_cancel_publish_params *params);
+
+	/** NAN USD Transmit (follow-up)
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param params NAN transmit parameters
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*nan_transmit)(const struct device *dev,
+			struct qcom_wifi_nan_transmit_params *params);
+
+#ifdef CONFIG_WIFI_QCOM_P2P
+	int (*p2p)(const struct device *dev, struct qcom_wifi_p2p_params *params);
+#endif
+};
+
+/** NAN Publish parameters */
+struct qcom_wifi_nan_publish_params {
+	/** Service name (e.g., "_matter") */
+	const char *service_name;
+	/** Service protocol type (e.g., 18 for Matter) */
+	uint8_t srv_proto_type;
+	/** Multi-channel frequency list in MHz, NULL-terminated
+	 *  (e.g. {5180, 5220, 5745, 0} for 5GHz social channels).
+	 *  NULL = use 2.4GHz default {2437, 2437, 2412, 2462, 0}. */
+	const int *freq_list;
+	/** Service Specific Info (optional, NULL if not used) */
+	const uint8_t *ssi;
+	/** Length of SSI */
+	size_t ssi_len;
+	/** Time-to-live in seconds (0 = indefinite) */
+	unsigned int ttl;
+	/** Unsolicited publish: periodically broadcast SDF (no listen needed) */
+	bool unsolicited;
+	/** Solicited publish: reply to a received active Subscribe SDF.
+	 *  unsolicited + solicited may both be true (Matter commissionee default);
+	 *  at least one must be true. */
+	bool solicited;
+};
+
+/** NAN Subscribe parameters */
+struct qcom_wifi_nan_subscribe_params {
+	/** Service name (e.g., "_matter") */
+	const char *service_name;
+	/** Service protocol type (e.g., 18 for Matter) */
+	uint8_t srv_proto_type;
+	/** Active subscribe: transmit Subscribe SDFs to solicit replies from
+	 *  solicited publishers. false = passive (listen only). */
+	bool active;
+	/** Time-to-live in seconds the subscribe service stays alive. */
+	unsigned int ttl;
+	/** Listen frequency in MHz (0 = use default NAN_USD_DEFAULT_FREQ=2437).
+	 *  Subscriber listens on this single channel; no multi-channel rotation.
+	 *  This matches upstream wpa_supplicant design: publisher rotates via
+	 *  freq_list, subscriber stays fixed on one channel. */
+	unsigned int freq;
+};
+
+/** NAN Cancel Publish parameters */
+struct qcom_wifi_nan_cancel_publish_params {
+	/** Publish ID to cancel (returned by nan_publish) */
+	int publish_id;
+};
+
+/** NAN Transmit (follow-up) parameters */
+struct qcom_wifi_nan_transmit_params {
+	/** Local instance handle (publish_id or subscribe_id) */
+	int handle;
+	/** Peer NMI (6 bytes) to send the follow-up to */
+	uint8_t peer_addr[6];
+	/** Peer instance id (req_instance_id) from discovery_result/receive */
+	uint8_t req_instance_id;
+	/** Service Specific Info payload (optional, NULL if not used) */
+	const uint8_t *ssi;
+	/** Length of SSI */
+	size_t ssi_len;
 };
 
 #endif

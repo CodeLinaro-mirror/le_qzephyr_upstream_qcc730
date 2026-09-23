@@ -299,7 +299,7 @@ void soc_prep_hook(void)
 #else
     z_arm_interrupt_init();
 #endif /* CONFIG_ARM_CUSTOM_INTERRUPT_CONTROLLER */
-#if CONFIG_ARCH_CACHE
+#if defined(CONFIG_ARCH_CACHE)
     arch_cache_init();
 #endif
 

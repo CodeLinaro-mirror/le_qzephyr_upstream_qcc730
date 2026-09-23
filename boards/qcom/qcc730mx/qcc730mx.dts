@@ -21,6 +21,10 @@
 		zephyr,flash = &rram;
 		zephyr,cortex-m-idle-timer = &aon_timer0;
 	};
+
+	aliases {
+		rtc = &rtc;
+	};
 };
 
 &uart0 {

@@ -21,6 +21,8 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #include "qapi_lowpower.h"
 #ifdef CONFIG_PM_DEVICE
 #include <zephyr/pm/device.h>
+#endif
+#ifdef CONFIG_PM
 #include <zephyr/pm/policy.h>
 #include <zephyr/pm/pm.h>
 #endif
@@ -45,6 +47,18 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #endif
 #endif
 
+#ifdef CONFIG_WIFI_QCOM_WPS
+#include "inc/qcom_wps_glue.h"
+#endif
+
+#ifdef CONFIG_WIFI_NM_WPA_SUPPLICANT_NAN_USD
+#include "qcc730_nan_de_glue.h"
+#endif
+
+#if defined(CONFIG_WIFI_NM_WPA_SUPPLICANT) && !defined(CONFIG_WIFI_NM_WPA_SUPPLICANT_MINIMAL)
+#include "supp_main.h"
+#endif
+
 #ifdef CONFIG_WIFI_QCOM_HOSTAP_ELOOP
 #include "inc/qcom_hostap_eloop.h"
 #endif
@@ -56,6 +70,26 @@ LOG_MODULE_REGISTER(qwifi_drv, CONFIG_WIFI_LOG_LEVEL);
 #define CONFIG_WIFI_SAP_PRIORITY 81
 /* Make sure the waiting time is less than 30ms to make zephyr policy block the suspending process when slab is exhausted.*/
 #define WAIT_TIME_FOR_ALLOC_RX_BUF_MS 20
+
+/* RSN Capabilities bits defined by IEEE 802.11.  Keep these local to the
+ * driver because the public QAPI status exposes the raw FW RSN capability
+ * value, while Zephyr exposes the derived MFP policy enum. */
+#define QCOM_RSN_CAP_MFPR 0x0040U
+#define QCOM_RSN_CAP_MFPC 0x0080U
+
+static enum wifi_mfp_options qcom_rsn_cap_to_mfp(uint16_t rsn_cap)
+{
+    /* MFPR implies that PMF is required; check it before MFPC. */
+    if (rsn_cap & QCOM_RSN_CAP_MFPR) {
+        return WIFI_MFP_REQUIRED;
+    }
+
+    if (rsn_cap & QCOM_RSN_CAP_MFPC) {
+        return WIFI_MFP_OPTIONAL;
+    }
+
+    return WIFI_MFP_DISABLE;
+}
 
 struct qwifi_bss_status_t {
     bool connected;
@@ -81,7 +115,16 @@ struct qwifi_drv_dev_data_t {
     const struct device *dev;
     struct qcom_wifi_mgmt_ops qcom_wifi_cmd;
     k_timeout_t timeout;
+    /* Persistent buffers for WPS PSK reconnect — cfg_connect.ssid/psk
+     * point here so the pointers remain valid after wps_sync_cfg_connect(). */
+    uint8_t wps_ssid_buf[WIFI_SSID_MAX_LEN];
+    uint8_t wps_psk_buf[WIFI_PSK_MAX_LEN];
 };
+
+/* Ensure wps_psk_buf can hold the maximum WPS PSK key length.
+ * wifi_connect_req_params.psk_length is documented as "Max 64" bytes. */
+_Static_assert(sizeof(((struct qwifi_drv_dev_data_t *)0)->wps_psk_buf) >= WIFI_PSK_MAX_LEN,
+               "wps_psk_buf must be at least 64 bytes (WPS PSK max)");
 
 struct qwifi_drv_dev_cfg_t {
     int32_t scan_mode;
@@ -249,7 +292,8 @@ static void qwifi_scan_complete_event(struct device *dev, qapi_WLAN_Scan_Comp_Ev
         memset(&res, 0, sizeof(struct wifi_scan_result));
         qapi_WLAN_BSS_Scan_Info_t *bss = &scan_result->scan_bss_info[k];
 
-        res.rssi = bss->rssi;
+        /* Firmware reports RSSI as a positive magnitude; real dBm = value - 100 */
+        res.rssi = (int)bss->rssi - 100;
         res.channel = bss->channel;
         res.ssid_length = bss->ssid_Length;
         strlcpy(res.ssid, bss->ssid, WIFI_SSID_MAX_LEN);
@@ -328,14 +372,24 @@ static int station_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *
     case WIFI_SECURITY_TYPE_EAP_PEAP_GTC:
     case WIFI_SECURITY_TYPE_EAP_TTLS_MSCHAPV2:
     case WIFI_SECURITY_TYPE_EAP_PEAP_TLS:
+        /*
+         * RECEIVED_ASSOC_RESP only means 802.11 association succeeded —
+         * EAP has not run yet (or, on a PMKSA cache-hit, the 4-way HS has
+         * not run yet either).  The generic QAPI_OK check above already
+         * set bss->connected=true from this same event, which makes
+         * "wifi status" report COMPLETED before authentication actually
+         * finished.  Undo that here; only FOURWAY_HANDSHAKE_SUCCESS below
+         * (real key install) is a true completion.
+         */
         if (info->reason_code == RECEIVED_ASSOC_RESP) {
-            LOG_INF("station_connect_event: Enterprise assoc done (connected=%d)",
-                       bss->connected);
+            bss->connected = false;
+            LOG_INF("station_connect_event: Enterprise assoc done (auth pending)");
             qcom_ent_assoc_event(dev, info->bssid,
                                  connect_status == WIFI_STATUS_CONN_SUCCESS,
                                  dev_data->active_device);
         } else if (info->reason_code == FOURWAY_HANDSHAKE_SUCCESS) {
             LOG_INF("station_connect_event: Enterprise 4-way HS done, raising connect");
+            bss->connected = true;
             qcom_ent_4way_hs_done(iface);
         }
         return 0;
@@ -343,6 +397,19 @@ static int station_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t *
         break;
     }
 #endif /* CONFIG_WIFI_QCOM_ENTERPRISE */
+
+#ifdef CONFIG_WIFI_QCOM_WPS
+    /* WPS flow: firmware open assoc → EAP hook → M1-M8 → PSK reconnect.
+     * qcom_wps_connect_in_progress() returns true only during the connect
+     * phase (PBC active, scan complete), so the check is precise. */
+    if (qcom_wps_connect_in_progress()) {
+        qcom_wps_assoc_event(dev, info->bssid,
+                             connect_status == WIFI_STATUS_CONN_SUCCESS,
+                             dev_data->active_device);
+        /* Skip normal connect path — credentials come via EAP-WSC (M1-M8). */
+        return 0;
+    }
+#endif /* CONFIG_WIFI_QCOM_WPS */
 
     wifi_mgmt_raise_connect_result_event(iface, connect_status);
     if (bss->connected) {
@@ -368,6 +435,9 @@ static int ap_station_connect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_
     if (!memcmp(link_addr->addr, mac_addr, link_addr->len)) {
         if (success) {
             dev_data->ap_status.status = WIFI_SAP_IFACE_ENABLED;
+            /* Bring the SoftAP iface up so downlink TX is not rejected with
+             * -ENETDOWN; AP path has no Q_LINKCHANGE_ADD to set carrier. */
+            net_eth_carrier_on(iface);
             wifi_mgmt_raise_ap_enable_result_event(iface, WIFI_STATUS_AP_SUCCESS);
         } else {
             dev_data->ap_status.status = WIFI_SAP_IFACE_DISABLED;
@@ -446,6 +516,7 @@ static void ap_station_disconnect_event(struct device *dev, qapi_WLAN_Join_Comp_
     /* filter ap itself connection event. */
     struct net_linkaddr * link_addr = net_if_get_link_addr(iface);
     if (!memcmp(link_addr->addr, sta_mac, link_addr->len)) {
+        net_eth_carrier_off(iface);
         wifi_mgmt_raise_ap_disable_result_event(iface, WIFI_STATUS_AP_SUCCESS);
         dev_data->ap_status.status = WIFI_SAP_IFACE_DISABLED;
         return ;
@@ -477,6 +548,173 @@ static void qwifi_disconnect_event(struct device *dev, qapi_WLAN_Join_Comp_Evt_t
     }
 }
 
+#ifdef SUPPORT_TWT_STA
+/* Mirrors wlan_twt_setup_evt_t / wlan_twt_teardown_evt_t in
+ * prop/libwifiqcc730/sme/inc/nt_twt.h (not on driver include path). */
+typedef struct {
+    uint16_t msg_id;
+    uint8_t  network_id;
+    uint8_t  status;
+    uint16_t reserved_1;
+    uint8_t  dialog_id;
+    uint8_t  negotiation_type;
+    uint32_t wake_duration;
+    uint32_t wake_interval;
+    uint32_t twt_start_tsf_lo;
+    uint32_t twt_start_tsf_hi;
+    uint8_t  flow_type;
+    uint8_t  trigger_type;
+    uint8_t  reason_code;
+    uint8_t  flow_id;
+} __attribute__((packed)) qwifi_twt_setup_evt_t;
+
+typedef struct {
+    uint16_t msg_id;
+    uint8_t  network_id;
+    uint8_t  status;
+    uint8_t  flow_id;          /* negotiated individual TWT flow ID */
+    uint8_t  host_initiated;
+    uint8_t  dialog_id;
+    uint8_t  reason_code;
+} __attribute__((packed)) qwifi_twt_teardown_evt_t;
+
+enum qwifi_twt_evt_status {
+    QWIFI_TWT_EVT_STATUS_OK = 0,
+    QWIFI_TWT_EVT_DIALOG_ID_NOT_EXIST = 1,
+    QWIFI_TWT_EVT_INVALID_PARAM = 2,
+    QWIFI_TWT_EVT_NO_RESOURCE = 3,
+    QWIFI_TWT_EVT_FW_NOT_READY = 4,
+    QWIFI_TWT_EVT_NO_ACK = 5,
+    QWIFI_TWT_EVT_NO_RESPONSE = 6,
+    QWIFI_TWT_EVT_DENIED = 7,
+    QWIFI_TWT_EVT_UNKNOWN_ERROR = 8,
+    QWIFI_TWT_EVT_STA_NOT_ASSOCIATED = 9,
+    QWIFI_TWT_EVT_SETUP_IN_PROGRESS = 10,
+    QWIFI_TWT_EVT_SESSION_ALREADY_EXISTS = 11,
+};
+
+static void qwifi_twt_setup_event(struct device *dev, void *private)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    struct net_if *iface = dev_data->iface;
+    qwifi_twt_setup_evt_t *evt = (qwifi_twt_setup_evt_t *)private;
+    struct wifi_twt_params twt_params = {0};
+
+    if (!iface || !evt) {
+        LOG_ERR("TWT setup event: invalid iface/private");
+        return;
+    }
+
+    twt_params.operation = WIFI_TWT_SETUP;
+    twt_params.dialog_token = evt->dialog_id;
+    twt_params.flow_id = evt->flow_id;
+    twt_params.negotiation_type = (evt->negotiation_type == 0) ?
+                                  WIFI_TWT_INDIVIDUAL : WIFI_TWT_BROADCAST;
+
+    switch (evt->reason_code) {
+    case QWIFI_TWT_EVT_STATUS_OK:
+        twt_params.resp_status = WIFI_TWT_RESP_RECEIVED;
+        twt_params.setup_cmd = WIFI_TWT_SETUP_CMD_ACCEPT;
+        break;
+    case QWIFI_TWT_EVT_DENIED:
+        twt_params.resp_status = WIFI_TWT_RESP_RECEIVED;
+        twt_params.setup_cmd = WIFI_TWT_SETUP_CMD_REJECT;
+        twt_params.fail_reason = WIFI_TWT_FAIL_UNSPECIFIED;
+        break;
+    case QWIFI_TWT_EVT_NO_ACK:
+    case QWIFI_TWT_EVT_NO_RESPONSE:
+        twt_params.resp_status = WIFI_TWT_RESP_NOT_RECEIVED;
+        twt_params.setup_cmd = WIFI_TWT_SETUP_CMD_REJECT;
+        twt_params.fail_reason = WIFI_TWT_FAIL_CMD_EXEC_FAIL;
+        break;
+    case QWIFI_TWT_EVT_STA_NOT_ASSOCIATED:
+        twt_params.resp_status = WIFI_TWT_RESP_NOT_RECEIVED;
+        twt_params.setup_cmd = WIFI_TWT_SETUP_CMD_REJECT;
+        twt_params.fail_reason = WIFI_TWT_FAIL_DEVICE_NOT_CONNECTED;
+        break;
+    case QWIFI_TWT_EVT_SETUP_IN_PROGRESS:
+    case QWIFI_TWT_EVT_FW_NOT_READY:
+        twt_params.resp_status = WIFI_TWT_RESP_NOT_RECEIVED;
+        twt_params.setup_cmd = WIFI_TWT_SETUP_CMD_REJECT;
+        twt_params.fail_reason = WIFI_TWT_FAIL_OPERATION_IN_PROGRESS;
+        break;
+    case QWIFI_TWT_EVT_SESSION_ALREADY_EXISTS:
+    case QWIFI_TWT_EVT_NO_RESOURCE:
+        twt_params.resp_status = WIFI_TWT_RESP_NOT_RECEIVED;
+        twt_params.setup_cmd = WIFI_TWT_SETUP_CMD_REJECT;
+        twt_params.fail_reason = WIFI_TWT_FAIL_FLOW_ALREADY_EXISTS;
+        break;
+    case QWIFI_TWT_EVT_DIALOG_ID_NOT_EXIST:
+        twt_params.resp_status = WIFI_TWT_RESP_NOT_RECEIVED;
+        twt_params.setup_cmd = WIFI_TWT_SETUP_CMD_REJECT;
+        twt_params.fail_reason = WIFI_TWT_FAIL_INVALID_FLOW_ID;
+        break;
+    case QWIFI_TWT_EVT_INVALID_PARAM:
+    case QWIFI_TWT_EVT_UNKNOWN_ERROR:
+    default:
+        twt_params.resp_status = WIFI_TWT_RESP_NOT_RECEIVED;
+        twt_params.setup_cmd = WIFI_TWT_SETUP_CMD_REJECT;
+        twt_params.fail_reason = WIFI_TWT_FAIL_CMD_EXEC_FAIL;
+        break;
+    }
+
+    /* lib reports wake_duration/interval in us; Zephyr expects us. */
+    twt_params.setup.twt_wake_interval = evt->wake_duration;
+    twt_params.setup.twt_interval = (uint64_t)evt->wake_interval;
+    twt_params.setup.announce = (evt->flow_type == 0);
+    twt_params.setup.trigger  = (evt->trigger_type != 0);
+    twt_params.setup.implicit = true;
+    twt_params.setup.responder = false;
+
+    LOG_INF("TWT setup evt: dlg=%d flow=%d neg=%d wake_dur_us=%u interval_us=%llu status=%d",
+            evt->dialog_id, evt->flow_id, evt->negotiation_type,
+            twt_params.setup.twt_wake_interval,
+            twt_params.setup.twt_interval, evt->reason_code);
+
+    wifi_mgmt_raise_twt_event(iface, &twt_params);
+}
+
+static void qwifi_twt_teardown_event(struct device *dev, void *private)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    struct net_if *iface = dev_data->iface;
+    qwifi_twt_teardown_evt_t *evt = (qwifi_twt_teardown_evt_t *)private;
+    struct wifi_twt_params twt_params = {0};
+
+    if (!iface || !evt) {
+        LOG_ERR("TWT teardown event: invalid iface/private");
+        return;
+    }
+
+    twt_params.operation = WIFI_TWT_TEARDOWN;
+    twt_params.dialog_token = evt->dialog_id;
+    twt_params.flow_id = evt->flow_id;
+    twt_params.negotiation_type = WIFI_TWT_INDIVIDUAL;
+    twt_params.teardown_status = (evt->reason_code == 0) ?
+                                 WIFI_TWT_TEARDOWN_SUCCESS :
+                                 WIFI_TWT_TEARDOWN_FAILED;
+
+    LOG_INF("TWT teardown evt: dlg=%d host_init=%d status=%d",
+            evt->dialog_id, evt->host_initiated, evt->reason_code);
+
+    wifi_mgmt_raise_twt_event(iface, &twt_params);
+}
+
+static void qwifi_twt_ext_wakeup_event(struct device *dev, void *private)
+{
+    qapi_WLAN_TWT_Ext_Wakeup_Evt_t *evt =
+            (qapi_WLAN_TWT_Ext_Wakeup_Evt_t *)private;
+
+    if (!dev || !evt) {
+        LOG_ERR("TWT external wake event: invalid device/payload");
+        return;
+    }
+
+    LOG_INF("TWT external wake event: enable=%d status=%d",
+            evt->enable, evt->reason_code);
+}
+#endif /* SUPPORT_TWT_STA */
+
 static void qwifi_drv_event_handler(uint8_t dev_id, uint32_t event, void *context, void *private, uint32_t length)
 {
     struct device *target_dev = NULL;
@@ -501,6 +739,23 @@ static void qwifi_drv_event_handler(uint8_t dev_id, uint32_t event, void *contex
     case QAPI_WLAN_CHANNEL_SWITCH_CB_E:
         LOG_INF("CSA Done.");
         break;
+#ifdef CONFIG_WIFI_QCOM_WPS
+    case QAPI_WLAN_WPS_SCAN_AP_CB_E:
+    case QAPI_WLAN_WPS_SCAN_COMP_CB_E:
+        qwifi_wps_scan_event(event, private, length);
+        break;
+#endif
+#ifdef SUPPORT_TWT_STA
+    case QAPI_WLAN_TWT_SETUP_CB_E:
+        qwifi_twt_setup_event(target_dev, private);
+        break;
+    case QAPI_WLAN_TWT_TEARDOWN_CB_E:
+        qwifi_twt_teardown_event(target_dev, private);
+        break;
+    case QAPI_WLAN_TWT_EXT_WAKEUP_CB_E:
+        qwifi_twt_ext_wakeup_event(target_dev, private);
+        break;
+#endif
     default:
         LOG_WRN("%s:%d event: %d, ignored.", __FUNCTION__, __LINE__, event);
         break;
@@ -666,6 +921,71 @@ static int qwifi_drv_connect(const struct device *dev, struct wifi_connect_req_p
     return 0;
 }
 
+#ifdef CONFIG_WIFI_QCOM_WPS
+
+/*
+ * qwifi_wps_sync_connect_params — update cfg_connect with WPS-negotiated
+ * credentials so that "wifi status" and net_mgmt events reflect the correct
+ * SSID, security type and PSK after the PSK reconnect triggered by WPS M8.
+ * Must be called before qapi_WLAN_Commit() in the PSK reconnect path.
+ */
+void qwifi_wps_sync_connect_params(const struct device *dev,
+                                    const uint8_t *ssid, uint8_t ssid_len,
+                                    enum wifi_security_type security,
+                                    const uint8_t *psk, uint8_t psk_len)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    struct wifi_connect_req_params *p     = &dev_data->cfg_connect;
+
+    memset(p, 0, sizeof(*p));
+
+    /* SSID — copy into persistent buffer owned by dev_data */
+    ssid_len = (ssid_len <= WIFI_SSID_MAX_LEN) ? ssid_len : WIFI_SSID_MAX_LEN;
+    memcpy(dev_data->wps_ssid_buf, ssid, ssid_len);
+    p->ssid        = dev_data->wps_ssid_buf;
+    p->ssid_length = ssid_len;
+
+    p->security = security;
+
+    /* PSK — copy into persistent buffer owned by dev_data */
+    if (security != WIFI_SECURITY_TYPE_NONE && psk && psk_len > 0) {
+        psk_len = (psk_len <= sizeof(dev_data->wps_psk_buf))
+                  ? psk_len : sizeof(dev_data->wps_psk_buf);
+        memcpy(dev_data->wps_psk_buf, psk, psk_len);
+        p->psk        = dev_data->wps_psk_buf;
+        p->psk_length = psk_len;
+    }
+}
+
+static int qwifi_drv_wps_config(const struct device *dev,
+                                  struct wifi_wps_config_params *params)
+{
+    if (!dev || !params) {
+        return -EINVAL;
+    }
+
+    switch (params->oper) {
+    case WIFI_WPS_PBC: {
+        static const uint8_t zero_bssid[WIFI_MAC_ADDR_LEN] = {0};
+        const uint8_t  *bssid    = (memcmp(params->bssid, zero_bssid,
+                                            WIFI_MAC_ADDR_LEN) == 0) ?
+                                    NULL : params->bssid;
+        const uint16_t *channels = params->channel_count > 0 ?
+                                    params->channels : NULL;
+        return qcom_wps_start_pbc(dev, bssid, channels, params->channel_count);
+    }
+    case WIFI_WPS_CANCEL:
+        qcom_hostap_lock();
+        qcom_wps_cancel(dev);
+        qcom_hostap_unlock();
+        return 0;
+    default:
+        LOG_WRN("qwifi_drv_wps_config: unsupported op=%d", params->oper);
+        return -ENOTSUP;
+    }
+}
+#endif /* CONFIG_WIFI_QCOM_WPS */
+
 static int qwifi_drv_scan(const struct device *dev, struct wifi_scan_params *params, scan_result_cb_t cb)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
@@ -709,10 +1029,33 @@ static int qwifi_drv_scan(const struct device *dev, struct wifi_scan_params *par
         return -EINVAL;
     }
 
+    /* Translate Zephyr band_chan to QCC730 qapi channel_List instead of
+     * rejecting it.  This enables targeted single-channel scans (e.g.
+     * CH6 only during WiFiPAF commissioning) which complete in ~100 ms
+     * instead of the default full-band scan (~10-15 s).  The struct
+     * channel_List[1] holds exactly one entry; multi-channel callers
+     * would need a larger allocation, but the commissioning path only
+     * ever passes one channel hint (AP channel == NAN channel). */
     for (uint8_t i = 0; i < WIFI_MGMT_SCAN_CHAN_MAX_MANUAL; i++) {
 	    if (params->band_chan[i].channel != 0) {
-		LOG_WRN("Currently not supports [-c, --chans] option");
-		return -EINVAL;
+		    scan_param.num_Channels  = 1;
+		    scan_param.channel_List[0] = params->band_chan[i].channel;
+		    LOG_INF("Targeted scan: ch=%u (band=%u)", scan_param.channel_List[0],
+			    params->band_chan[i].band);
+		    /* Warn (don't fail) if the caller passed more than one
+		     * channel hint -- only the first is honored above. */
+		    for (uint8_t j = i + 1; j < WIFI_MGMT_SCAN_CHAN_MAX_MANUAL; j++) {
+			    if (params->band_chan[j].channel != 0) {
+				    LOG_WRN("Targeted scan: multi-channel hint not "
+					    "supported, ignoring ch=%u (band=%u) and "
+					    "beyond; only first hint ch=%u is honored",
+					    params->band_chan[j].channel,
+					    params->band_chan[j].band,
+					    scan_param.channel_List[0]);
+				    break;
+			    }
+		    }
+		    break;
 	    }
     }
 
@@ -732,7 +1075,7 @@ static int qwifi_drv_scan(const struct device *dev, struct wifi_scan_params *par
     }
 #endif
 
-    if (scan_param.ssid_Length) {
+    if (scan_param.ssid_Length || scan_param.num_Channels > 0) {
         ret = qapi_WLAN_Start_Scan(deviceId, &scan_param);
     } else {
         ret = qapi_WLAN_Start_Scan(deviceId, NULL);
@@ -784,6 +1127,19 @@ static int qwifi_drv_get_tx_power(const struct device *dev, struct qcom_wifi_get
                         &length)) {
         LOG_ERR("get tx power fail for device %d",deviceId);
         return -EIO;
+    }
+
+    /* real_power is only valid once a TX power has been set; until then the
+     * firmware leaves it at the RESTORE_DEFAULT sentinel (100). In that case
+     * the effective TX power is the minimum of the regulatory, CTL and target
+     * limits, so report that instead. */
+    if (power.real_power == 100) {
+        uint16_t eff = power.reg_power;
+        if (power.ctl_power < eff)
+            eff = power.ctl_power;
+        if (power.target_power < eff)
+            eff = power.target_power;
+        power.real_power = eff;
     }
 
     LOG_INF("get real_power: %d dbm", power.real_power);
@@ -2000,6 +2356,13 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
         break;
     }
 
+#ifdef SUPPORT_TWT_STA
+    /* QCC730 FW supports TWT over 11n (HT20) connections; Zephyr's TWT
+     * pre-check requires link_mode >= WIFI_6 and twt_capable — bypass. */
+    status->link_mode = WIFI_6;
+    status->twt_capable = true;
+#endif
+
     /* security */
     switch (wifi_status.auth_mode) {
     case QAPI_WLAN_AUTH_WPA3_SAE_E:
@@ -2020,17 +2383,36 @@ static int qwifi_drv_intf_status(const struct device *dev, struct wifi_iface_sta
     case QAPI_WLAN_AUTH_NONE_E:
         status->security = WIFI_SECURITY_TYPE_NONE;
         break;
+#ifdef CONFIG_WIFI_QCOM_ENTERPRISE
+    case QAPI_WLAN_AUTH_WPA2_E:
+    case QAPI_WLAN_AUTH_WPA2_E_SHA256_E:
+    case QAPI_WLAN_AUTH_WPA3_ENT_ONLY_E:
+        /* Firmware auth_mode only encodes the AKM (WPA2-Ent / +SHA256 / AKM5-only),
+         * not the EAP method — pull the actual security type saved at connect time. */
+        status->security = dev_data->cfg_connect.security;
+        status->wpa3_ent_type = dev_data->cfg_connect.wpa3_ent_mode;
+        break;
+#endif /* CONFIG_WIFI_QCOM_ENTERPRISE */
     default:
         status->security = WIFI_SECURITY_TYPE_UNKNOWN;
         break;
     }
 
+#if defined(CONFIG_QCC730_RCP_BUS_QCSPI)
+    /* Firmware reports RSSI as a positive magnitude; real dBm = value - 100 */
+    status->rssi = (int)wifi_status.rssi - 100;
+#else
     status->rssi = wifi_status.rssi;
+#endif
     status->dtim_period = wifi_status.dtim_period;
     status->beacon_interval = wifi_status.beacon_interval;
     status->band = wifi_status.band;
     status->channel = wifi_status.channel;
 
+    /* Report the MFP policy actually used by FW to build the local RSN IE.
+     * This avoids reporting the requested -w value when FW used a different
+     * effective policy. */
+    status->mfp = qcom_rsn_cap_to_mfp(wifi_status.rsn_cap);
     rate_cfg.rate_staid = dev_id;
     ret = qapi_WLAN_Get_Rate(&rate_cfg);
     if (ret != QAPI_OK) {
@@ -2081,18 +2463,39 @@ static int qwifi_drv_send(const struct device *dev, struct net_pkt *pkt)
     return 0;
 }
 
+#if defined(CONFIG_QCC730_RCP_BUS_QCSPI)
+/* RX DIRECT: implemented by the RCP data proxy (which owns the RCP buffer /
+ * link_send API the BSP can't see). Bypasses net_pkt alloc + net_recv_data +
+ * L2 + AF_PACKET socket match. Mirror of the TX DIRECT path. iface_idx: 1=STA,
+ * 2=AP. */
+#define QWIFI_RX_DIRECT_IFACE_STA 1U
+#define QWIFI_RX_DIRECT_IFACE_AP  2U
+extern int proxy_wifi_data_rx_direct(uint8_t iface_idx, const uint8_t *frame, uint16_t len);
+#endif
+
 qapi_Status_t qwifi_drv_eth_rx_cb(void *drv_intf_data, void *bufp, uint16_t len, void *hal_data)
 {
-    struct net_pkt *pkt;
     struct net_if *iface = (struct net_if *)drv_intf_data;
 
     ARG_UNUSED(hal_data);
     const struct device *dev = net_if_get_device(iface);
-    struct qwifi_drv_dev_data_t *dev_data = dev->data;
 
 #ifdef CONFIG_PM_DEVICE
     pm_device_busy_set(dev);
 #endif
+
+#if defined(CONFIG_QCC730_RCP_BUS_QCSPI)
+    /* The frame buffer is freed by the HAL right after we return, so the proxy
+     * copies it out synchronously. */
+    uint8_t iface_idx = (iface == net_if_get_wifi_sap())
+                ? QWIFI_RX_DIRECT_IFACE_AP
+                : QWIFI_RX_DIRECT_IFACE_STA;
+
+    (void)proxy_wifi_data_rx_direct(iface_idx, (const uint8_t *)bufp, len);
+    return 0;
+#else
+    struct net_pkt *pkt;
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
 
     pkt = net_pkt_rx_alloc_with_buffer(iface, len, AF_UNSPEC, 0, dev_data->timeout);
     if (!pkt) {
@@ -2103,6 +2506,7 @@ qapi_Status_t qwifi_drv_eth_rx_cb(void *drv_intf_data, void *bufp, uint16_t len,
     net_recv_data(iface, pkt);
 
     return 0;
+#endif
 }
 
 static void link_change_handler(void *drv_iface, uint32_t event, uint8_t* mac_addr)
@@ -2149,6 +2553,13 @@ static void qwifi_drv_intf_init(struct net_if *iface)
      */
     if (qcom_hostap_eloop_acquire() != 0) {
         LOG_ERR("hostap eloop acquire failed");
+    }
+#endif
+
+#ifdef CONFIG_WIFI_QCOM_WPS
+    /* Initialise WPS context after eloop is running — event_cb fires on eloop thread */
+    if (qcom_wps_init(dev) != 0) {
+        LOG_ERR("WPS context init failed");
     }
 #endif
 
@@ -2504,6 +2915,27 @@ static int qwifi_ps_drv_set_bmps_enable(const struct device *dev, struct qcom_wi
         err = -EINVAL;
     }
 
+#if defined(CONFIG_WIFI_NM_WPA_SUPPLICANT) && !defined(CONFIG_WIFI_NM_WPA_SUPPLICANT_MINIMAL)
+    /*
+     * Pause/resume wpa_supplicant's wpas_periodic() 10s eloop timeout for
+     * the duration of BMPS -- see wpas_bmps_pause_periodic() in
+     * wpa_supplicant.c.  Do this regardless of qapi_bmps_cfg()'s result so
+     * a failed disable-BMPS call cannot leave the periodic timer paused
+     * forever.
+     *
+     * Gated out of MINIMAL supplicant builds: zephyr_wifi_bmps_enter/exit()
+     * live in supp_main.c, which the hostap CMakeLists only compiles in the
+     * non-MINIMAL branch -- and MINIMAL builds don't compile wpa_supplicant.c
+     * either, so there is no wpas_periodic() timer to pause. Referencing the
+     * symbols there (e.g. qcli_app) would be an undefined-reference link error.
+     */
+    if (param->enable) {
+        zephyr_wifi_bmps_enter();
+    } else {
+        zephyr_wifi_bmps_exit();
+    }
+#endif /* CONFIG_WIFI_NM_WPA_SUPPLICANT && !CONFIG_WIFI_NM_WPA_SUPPLICANT_MINIMAL */
+
     return err;
 }
 
@@ -2704,6 +3136,204 @@ static int qwifi_drv_set_rsp_rate(const struct device *dev, struct qcom_wifi_set
     return 0;
 }
 
+#ifdef CONFIG_WIFI_NM_WPA_SUPPLICANT_NAN_USD
+static int qwifi_drv_nan_publish(const struct device *dev,
+                                 struct qcom_wifi_nan_publish_params *params)
+{
+    ARG_UNUSED(dev);
+    return qcc730_nan_glue_publish(params->service_name,
+                                   params->srv_proto_type,
+                                   params->ssi, params->ssi_len,
+                                   params->ttl,
+                                   params->unsolicited, params->solicited,
+                                   params->freq_list);
+}
+
+static int qwifi_drv_nan_subscribe(const struct device *dev,
+                                   struct qcom_wifi_nan_subscribe_params *params)
+{
+    ARG_UNUSED(dev);
+    return qcc730_nan_glue_subscribe(params->service_name,
+                                     params->srv_proto_type,
+                                     params->active,
+                                     params->ttl,
+                                     params->freq);
+}
+
+static int qwifi_drv_nan_cancel_publish(const struct device *dev,
+                                        struct qcom_wifi_nan_cancel_publish_params *params)
+{
+    ARG_UNUSED(dev);
+    qcc730_nan_glue_cancel_publish(params->publish_id);
+    return 0;
+}
+
+static int qwifi_drv_nan_transmit(const struct device *dev,
+                                  struct qcom_wifi_nan_transmit_params *params)
+{
+    ARG_UNUSED(dev);
+    return qcc730_nan_glue_transmit(params->handle, params->peer_addr,
+                                    params->req_instance_id,
+                                    params->ssi, params->ssi_len);
+}
+#endif /* CONFIG_WIFI_NM_WPA_SUPPLICANT_NAN_USD */
+
+#ifdef CONFIG_WIFI_NM_WPA_SUPPLICANT_NAN_USD
+void qcc730_nan_wmi_roc_evt(void *data)      { qcc730_nan_glue_roc_evt(data); }
+void qcc730_nan_wmi_tx_status_evt(void *data) { qcc730_nan_glue_tx_status_evt(data); }
+void qcc730_nan_wmi_rx_sdf_evt(void *data)   { qcc730_nan_glue_rx_sdf_evt(data); }
+#endif /* CONFIG_WIFI_NM_WPA_SUPPLICANT_NAN_USD */
+
+/*
+ * WNM Sleep — routed through qapi → wmi_cmd_send → WLAN task message queue,
+ * following the same pattern as qwifi_drv_set_rate → qapi_WLAN_Set_Rate.
+ */
+
+static int qwifi_drv_wnm_sleep(const struct device *dev,
+				struct wifi_wnm_sleep_params *params)
+{
+	if (params->action == WIFI_WNM_SLEEP_ENTER) {
+		uint8_t sleeping, ap_capable;
+		uint32_t interval_ms;
+		uint16_t d0, d1, d2, d3, d4, d5, d6;
+		uint32_t enabled;
+        struct qwifi_drv_dev_data_t *dev_data = dev->data;
+        struct qwifi_bss_status_t *bss_status = &dev_data->bss_status;
+
+        if(bss_status->connected == false) {
+            LOG_DBG("Not connected to an AP");
+            return -ENOTCONN;
+        }
+		qapi_WLAN_Wnm_Fill_Status(&sleeping, &ap_capable, &interval_ms,
+					  &d0, &d1, &d2, &d3, &d4, &d5, &d6,
+					  &enabled);
+		if (!ap_capable)
+			LOG_WRN("WNM: AP did not advertise WNM-Sleep bit 17; "
+				"proceeding anyway (vendor AP may support without advertising)");
+		qapi_Status_t rc = qapi_WLAN_Wnm_Sleep(0, params->interval_ms);
+#ifdef CONFIG_PM
+		/* Allow Zephyr PM to enter S2RAM for WNM sleep (mirrors qbmps enable). */
+		if (rc == QAPI_OK &&
+		    pm_policy_state_lock_is_active(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES))
+			pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
+#endif
+		return (rc == QAPI_OK) ? 0 : -EIO;
+	} else {
+		qapi_Status_t rc = qapi_WLAN_Wnm_Sleep(1, 0);
+#ifdef CONFIG_PM
+		/* Re-lock S2RAM so Zephyr PM does not re-enter suspend immediately
+		 * after WNM sleep exit.  The lock is released again on the next
+		 * WNM sleep enter (mirrors the put above). */
+		if (!pm_policy_state_lock_is_active(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES))
+			pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
+#endif
+		return (rc == QAPI_OK) ? 0 : -EIO;
+	}
+}
+
+void nt_wnm_s2ram_relock(void)
+{
+#ifdef CONFIG_PM
+	if (!pm_policy_state_lock_is_active(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES))
+		pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
+#endif
+}
+
+static int qwifi_drv_wnm_status(const struct device *dev,
+				 struct wifi_wnm_status *status)
+{
+	uint16_t enter_req, enter_rsp, exit_req, exit_rsp;
+	uint16_t wkup_sta, wkup_tim, wkup_idle;
+	uint8_t  sleeping, ap_capable;
+	uint32_t interval_ms, enabled;
+
+	qapi_WLAN_Wnm_Fill_Status(&sleeping, &ap_capable, &interval_ms,
+				   &enter_req, &enter_rsp,
+				   &exit_req,  &exit_rsp,
+				   &wkup_sta,  &wkup_tim, &wkup_idle,
+				   &enabled);
+
+	status->enabled           = (bool)enabled;
+	status->sleeping          = sleeping;
+	status->ap_capable        = ap_capable;
+	status->interval_ms       = interval_ms;
+	status->enter_req_sent    = enter_req;
+	status->enter_rsp_rcvd    = enter_rsp;
+	status->exit_req_sent     = exit_req;
+	status->exit_rsp_rcvd     = exit_rsp;
+	status->wakeup_sta_data   = wkup_sta;
+	status->wakeup_tim        = wkup_tim;
+	status->wakeup_bss_idle_timer = wkup_idle;
+	return 0;
+}
+
+static int qwifi_drv_wnm_set_enable(const struct device *dev, uint32_t enable)
+{
+	qapi_Status_t rc = qapi_WLAN_Wnm_Set_Enable((uint8_t)enable);
+
+	return (rc == QAPI_OK) ? 0 : -EIO;
+}
+
+static int qwifi_drv_wnm_set_bss_max_idle(const struct device *dev, uint32_t m_seconds)
+{
+	qapi_Status_t rc = qapi_WLAN_Wnm_Set_Bss_Max_Idle(m_seconds);
+
+	return (rc == QAPI_OK) ? 0 : -EIO;
+}
+
+#ifdef CONFIG_WIFI_QCOM_P2P
+static int qwifi_drv_p2p(const struct device *dev,
+                         struct qcom_wifi_p2p_params *p)
+{
+    (void)dev;
+    switch (p->subcmd) {
+    case P2P_SUBCMD_ENABLE:
+        return qcom_p2p_enable(&p->enable.cfg) ? -EIO : 0;
+    case P2P_SUBCMD_DISABLE:
+        return qcom_p2p_disable() ? -EIO : 0;
+    case P2P_SUBCMD_APPLY_CFG:
+        return qcom_p2p_apply_runtime_cfg(&p->apply_cfg.cfg);
+    case P2P_SUBCMD_APPLY_DISC_INT:
+        return qcom_p2p_apply_disc_int(p->apply_disc_int.min_disc_int,
+                                       p->apply_disc_int.max_disc_int,
+                                       p->apply_disc_int.max_disc_tu);
+    case P2P_SUBCMD_FIND:
+        return qcom_p2p_find_start(p->find.timeout) ? -EIO : 0;
+    case P2P_SUBCMD_STOP_FIND:
+        return qcom_p2p_find_stop() ? -EIO : 0;
+    case P2P_SUBCMD_LISTEN:
+        return qcom_p2p_listen_start(p->listen.timeout) < 0 ? -EIO : 0;
+    case P2P_SUBCMD_CANCEL:
+        return qcom_p2p_cancel() < 0 ? -EIO : 0;
+    case P2P_SUBCMD_FLUSH:
+        return qcom_p2p_flush() < 0 ? -EIO : 0;
+    case P2P_SUBCMD_PEERS_DUMP:
+        p->peers_dump.n = qcom_p2p_peers_dump(p->peers_dump.cb,
+                                              p->peers_dump.cb_ctx);
+        return p->peers_dump.n < 0 ? -EIO : 0;
+    case P2P_SUBCMD_PEER_DUMP:
+        return qcom_p2p_peer_dump(p->peer_dump.mac, p->peer_dump.cb,
+                                  p->peer_dump.cb_ctx) < 0 ? -EIO : 0;
+    case P2P_SUBCMD_CONNECT:
+        return qcom_p2p_connect(p->connect.mac, p->connect.wps_method,
+                                p->connect.go_intent, p->connect.persistent,
+                                p->connect.auth) < 0 ? -EIO : 0;
+    case P2P_SUBCMD_REJECT:
+        return qcom_p2p_reject(p->reject.mac) < 0 ? -EIO : 0;
+    case P2P_SUBCMD_AUTH_INVITE:
+        return qcom_p2p_authorize_invite(
+            p->auth_invite.clear ? NULL : p->auth_invite.mac) < 0 ? -EIO : 0;
+    case P2P_SUBCMD_INVITE:
+        return qcom_p2p_invite(p->invite.mac, p->invite.role, p->invite.bssid,
+                               p->invite.ssid, p->invite.ssid_len,
+                               p->invite.freq,
+                               p->invite.persistent_group) < 0 ? -EIO : 0;
+    default:
+        return -EINVAL;
+    }
+}
+#endif /* CONFIG_WIFI_QCOM_P2P */
+
 static int qwifi_drv_dev_init(const struct device *dev)
 {
     struct qwifi_drv_dev_data_t *dev_data = dev->data;
@@ -2764,11 +3394,62 @@ static int qwifi_drv_dev_init(const struct device *dev)
         .set_ba_win_size    = qwifi_drv_set_ba_win_size,
         .set_cts_to_self	= qwifi_drv_set_cts_to_self,
         .set_rsp_rate	= qwifi_drv_set_rsp_rate,
+        .wnm_sleep	= qwifi_drv_wnm_sleep,
+        .wnm_status	= qwifi_drv_wnm_status,
+        .wnm_set_enable       = qwifi_drv_wnm_set_enable,
+        .wnm_set_bss_max_idle = qwifi_drv_wnm_set_bss_max_idle,
+#ifdef CONFIG_WIFI_NM_WPA_SUPPLICANT_NAN_USD
+        .nan_publish        = qwifi_drv_nan_publish,
+        .nan_subscribe      = qwifi_drv_nan_subscribe,
+        .nan_cancel_publish = qwifi_drv_nan_cancel_publish,
+        .nan_transmit       = qwifi_drv_nan_transmit,
+#endif
+#ifdef CONFIG_WIFI_QCOM_P2P
+        .p2p                = qwifi_drv_p2p,
+#endif
     };
     dev_data->qcom_wifi_cmd = qwifi_ops;
 
     dev_data->timeout = K_MSEC(WAIT_TIME_FOR_ALLOC_RX_BUF_MS);
     return 0;
+}
+
+/* TWT setup/teardown (2026-07-08): map Zephyr wifi_twt_params to the lib
+ * WMI_TWT_SETUP_CMD / WMI_TWT_TEARDOWN_CMD and forward via qapi. lib
+ * (nt_twt_setup_cmd_hdl) supports individual + unannounced only; wake_duration
+ * >= 2ms, wake_interval >= wake_duration, dialog_id >= 1, twt_start_tsf = 0 =>
+ * FW decides. Despite the "in ms" comment on wlan_twt_setup_cmd_t in nt_twt.h,
+ * nt_twt_setup_cmd_hdl's MIN_TWT_WAKEUP_DURATION check and twt_wake_tu division
+ * (nt_twt.c:770/854) confirm the field is actually raw microseconds, same unit
+ * Zephyr uses — pass through unscaled (2026-07-09, confirmed via UART debug log
+ * showing MIN_TWT_WAKEUP_DURATION=2000us rejecting a wrongly us->ms-scaled 65).
+ * Event up-link not wired yet. */
+static int qwifi_drv_set_twt(const struct device *dev, struct wifi_twt_params *params)
+{
+    struct qwifi_drv_dev_data_t *dev_data = dev->data;
+    uint8_t deviceId = dev_data->active_device;
+
+    if (params->operation == WIFI_TWT_SETUP) {
+        WMI_TWT_SETUP_CMD cmd = {0};
+        cmd.dialog_id        = params->dialog_token;
+        cmd.negotiation_type = 0;                                       /* individual */
+        cmd.wake_duration    = params->setup.twt_wake_interval;         /* us (SP) */
+        cmd.wake_interval    = (uint32_t)params->setup.twt_interval;    /* us (SI) */
+        cmd.flow_type        = 1;                                       /* unannounced */
+        cmd.trigger_type     = params->setup.trigger ? 1 : 0;
+        cmd.twt_start_tsf_lo = 0;
+        cmd.twt_start_tsf_hi = 0;
+        LOG_ERR("TWT setup dbg: wake_interval_us=%u twt_interval_us=%llu -> wake_duration=%u wake_interval=%u",
+                params->setup.twt_wake_interval, params->setup.twt_interval,
+                cmd.wake_duration, cmd.wake_interval);
+        return qapi_WLAN_Twt_Setup(deviceId, &cmd);
+    } else if (params->operation == WIFI_TWT_TEARDOWN) {
+        WMI_TWT_TEARDOWN_CMD cmd = {0};
+        cmd.dialog_id = params->dialog_token;
+        return qapi_WLAN_Twt_Teardown(deviceId, &cmd);
+    }
+
+    return -ENOTSUP;
 }
 
 static const struct wifi_mgmt_ops qwifi_drv_mgmt = {
@@ -2784,8 +3465,12 @@ static const struct wifi_mgmt_ops qwifi_drv_mgmt = {
     .ap_config_params = ap_config_params,
     .set_power_save = qwifi_power_save,
     .get_power_save_config = qwifi_get_power_save,
+    .set_twt = qwifi_drv_set_twt,
 #if defined(CONFIG_WIFI_QCOM_ENTERPRISE) && defined(CONFIG_WIFI_NM_WPA_SUPPLICANT_CRYPTO_ENTERPRISE)
     .enterprise_creds = supplicant_add_enterprise_creds,
+#endif
+#ifdef CONFIG_WIFI_QCOM_WPS
+    .wps_config = qwifi_drv_wps_config,
 #endif
 };
 
